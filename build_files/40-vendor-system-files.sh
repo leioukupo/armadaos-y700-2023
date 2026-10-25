@@ -43,6 +43,7 @@ install -Dpm 0644 /packages/kshim-tools/licenses/inih-LICENSE.txt \
 
 chmod 0755 /usr/libexec/armada/*
 chmod 0755 /usr/libexec/os-session-select
+chmod 0755 /usr/libexec/tb323fu/tb323fu-usb-port
 
 sed -i '/const allPanels/,$d' /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js
 sed -i '$r /usr/share/plasma/shells/org.kde.plasma.desktop/contents/updates/armada-pins.js' /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js
@@ -54,6 +55,7 @@ systemctl disable sshd.service || true
 systemctl disable armada-mtp.service || true
 systemctl enable sddm.service
 systemctl enable tb323fu-btaddr.service
+systemctl enable tb323fu-usb-port.service
 systemctl enable armada-session-default.service
 systemctl enable seatd.service
 systemctl enable armada-input-calibration.service

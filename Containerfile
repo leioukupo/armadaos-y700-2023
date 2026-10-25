@@ -100,6 +100,12 @@ FROM scratch AS ctx
 COPY build_files /build_files/
 COPY decky /decky/
 COPY system_files /system_files/
+# TB323FU's two connectors share one controller. Reuse its tested routing
+# components in the common image; the helper checks the board compatible.
+COPY devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-usb-port /system_files/usr/libexec/tb323fu/tb323fu-usb-port
+COPY devices/lenovo-tb323fu/rootfs/etc/udev/rules.d/71-tb323fu-usb-host.rules /system_files/usr/lib/udev/rules.d/71-tb323fu-usb-host.rules
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/udev/70-tb323fu-usb-port.rules /system_files/usr/lib/udev/rules.d/70-tb323fu-usb-port.rules
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/systemd/system/tb323fu-usb-port.service /system_files/usr/lib/systemd/system/tb323fu-usb-port.service
 # Selected SM8850 companions come from Freedom Control; shared defaults and
 # performance helpers remain owned by this repository.
 COPY decky/freedom-control/system_files/usr/libexec/armada/armada-powerd /system_files/usr/libexec/armada/armada-powerd

@@ -93,6 +93,9 @@ jobs:
           ref: ${{ github.sha }}
           submodules: recursive
 
+      - name: Check tablet input integration
+        run: bash tests/tb323fu-input-test.sh
+
       - name: Check signing key
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}

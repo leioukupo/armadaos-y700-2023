@@ -45,6 +45,7 @@ dnf5 -y install --setopt=install_weak_deps=False \
     libxcrypt-compat \
     sdl2-compat \
     evtest \
+    libgpiod-utils \
     dbus-x11 \
     xdg-user-dirs \
     xdg-terminal-exec \
