@@ -10,10 +10,13 @@ IMG="/usr/lib/modules/${KVER}/initramfs.img"
 # dracut-install aborts resolving /root without the target.
 mkdir -p /var/roothome
 
+# --xz: the Zstd default exceeds the 96MiB Android boot partition envelope;
+# XZ keeps the early CPIO bytes and main CPIO content unchanged.
 dracut \
     --force \
     --no-hostonly \
     --reproducible \
+    --xz \
     --kver "${KVER}" \
     --add ostree \
     --add armada-splash \

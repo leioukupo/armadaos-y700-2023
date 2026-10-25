@@ -11,6 +11,7 @@
 #include <boot_metrics.h>
 #include <kshim_mmu.h>
 #include <dt.h>
+#include <tb323fu_android_touch.h>
 #include <initrd.h>
 #include <qcom_dt.h>
 #include <dt_handoff.h>
@@ -234,6 +235,22 @@ static void sync_image_cache(uint64_t address, uint64_t size)
         asm volatile("ic ivau, %0" : : "r"(current) : "memory");
     asm volatile("dsb ish\nisb" : : : "memory");
 }
+
+#if KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
+/* The Android tree stays at ABL's original address. Make the one-cell update
+ * visible at PoC before the original kernel changes its cache/MMU state. */
+static void clean_android_trial_fdt(const void *fdt)
+{
+    uint64_t ctr;
+    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    const uint64_t line = 4ULL << ((ctr >> 16) & 0xf);
+    const uint64_t base = (uint64_t)(uintptr_t)fdt;
+    const uint64_t end = base + fdt_totalsize(fdt);
+    for (uint64_t p = base & ~(line - 1); p < end; p += line)
+        asm volatile("dc cvac, %0" : : "r"(p) : "memory");
+    asm volatile("dsb sy" : : : "memory");
+}
+#endif
 
 static void print_entry_name(const MANIFEST_ENTRY *entry)
 {
@@ -689,6 +706,15 @@ int kshim_main(
         if ((entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) &&
             !(entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB)) {
             dt_probe_report((void *)runtime_fdt, "m14:base=selected");
+#if KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
+            if (runtime_fdt && entry->type == MF_ENTRY_TYPE_LINUX) {
+                int touch_rc = tb323fu_android_touch_spi_trial(
+                    (void *)runtime_fdt, fdt_totalsize(runtime_fdt));
+                printf("Android touch SPI 4.8 MHz trial: %d\n", touch_rc);
+                if (touch_rc >= 0)
+                    clean_android_trial_fdt(runtime_fdt);
+            }
+#endif
         }
         uint64_t selected_device_tree = device_tree_address;
         if (entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB) {

@@ -87,6 +87,7 @@ Linux 内核和设备树随 boot 镜像打包；内核启动后，根据所选�
 | 我想了解…… | 对应文档 |
 |---|---|
 | 如何构建启动镜像 | [四代引导说明](devices/lenovo-tb322fc/boot/README.md) · [五代引导说明](devices/lenovo-tb323fu/boot/star-chart-build/README.md) |
+| 如何构建 9008／EDL 部署包 | [EDL 部署包构建](docs/edl-package.zh-CN.md) |
 | 系统内使用哪些引导工具 | [kShimC 打包工具](packages/kshim-tools/README.md) |
 | 组件来源与固定版本 | [四代源码与来源](devices/lenovo-tb322fc/README.md#源码与来源) · [五代来源记录](devices/lenovo-tb323fu/docs/SOURCES.md) |
 | 上游系统如何使用 | [ArmadaOS 使用文档](https://armadaos.dev/using-armada/) |

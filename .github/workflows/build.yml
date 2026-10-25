@@ -38,6 +38,7 @@ jobs:
       tag: ${{ steps.channel.outputs.tag }}
       digest: ${{ steps.push.outputs.digest }}
       revision: ${{ steps.version.outputs.revision }}
+      version: ${{ steps.version.outputs.version }}
 
     permissions:
       contents: read
@@ -92,6 +93,16 @@ jobs:
         with:
           ref: ${{ github.sha }}
           submodules: recursive
+
+      # Resolve before the image build so the OCI layers bundle the latest
+      # plugin sources instead of a cached earlier resolution.
+      - name: Resolve latest bundled plugins
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_plugin_sources.py
+          python3 build_files/resolve-plugin-sources.py
 
       - name: Check tablet input integration
         run: bash tests/tb323fu-input-test.sh
@@ -353,3 +364,22 @@ jobs:
     secrets:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+  build_edl_package:
+    name: EDL package
+    needs: build_push
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.build_push.outputs.tag == 'testing' &&
+      needs.build_push.outputs.digest != '' &&
+      needs.build_push.outputs.revision != '' &&
+      needs.build_push.outputs.version != ''
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/build-edl-package.yml
+    with:
+      image: docker://ghcr.io/${{ github.repository }}:${{ needs.build_push.outputs.tag }}
+      image_digest: ${{ needs.build_push.outputs.digest }}
+      source_ref: ${{ needs.build_push.outputs.revision }}
+      version: ${{ needs.build_push.outputs.version }}

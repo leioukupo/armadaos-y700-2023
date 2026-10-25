@@ -31,6 +31,51 @@ test:
         echo "Running test: ${test_file}"
         bash "${test_file}"
     done
+    python3 -m unittest discover -s tests -p test_plugin_sources.py
+
+# EDL filesystem tests; needs privileged containers, separate from `just test`
+[group('Test')]
+test-edl-package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    source="$(git rev-parse --show-toplevel)"
+    # A per-invocation tag avoids clobbering or deleting another run's image.
+    tools_image="localhost/armada/edl-tools:test-$$"
+    build_ok=0
+    cleanup() {
+        # Only the tag this run created, and only when this run built it; a
+        # non-force removal never touches shared layers or other tags.
+        if [[ "${build_ok}" -eq 1 ]]; then
+            docker image rm "${tools_image}" || true
+        fi
+    }
+    trap cleanup EXIT
+
+    docker build \
+        --file "${source}/build_files/Containerfile.edl-tools" \
+        --tag "${tools_image}" \
+        "${source}/build_files"
+    build_ok=1
+
+    # The tests create loop devices and btrfs filesystems, so /work is a local
+    # scratch directory inside the checkout rather than a shared tmpfs.
+    work="$(mktemp -d "${source}/_build-edl-test.XXXXXX")"
+    docker run \
+        --rm \
+        --privileged \
+        --cpus 4 \
+        --memory 6g \
+        --volume "${source}:/source:ro" \
+        --volume "${work}:/work" \
+        --env TMPDIR=/work \
+        --env PYTHONDONTWRITEBYTECODE=1 \
+        --env TEST_ARTIFACT_ROOT=/work \
+        --workdir /source \
+        "${tools_image}" \
+        bash -c 'set -euo pipefail
+            python3 -m unittest discover -s tests -p "test_edl*.py"
+            python3 tests/test_split_package_archive.py'
 
 [group('Just')]
 fix:
@@ -128,6 +173,10 @@ packages-status:
 build $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
     set -euo pipefail
+
+    # Resolve the latest bundled plugin sources before any package lookup or
+    # image build, so the layers never come from a cached earlier resolution.
+    python3 build_files/resolve-plugin-sources.py
 
     # Resolve every package to an image: one built locally if present, else
     # the published one for that content hash.
@@ -297,6 +346,30 @@ build-armada-image $target_image=("localhost/" + image_name) $tag=default_tag: (
         export OUT="output/armada-${version}.img.gz"
     fi
     ./post_process/finalize-armada-image.sh output/image/disk.raw
+
+# Build the 9008/EDL package from IMAGE (OCI ref with channel), DIGEST,
+# REVISION and VERSION. Output: ./output/edl/<version>/
+[group('Armada')]
+build-edl-package $image $digest $revision $version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    source="$(git rev-parse --show-toplevel)"
+    # The wrapper needs a fresh work path that does not exist yet, so create
+    # only the parent; both names are covered by the _build* ignore rule.
+    build_parent="$(mktemp -d "${source}/_build-edl.XXXXXX")"
+    output="${source}/output/edl/${version}"
+
+    # The wrapper owns Docker, its tools/runtime images, the OCI pull and the
+    # volume split; the recipe only supplies the source, work and output paths.
+    bash "${source}/build_files/build-edl-package.sh" \
+        --oci "${image}" \
+        --manifest-digest "${digest}" \
+        --source-commit "${revision}" \
+        --version "${version}" \
+        --source "${source}" \
+        --work "${build_parent}/work" \
+        --output "${output}"
 
 [group('Build Virtual Machine Image')]
 rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "qcow2" "disk_config/disk.toml")

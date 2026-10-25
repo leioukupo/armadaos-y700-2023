@@ -208,6 +208,16 @@ jobs:
           ref: ${{ github.sha }}
           submodules: recursive
 
+      # Resolve before the image build so the OCI layers bundle the latest
+      # plugin sources instead of a cached earlier resolution.
+      - name: Resolve latest bundled plugins
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_plugin_sources.py
+          python3 build_files/resolve-plugin-sources.py
+
       - name: Install container tools
         run: |
           set -euxo pipefail

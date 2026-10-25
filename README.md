@@ -104,6 +104,7 @@ for their build paths.
 | I want to… | Guide |
 |---|---|
 | Build a boot image | [Gen 4 boot guide](devices/lenovo-tb322fc/boot/README.md) · [Gen 5 boot guide](devices/lenovo-tb323fu/boot/star-chart-build/README.md) |
+| Build a 9008 / EDL package | [EDL package build](docs/edl-package.md) |
 | Inspect the installed boot tools | [kShimC packaging tools](packages/kshim-tools/README.md) |
 | Check component origins and versions | [Gen 4 sources](devices/lenovo-tb322fc/README.md#源码与来源) · [Gen 5 sources](devices/lenovo-tb323fu/docs/SOURCES.md) |
 | Learn the upstream system | [Using ArmadaOS](https://armadaos.dev/using-armada/) |

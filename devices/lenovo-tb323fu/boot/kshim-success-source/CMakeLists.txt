@@ -49,6 +49,7 @@ set(OUTPUT_NAME kShimC)
 set(KSHIMC_VERSION "0.0.1")
 project(${OUTPUT_NAME} C ASM)
 
+option(KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL "Trial only: limit original Android NVT controller to 4.8 MHz at handoff" OFF)
 option(KSHIM_STANDALONE "Boot directly as an ARM64 Image instead of an attached manifest runtime" OFF)
 option(KSHIM_DIAGNOSTIC_BASE_ONLY "Diagnostic only: hand off to the packed Linux base image before any DT/console/peripheral work; no menu and no peripheral probes; incompatible with KSHIM_STANDALONE" OFF)
 option(KSHIM_DIAGNOSTIC_RESOURCES_ONLY "Diagnostic only: probe DT/console/resources, then hand off to the packed Linux base image after quiescing the console; no menu and no post-checkpoint peripheral probes; incompatible with KSHIM_STANDALONE and KSHIM_DIAGNOSTIC_BASE_ONLY" OFF)
@@ -83,6 +84,7 @@ add_compile_definitions(KSHIM_STANDALONE=$<BOOL:${KSHIM_STANDALONE}>
     KSHIM_DIAGNOSTIC_RESOURCES_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_RESOURCES_ONLY}>
     KSHIM_DIAGNOSTIC_DT_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_DT_ONLY}>
     KSHIM_RAMOOPS_RECOVERY_ONLY=$<BOOL:${KSHIM_RAMOOPS_RECOVERY_ONLY}>
+    KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=$<BOOL:${KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL}>
     KSHIM_LINK_ADDRESS=${KSHIM_LINK_ADDRESS} KSHIM_RUNTIME_SLOT_SIZE=${KSHIM_RUNTIME_SLOT_SIZE})
 
 # Generate common variables pass to Kconfig
@@ -151,6 +153,7 @@ include_directories(${INCLUDE_DIRS})
 
 # Define the executable target, including assembly and C source files
 set(SRC_FILES
+    src/dt/tb323fu_android_touch.c
     src/dt/memory_overlay.c
     src/dt/simplefb.c
     lib/libfdt/fdt_overlay.c

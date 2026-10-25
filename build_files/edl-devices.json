@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "runtimeSource": "devices/lenovo-tb323fu/boot/kshim-success-source",
+  "profiles": {
+    "TB322FC": {
+      "displayName": "Lenovo Legion Y700 Gen 4",
+      "compatible": {
+        "soc": "SM8750",
+        "device": "elden"
+      },
+      "dtb": "qcom/sm8750-lenovo-elden.dtb",
+      "required": [
+        "lenovo,elden",
+        "qcom,sm8750"
+      ],
+      "forbidden": [
+        "lenovo,baldur",
+        "lenovo,tb323fu",
+        "qcom,sm8850",
+        "qcom,canoe",
+        "qcom,canoep",
+        "qcom,kaanapali"
+      ],
+      "extraArgs": [],
+      "runtimeConfig": "configs/tb322fc_android_defconfig",
+      "runtimeCmakeArgs": [
+        "-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=OFF"
+      ],
+      "bootPartitionBytes": 100663296,
+      "diagnosticMode": "rd-break"
+    },
+    "TB323FU": {
+      "displayName": "Lenovo Legion Y700 Gen 5",
+      "compatible": {
+        "soc": "SM8850",
+        "device": "baldur"
+      },
+      "dtb": "qcom/kaanapali-lenovo-baldur-display.dtb",
+      "required": [
+        "lenovo,baldur",
+        "qcom,kaanapali"
+      ],
+      "forbidden": [
+        "lenovo,elden",
+        "lenovo,tb322fc",
+        "qcom,sm8750",
+        "qcom,sm8550"
+      ],
+      "extraArgs": [
+        "baldur.end=hold",
+        "cpuidle_psci_domain.allow_cluster_off=0",
+        "msm.dpu_use_virtual_planes=0"
+      ],
+      "runtimeConfig": "configs/tb323fu_unified_defconfig",
+      "runtimeCmakeArgs": [
+        "-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=ON"
+      ],
+      "bootPartitionBytes": 100663296,
+      "diagnosticMode": "verbose"
+    }
+  }
+}
