@@ -160,14 +160,15 @@ def get_desktop_mode() -> str:
     try:
         text = STEAMOS_MANAGER_STATE.read_text(encoding="utf-8")
     except OSError:
-        return "desktop"
+        return "mobile"
 
     match = re.search(r'(?m)^desktop_session\s*=\s*"([^"]*)"', text)
     session = match.group(1) if match else ""
     for mode, mode_session in DESKTOP_SESSION_FOR_MODE.items():
         if session == mode_session:
             return mode
-    return "desktop"
+    # Missing or raw upstream session state follows the Mobile default.
+    return "mobile"
 
 
 def set_desktop_mode(mode: str):

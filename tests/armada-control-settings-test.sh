@@ -26,6 +26,18 @@ loader.exec_module(control)
 
 control.SLEEP_CONFIG = work / "sleep.conf"
 control.NM_IGNORE_SLEEP = work / "ignore-sleep"
+control.STEAMOS_MANAGER_STATE = work / "steamos-manager-state.toml"
+
+# Missing or raw upstream state is Mobile; both explicit armada choices map.
+assert control.get_desktop_mode() == "mobile"
+control.STEAMOS_MANAGER_STATE.write_text('desktop_session = "plasma.desktop"\n')
+assert control.get_desktop_mode() == "mobile"
+control.STEAMOS_MANAGER_STATE.write_text('other_setting = "keep"\n')
+assert control.get_desktop_mode() == "mobile"
+control.STEAMOS_MANAGER_STATE.write_text('desktop_session = "armada-plasma.desktop"\n')
+assert control.get_desktop_mode() == "desktop"
+control.STEAMOS_MANAGER_STATE.write_text('desktop_session = "armada-plasma-mobile.desktop"\n')
+assert control.get_desktop_mode() == "mobile"
 control.MEM_SLEEP_PATH = work / "mem_sleep"
 control.MEM_SLEEP_PATH.write_text("[s2idle] deep\n")
 control.BOTTOM_SCREEN_BRIGHTNESS_PATH = work / "bottom-screen-brightness"
