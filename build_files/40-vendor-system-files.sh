@@ -41,9 +41,59 @@ install -Dpm 0644 /packages/kshim-tools/licenses/packer-LICENSE \
 install -Dpm 0644 /packages/kshim-tools/licenses/inih-LICENSE.txt \
     /usr/share/licenses/armada-kshim-tools/inih-LICENSE.txt
 
+# TB323FU audio. Everything here is public and inert on other boards: the UCM
+# verb and topology are only used by the LENOVOTB323FU card, the udev rule and
+# tb323fu-audio.service match that exact card id, the gain helper and the
+# prepare service check the exact lenovo,baldur device-tree token, and the
+# WirePlumber fragment is installed as a template outside every scanned *.conf
+# directory (tb323fu-audio-prepare copies it for lenovo,baldur only).
+ucm=/usr/share/alsa/ucm2
+install -Dpm 0644 /ctx/tb323fu-audio/ucm2/conf.d/kaanapali/LENOVO-TB323FU.conf \
+    "${ucm}/conf.d/kaanapali/LENOVO-TB323FU.conf"
+install -Dpm 0644 /ctx/tb323fu-audio/ucm2/Lenovo/TB323FU/HiFi.conf \
+    "${ucm}/Lenovo/TB323FU/HiFi.conf"
+# The kernel requests the topology from the qcom firmware subdirectory, so it
+# ships at qcom/kaanapali/ below the normal /usr/lib/firmware search root.
+install -Dpm 0644 /ctx/tb323fu-audio/LENOVO-TB323FU-tplg.bin \
+    /usr/lib/firmware/qcom/kaanapali/LENOVO-TB323FU-tplg.bin
+install -Dpm 0755 /ctx/tb323fu-audio/tb323fu-audio-defaults \
+    /usr/libexec/tb323fu/tb323fu-audio-defaults
+install -Dpm 0644 /ctx/tb323fu-audio/91-tb323fu-audio.rules \
+    /usr/lib/udev/rules.d/91-tb323fu-audio.rules
+install -Dpm 0644 /ctx/tb323fu-audio/tb323fu-audio.service \
+    /usr/lib/systemd/system/tb323fu-audio.service
+# Only created when missing on a live system; the image ships the safe values.
+install -Dpm 0644 /ctx/tb323fu-audio/audio.conf /etc/tb323fu/audio.conf
+install -Dpm 0755 /ctx/tb323fu-audio/tb323fu-speaker-gain \
+    /usr/libexec/tb323fu/tb323fu-speaker-gain
+install -Dpm 0644 /ctx/tb323fu-audio/tb323fu-speaker-gain.service \
+    /usr/lib/systemd/user/tb323fu-speaker-gain.service
+install -Dpm 0644 /ctx/tb323fu-audio/tb323fu-speakers-protection.json \
+    /usr/share/tb323fu/pipewire/tb323fu-speakers-protection.json
+install -Dpm 0644 /ctx/tb323fu-audio/61-tb323fu-speakers-dsp.conf \
+    /usr/share/tb323fu/wireplumber/61-tb323fu-speakers-dsp.conf
+# Fixed per-model ADSP firmware, shipped in this repository beside its
+# SHA256SUMS. Verify the bundle first so a truncated or swapped blob fails the
+# build instead of reaching the image; the check runs in a subshell so the
+# context directory never leaks into the rest of this script.
+fw_bundle=/ctx/tb323fu-audio/firmware
+fw_audio=/usr/share/tb323fu/firmware/audio
+(
+    cd "${fw_bundle}"
+    sha256sum -c --strict SHA256SUMS
+)
+install -Dpm 0644 "${fw_bundle}/qcom/kaanapali/lenovo/baldur/adsp.mbn" \
+    "${fw_audio}/qcom/kaanapali/lenovo/baldur/adsp.mbn"
+install -Dpm 0644 "${fw_bundle}/qcom/kaanapali/lenovo/baldur/adsp_dtb.mbn" \
+    "${fw_audio}/qcom/kaanapali/lenovo/baldur/adsp_dtb.mbn"
+# The ACF data is requested by bare name, so it sits at the bundle root.
+install -Dpm 0644 "${fw_bundle}/aw882xx_acf.bin" "${fw_audio}/aw882xx_acf.bin"
+install -Dpm 0644 "${fw_bundle}/SHA256SUMS" "${fw_audio}/SHA256SUMS"
+
 chmod 0755 /usr/libexec/armada/*
 chmod 0755 /usr/libexec/os-session-select
 chmod 0755 /usr/libexec/tb323fu/tb323fu-usb-port
+chmod 0755 /usr/libexec/tb323fu/tb323fu-audio-prepare
 
 sed -i '/const allPanels/,$d' /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js
 sed -i '$r /usr/share/plasma/shells/org.kde.plasma.desktop/contents/updates/armada-pins.js' /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js
@@ -56,6 +106,11 @@ systemctl disable armada-mtp.service || true
 systemctl enable sddm.service
 systemctl enable tb323fu-btaddr.service
 systemctl enable tb323fu-usb-port.service
+systemctl enable tb323fu-audio.service
+systemctl enable tb323fu-audio-prepare.service
+# The user unit is enabled on every device; the helper itself exits 0 unless
+# the exact lenovo,baldur token and the exact LENOVOTB323FU card are present.
+systemctl --global enable tb323fu-speaker-gain.service
 systemctl enable armada-session-default.service
 systemctl enable seatd.service
 systemctl enable armada-input-calibration.service

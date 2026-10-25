@@ -106,6 +106,23 @@ COPY devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-usb-port /system_
 COPY devices/lenovo-tb323fu/rootfs/etc/udev/rules.d/71-tb323fu-usb-host.rules /system_files/usr/lib/udev/rules.d/71-tb323fu-usb-host.rules
 COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/udev/70-tb323fu-usb-port.rules /system_files/usr/lib/udev/rules.d/70-tb323fu-usb-port.rules
 COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/systemd/system/tb323fu-usb-port.service /system_files/usr/lib/systemd/system/tb323fu-usb-port.service
+# TB323FU audio: the public ALSA UCM verb, the device topology, the vendor
+# platform's mixer defaults and its speaker gain/protection pair, plus the
+# fixed per-model ADSP firmware bundle. tb323fu-audio-prepare stages them on
+# the exact lenovo,baldur board only; the bundle is verified at build time
+# against devices/lenovo-tb323fu/firmware/audio/SHA256SUMS.
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/alsa/ucm2/conf.d/kaanapali/LENOVO-TB323FU.conf /tb323fu-audio/ucm2/conf.d/kaanapali/LENOVO-TB323FU.conf
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/alsa/ucm2/Lenovo/TB323FU/HiFi.conf /tb323fu-audio/ucm2/Lenovo/TB323FU/HiFi.conf
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/firmware/audio/LENOVO-TB323FU-tplg.bin /tb323fu-audio/LENOVO-TB323FU-tplg.bin
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/libexec/tb323fu-audio-defaults /tb323fu-audio/tb323fu-audio-defaults
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/udev/91-tb323fu-audio.rules /tb323fu-audio/91-tb323fu-audio.rules
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/systemd/system/tb323fu-audio.service /tb323fu-audio/tb323fu-audio.service
+COPY devices/lenovo-tb323fu/kernel/tb323fu-linux-11a25bf8/tb323fu-linux-11a25bf89b65fff48112a91a0b25bc247e7736d8/userspace/platform/etc/tb323fu/audio.conf /tb323fu-audio/audio.conf
+COPY devices/lenovo-tb323fu/firmware/audio/ /tb323fu-audio/firmware/
+COPY devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-speaker-gain /tb323fu-audio/tb323fu-speaker-gain
+COPY devices/lenovo-tb323fu/rootfs/usr/lib/systemd/user/tb323fu-speaker-gain.service /tb323fu-audio/tb323fu-speaker-gain.service
+COPY devices/lenovo-tb323fu/rootfs/usr/share/tb323fu/pipewire/tb323fu-speakers-protection.json /tb323fu-audio/tb323fu-speakers-protection.json
+COPY devices/lenovo-tb323fu/rootfs/usr/share/wireplumber/wireplumber.conf.d/61-tb323fu-speakers-dsp.conf /tb323fu-audio/61-tb323fu-speakers-dsp.conf
 # Selected SM8850 companions come from Freedom Control; shared defaults and
 # performance helpers remain owned by this repository.
 COPY decky/freedom-control/system_files/usr/libexec/armada/armada-powerd /system_files/usr/libexec/armada/armada-powerd

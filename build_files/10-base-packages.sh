@@ -12,6 +12,7 @@ dnf5 -y install --setopt=install_weak_deps=False \
     pipewire-pulseaudio \
     pulseaudio-utils \
     wireplumber \
+    ladspa-swh-plugins \
     alsa-lib \
     alsa-ucm \
     alsa-utils \
