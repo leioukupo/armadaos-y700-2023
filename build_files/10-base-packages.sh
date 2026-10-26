@@ -97,6 +97,11 @@ dnf5 -y install --setopt=install_weak_deps=False \
 dnf5 -y install --setopt=install_weak_deps=False \
     /packages/umtp-responder/umtp-responder-*.rpm
 
+# The Chinese btop fork is a separate package: Fedora's btop above stays the
+# English command, and this only adds /usr/libexec/armada/btop-cn beside it.
+dnf5 -y install --setopt=install_weak_deps=False \
+    /packages/btop-cn/btop-cn-[0-9]*.aarch64.rpm
+
 # kshim-tools scripts run under python3 and call dtc, gzip and openssl.
 dnf5 -y install --setopt=install_weak_deps=False \
     python3 \

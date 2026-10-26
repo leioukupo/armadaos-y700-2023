@@ -31,6 +31,7 @@ ARG ARMADA_SPLASH_REF
 ARG ARMADA_RGB_REF
 ARG UMTP_RESPONDER_REF
 ARG KSHIM_TOOLS_REF
+ARG BTOP_CN_REF
 
 FROM ${STEAM_BOOTSTRAP_REF} AS steam-bootstrap
 
@@ -83,6 +84,8 @@ FROM ${ARMADA_RGB_REF} AS armada-rgb
 FROM ${UMTP_RESPONDER_REF} AS umtp-responder
 
 FROM ${KSHIM_TOOLS_REF} AS kshim-tools
+
+FROM ${BTOP_CN_REF} AS btop-cn
 
 FROM docker.io/library/node:22-slim AS decky-build
 WORKDIR /build/freedom-control
@@ -160,6 +163,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=armada-rgb,source=/rpms,target=/packages/armada-rgb \
     --mount=type=bind,from=umtp-responder,source=/rpms,target=/packages/umtp-responder \
     --mount=type=bind,from=kshim-tools,source=/kshim-tools,target=/packages/kshim-tools \
+    --mount=type=bind,from=btop-cn,source=/rpms,target=/packages/btop-cn \
     --mount=type=bind,from=decky-build,source=/build/freedom-control/dist,target=/packages/decky-dist \
     --mount=type=bind,from=decky-build,source=/build/armada-store/dist,target=/packages/decky-store-dist \
     --mount=type=cache,dst=/var/cache \
