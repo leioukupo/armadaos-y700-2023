@@ -1,3 +1,4 @@
+#include <storage_settings.h>
 /* SPDX-License-Identifier: MIT */
 #include <kshim.h>
 #include <platform.h>
@@ -612,6 +613,12 @@ enum menu_page_id {
     MENU_PAGE_INFO = 3, MENU_PAGE_SETTINGS = 4, MENU_PAGE_DEVICE = 5,
     MENU_PAGE_DEFAULT = 6, MENU_PAGE_COUNT = 7
 };
+static struct kshim_settings_session *BoundSettings;
+void kshim_platform_bind_settings(struct kshim_settings_session *session)
+{
+    BoundSettings = session;
+}
+
 struct menu_selection {
     struct menu_page pages[MENU_PAGE_COUNT];
     const void *fdt;
@@ -639,6 +646,7 @@ struct menu_selection {
      * DEVICE_BOARD_UNKNOWN when the caller has no matching evidence. */
     const enum device_board *payload_boards;
     struct boot_settings boot;
+    struct kshim_settings_session *store;
     enum device_board effective;
     /* The caller's original initial index, kept verbatim for the TB322FC
      * auto-return gate (settings must never widen it). */
@@ -657,6 +665,28 @@ struct menu_selection {
     char setting_device_name[KSHIM_INFO_VALUE_LEN];
     char setting_default_name[KSHIM_INFO_VALUE_LEN];
 };
+/* A settings save changes UI state only after the storage layer has flushed
+ * and read back the selected slot. Missing bindings preserve legacy behavior. */
+static int settings_persist(struct menu_selection *menu, const struct boot_settings *boot,
+                             kshim_menu_language_t language, const char **failure)
+{
+    if (!menu->store) return 0;
+    struct kshim_config_values v = {
+        (uint32_t)boot->device_choice, (uint32_t)boot->default_target, (uint32_t)language,
+        (uint32_t)boot->last_target, menu->store->values.next_action};
+    const struct kshim_config_values *old = &menu->store->values;
+    if (!menu->store->save_uncertain && v.device_choice == old->device_choice && v.default_target == old->default_target &&
+        v.language == old->language && v.last_target == old->last_target) return 0;
+    if (kshim_settings_save(menu->store, &v) == 0) return 0;
+    *failure = kshim_menu_text(KSHIM_TEXT_SETTINGS_SAVE_FAILED);
+    return -1;
+}
+static const char *settings_storage_description(const struct menu_selection *menu)
+{
+    if (!menu->store) return kshim_menu_text(KSHIM_TEXT_SETTINGS_DESC);
+    return kshim_menu_text(menu->store->source == KSHIM_SETTINGS_INTERNAL ?
+        KSHIM_TEXT_SETTINGS_INTERNAL : KSHIM_TEXT_SETTINGS_TF);
+}
 static int menu_append(struct menu_page *page, const char *name, const char *description,
                        enum menu_action action, size_t payload, kshim_menu_role_t role)
 {
@@ -928,6 +958,11 @@ static size_t settings_default_row(const struct menu_selection *menu)
     kshim_menu_role_t want = KSHIM_MENU_ROLE_UNKNOWN;
     size_t i;
 
+    if (menu->boot.default_target == BOOT_TARGET_LAST) {
+        for (i=0;i<page->count;++i)
+            if (page->actions[i]==MENU_DEFAULT_SET && page->payloads[i]==BOOT_TARGET_LAST)
+                return i;
+    }
     if (menu->default_ok) {
         kshim_menu_role_t role =
             (menu->caller_roles && menu->original_initial < menu->caller_count)
@@ -1026,7 +1061,8 @@ static void settings_resolve_default(struct menu_selection *menu)
         }
     }
     menu->default_ok = 0;
-    if (menu->boot.default_target == BOOT_TARGET_MANIFEST) {
+    if (menu->boot.default_target == BOOT_TARGET_MANIFEST ||
+        (menu->boot.default_target == BOOT_TARGET_LAST && menu->boot.last_target == BOOT_TARGET_MANIFEST)) {
         if (!manifest_found) {
             /* Manifest-only exception: the caller's own initial entry may be the
              * fixed diagnostic row, which no candidate covers. It is honored as
@@ -1036,7 +1072,7 @@ static void settings_resolve_default(struct menu_selection *menu)
              * Android/internal/TF selection skips this branch entirely and goes
              * through the ordinary resolver below, so it still wins. */
             size_t caller = 0;
-            if (menu->advanced &&
+            if (menu->boot.default_target == BOOT_TARGET_MANIFEST && menu->advanced &&
                 settings_role_match(menu, KSHIM_MENU_ROLE_DIAGNOSTIC, &caller) &&
                 caller == menu->initial_caller) {
                 menu->original_initial = caller;
@@ -1129,7 +1165,9 @@ static void settings_fill_default_name(const struct menu_selection *menu,
                                        char *buffer, size_t capacity)
 {
     const char *value;
-    if (menu->boot.default_target == BOOT_TARGET_ANDROID)
+    if (menu->boot.default_target == BOOT_TARGET_LAST)
+        value = kshim_menu_text(KSHIM_TEXT_DEFAULT_LAST);
+    else if (menu->boot.default_target == BOOT_TARGET_ANDROID)
         value = kshim_menu_role_name(KSHIM_MENU_ROLE_ANDROID, NULL);
     else if (menu->boot.default_target == BOOT_TARGET_INTERNAL)
         value = kshim_menu_role_name(KSHIM_MENU_ROLE_INTERNAL, NULL);
@@ -1270,7 +1308,7 @@ static int menu_fill_settings(struct menu_selection *menu)
     /* Settings entry row on the main page. */
     menu->settings_row = menu->pages[MENU_PAGE_MAIN].count;
     if (menu_append(&menu->pages[MENU_PAGE_MAIN], KSHIM_MENU_LABEL_SETTINGS,
-                    kshim_menu_text(KSHIM_TEXT_SETTINGS_DESC), MENU_SETTINGS, 0,
+                    settings_storage_description(menu), MENU_SETTINGS, 0,
                     KSHIM_MENU_ROLE_SETTINGS))
         return -1;
 
@@ -1350,6 +1388,12 @@ static int menu_fill_settings(struct menu_selection *menu)
             }
         }
     }
+    if (menu_append(&menu->pages[MENU_PAGE_DEFAULT],
+                    kshim_menu_text(KSHIM_TEXT_DEFAULT_LAST),
+                    menu->store ? kshim_menu_text(KSHIM_TEXT_DEFAULT_LAST_DESC) :
+                                  kshim_menu_text(KSHIM_TEXT_UNAVAILABLE),
+                    menu->store ? MENU_DEFAULT_SET : MENU_UNAVAILABLE,
+                    BOOT_TARGET_LAST, KSHIM_MENU_ROLE_DEFAULT)) return -1;
     if (menu_append(&menu->pages[MENU_PAGE_DEFAULT], KSHIM_MENU_ACTION_BACK,
                     KSHIM_MENU_DESC_BACK_PARENT,
                     MENU_BACK, 0, KSHIM_MENU_ROLE_BACK))
@@ -1468,6 +1512,7 @@ static int menu_build(struct menu_selection *menu, const char *const *names,
     menu->language_row = 0;
     menu->device_info_row = 0;
     menu->settings = settings;
+    menu->store = NULL;
     menu->payload_boards = payload_boards;
     /* The legacy menu has no board filtering, so its initial row is always a
      * valid automatic target; the settings path proves that separately. */
@@ -1476,6 +1521,23 @@ static int menu_build(struct menu_selection *menu, const char *const *names,
         struct boot_settings boot;
         if (boot_settings_init(&boot) != BOOT_SETTINGS_OK) return -1;
         menu->boot = boot;
+        if (BoundSettings && info &&
+            (BoundSettings->source == KSHIM_SETTINGS_INTERNAL || BoundSettings->source == KSHIM_SETTINGS_TF)) {
+            struct kshim_config_store *store =
+                &BoundSettings->medium[(unsigned)BoundSettings->source - 1].config;
+            struct boot_settings loaded = {
+                (enum boot_device_choice)BoundSettings->values.device_choice,
+                (enum boot_default_target)BoundSettings->values.default_target,
+                (enum boot_default_target)BoundSettings->values.last_target};
+            if (store->ready && store->board_id == (uint32_t)info->board &&
+                info->board != DEVICE_BOARD_UNKNOWN &&
+                boot_settings_validate(&loaded) == BOOT_SETTINGS_OK &&
+                BoundSettings->values.language <= KSHIM_MENU_LANG_EN) {
+                menu->store = BoundSettings;
+                menu->boot = loaded;
+                (void)kshim_menu_set_language((kshim_menu_language_t)BoundSettings->values.language);
+            }
+        }
         settings_recompute_candidates(menu);
         settings_resolve_default(menu);
     }
@@ -1588,6 +1650,7 @@ static int menu_activate(struct menu_selection *menu, size_t index,
             *failure = KSHIM_STR_UNAVAILABLE;
             return 0;
         }
+        if (settings_persist(menu, &next, kshim_menu_get_language(), failure)) return 0;
         menu->boot = next;
         /* Re-filter and re-resolve the default so a stale initial can never
          * auto-boot a wrong-board Linux image. */
@@ -1599,22 +1662,30 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         return 2;
     }
     if (action == MENU_DEFAULT_SET) {
-        enum boot_default_target old = menu->boot.default_target;
-        menu->boot.default_target = (enum boot_default_target)page->payloads[index];
+        struct boot_settings old = menu->boot;
+        enum boot_default_target target=(enum boot_default_target)page->payloads[index];
+        if (target==BOOT_TARGET_LAST && menu->boot.last_target==BOOT_TARGET_MANIFEST && menu->default_ok) {
+            for (size_t i=0;i<menu->candidate_count;++i)
+                if (menu->candidate_caller[i]==menu->original_initial)
+                    menu->boot.last_target=menu->candidates[i];
+        }
+        menu->boot.default_target=target;
         settings_resolve_default(menu);
-        if (boot_settings_validate(&menu->boot) != BOOT_SETTINGS_OK || !menu->default_ok) {
-            /* Not a uniquely existing Android/internal/TF target: keep the
-             * previous value and report the same "no matching content" note. */
-            menu->boot.default_target = old;
-            settings_resolve_default(menu);
-            *failure = KSHIM_STR_UNAVAILABLE;
-            printf("%s\n", *failure);
+        if (boot_settings_validate(&menu->boot)!=BOOT_SETTINGS_OK ||
+            (!menu->default_ok && target!=BOOT_TARGET_LAST)) {
+            menu->boot=old;settings_resolve_default(menu);
+            *failure=KSHIM_STR_UNAVAILABLE;
+            return 0;
+        }
+        if (settings_persist(menu,&menu->boot,kshim_menu_get_language(),failure)) {
+            menu->boot=old;settings_resolve_default(menu);
             return 0;
         }
         if (menu_fill(menu)) return 2;
-        menu->page = MENU_PAGE_MAIN;
+        menu->page=MENU_PAGE_MAIN;
         return 2;
     }
+
 #if KSHIM_MENU_LANGUAGE_ENABLED
     if (action == MENU_LANGUAGE) {
         menu->page = 2U;
@@ -1622,8 +1693,10 @@ static int menu_activate(struct menu_selection *menu, size_t index,
         return 2;
     }
     if (action == MENU_LANG_ZH || action == MENU_LANG_EN) {
-        (void)kshim_menu_set_language(action == MENU_LANG_ZH ?
-            KSHIM_MENU_LANG_ZH_CN : KSHIM_MENU_LANG_EN);
+        kshim_menu_language_t language = action == MENU_LANG_ZH ?
+            KSHIM_MENU_LANG_ZH_CN : KSHIM_MENU_LANG_EN;
+        if (settings_persist(menu, &menu->boot, language, failure)) return 0;
+        (void)kshim_menu_set_language(language);
         /* Rebuilt in the new locale; device/default choices and the resolved
          * default are preserved because they live in menu->boot. */
         if (menu_fill(menu)) return 2;

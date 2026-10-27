@@ -72,7 +72,7 @@ static const struct role_case role_cases[] = {
     { KSHIM_MENU_ROLE_DEVICE,         "设备",              "Device",
       "机型",     "device used" },
     { KSHIM_MENU_ROLE_DEFAULT,        "默认启动项",         "Default boot entry",
-      "默认系统", "default system" },
+      "默认启动", "default system" },
     { KSHIM_MENU_ROLE_DEVICE_AUTO,    "自动识别",           "Auto detect",
       "检测",     "detected" },
     { KSHIM_MENU_ROLE_DEVICE_TB322FC, "Y700 四代 TB322FC", "Y700 Gen4 TB322FC",

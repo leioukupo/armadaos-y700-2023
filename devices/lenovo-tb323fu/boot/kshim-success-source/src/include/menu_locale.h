@@ -217,6 +217,8 @@ typedef enum kshim_menu_text_id {
     KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT,
     KSHIM_TEXT_SETTINGS_DEFAULT_FMT,
     KSHIM_TEXT_DEFAULT_MANIFEST,
+    KSHIM_TEXT_DEFAULT_LAST,
+    KSHIM_TEXT_DEFAULT_LAST_DESC,
     KSHIM_TEXT_UNAVAILABLE,
     /* Short button label for a row that cannot be used; the long
      * KSHIM_TEXT_UNAVAILABLE sentence stays the row description. */
@@ -226,6 +228,9 @@ typedef enum kshim_menu_text_id {
      * old page set. */
     KSHIM_TEXT_DESC_BACK_PARENT,
 
+    KSHIM_TEXT_SETTINGS_INTERNAL,
+    KSHIM_TEXT_SETTINGS_TF,
+    KSHIM_TEXT_SETTINGS_SAVE_FAILED,
     KSHIM_TEXT_COUNT
 } kshim_menu_text_id;
 

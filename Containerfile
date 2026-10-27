@@ -103,6 +103,7 @@ FROM scratch AS ctx
 COPY build_files /build_files/
 COPY decky /decky/
 COPY system_files /system_files/
+COPY --chmod=0755 system_files/usr/bin/armada-reboot-edl /system_files/usr/bin/armada-reboot-edl
 # TB323FU's two connectors share one controller. Reuse its tested routing
 # components in the common image; the helper checks the board compatible.
 COPY devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-usb-port /system_files/usr/libexec/tb323fu/tb323fu-usb-port

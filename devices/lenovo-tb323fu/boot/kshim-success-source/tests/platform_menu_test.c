@@ -433,8 +433,7 @@ static void lang_capture(const char *const *names, const char *const *descriptio
         page->actions[i] = action_labels ? action_labels[i] : NULL;
     }
     if (page->kind == 0) {
-        /* RED anchor: the language build must add exactly one language row, so
-         * home grows from six rows to seven before any navigation happens. */
+        /* The language switch adds one home-menu row. */
         assert(count == lang_expected_home_rows());
     } else if (page->kind == 2) {
         assert(count == 3);
@@ -1846,8 +1845,7 @@ static struct device_info console_off_info(enum device_board board)
     info.board = board;
     return info;
 }
-/* Print the observable state before any assertion so a RED run reports the
- * case, console profile and counters instead of an opaque abort. */
+/* Include the case and counters when an assertion fails. */
 static void console_off_report(const char *case_name, int rc, size_t selected)
 {
     printf("case=%s console=%d rc=%d selected=%zu keys_build=%u polls=%u "
@@ -2041,7 +2039,7 @@ enum {
     SET_ROW_ADVANCED = 3, SET_ROW_SETTINGS = 4, SET_ROW_INFO = 5,
     SET_ROW_RESTART = 6, SET_ROW_OFF = 7,
     /* Back rows of the settings-family pages. */
-    SET_SETTINGS_BACK = 3, SET_DEVICE_BACK = 3, SET_DEFAULT_BACK = 3,
+    SET_SETTINGS_BACK = 3, SET_DEVICE_BACK = 3, SET_DEFAULT_BACK = 4,
     SET_LANGUAGE_BACK = 2,
 };
 
@@ -2410,6 +2408,104 @@ static void test_settings_generic_board_bypass(void)
 
 /* The read-only record is never mutated and every path keeps the original boot
  * FDT for PSCI. */
+/* Real menu transitions and real two-slot writes; only block IO is simulated. */
+static uint8_t menu_storage_bytes[65536];
+static unsigned menu_storage_writes, menu_storage_flushes;
+static int menu_storage_fail, menu_storage_flush_fail;
+static int menu_storage_read(void *ctx, uint64_t lba, uint32_t count, void *out)
+{
+    (void)ctx;
+    assert(lba + count <= 16);
+    memcpy(out, menu_storage_bytes + lba * 4096, count * 4096);
+    return 0;
+}
+static int menu_storage_write(void *ctx, uint64_t lba, uint32_t count, const void *in)
+{
+    (void)ctx;
+    assert((lba == 1 || lba == 2) && count == 1);
+    ++menu_storage_writes;
+    if (menu_storage_fail) return KSHIM_STORAGE_IO;
+    memcpy(menu_storage_bytes + lba * 4096, in, count * 4096);
+    return 0;
+}
+static int menu_storage_flush(void *ctx)
+{
+    (void)ctx; ++menu_storage_flushes; return menu_storage_flush_fail ? KSHIM_STORAGE_IO : 0;
+}
+static void test_settings_persistent_menu(void)
+{
+    const char *names[] = {"Android", "Internal"};
+    const kshim_menu_role_t roles[] = {KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL};
+    const enum device_board boards[] = {DEVICE_BOARD_UNKNOWN, DEVICE_BOARD_TB322FC};
+    struct device_info info = settings_info(DEVICE_BOARD_TB322FC);
+    for (unsigned source = KSHIM_SETTINGS_INTERNAL; source <= KSHIM_SETTINGS_TF; ++source) {
+        memset(menu_storage_bytes, 0, sizeof(menu_storage_bytes));
+        menu_storage_writes = menu_storage_flushes = 0; menu_storage_fail = menu_storage_flush_fail = 0;
+        struct kshim_blockdev dev = {0};
+        dev.block_size = 4096; dev.block_count = 16;
+        dev.read = menu_storage_read; dev.write = menu_storage_write; dev.flush = menu_storage_flush;
+        struct kshim_settings_session session = {0};
+        session.source = (enum kshim_settings_source)source;
+        struct kshim_config_store *store = &session.medium[source - 1].config;
+        store->dev = &dev; store->ready = 1; store->board_id = DEVICE_BOARD_TB322FC;
+        store->scratch = session.medium[source - 1].scratch;
+        memset(store->partition.uuid, 1, 16); memset(store->installation_uuid, 2, 16);
+        struct kshim_config_values values = {BOOT_DEVICE_TB322FC, BOOT_TARGET_INTERNAL, KSHIM_MENU_LANG_EN, 0, 0};
+        assert(kshim_settings_save(&session, &values) == 0);
+        kshim_platform_bind_settings(&session);
+        struct menu_selection menu = {0};
+        assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,0,1,1,1) == 0);
+        assert(menu.boot.device_choice == BOOT_DEVICE_TB322FC);
+        assert(menu.boot.default_target == BOOT_TARGET_INTERNAL);
+        assert(kshim_menu_get_language() == KSHIM_MENU_LANG_EN);
+        assert(menu.default_ok && menu.original_initial == 1);
+        assert(menu_storage_writes == 1); /* Loading and rebuilding never save. */
+        size_t selected = SIZE_MAX; const char *failure = NULL;
+        menu.page = MENU_PAGE_DEVICE;
+        assert(menu_activate(&menu,BOOT_DEVICE_AUTO,&selected,&failure) == 2);
+        assert(session.values.device_choice == BOOT_DEVICE_AUTO && session.sequence == 2);
+        menu.page = MENU_PAGE_LANGUAGE;
+        assert(menu_activate(&menu,0,&selected,&failure) == 2);
+        assert(session.values.language == KSHIM_MENU_LANG_ZH_CN && session.sequence == 3);
+        menu.page = MENU_PAGE_DEFAULT;
+        assert(menu_activate(&menu,0,&selected,&failure) == 2);
+        assert(session.values.default_target == BOOT_TARGET_ANDROID && session.sequence == 4);
+        unsigned writes = menu_storage_writes;
+        menu.page = MENU_PAGE_DEFAULT;
+        assert(menu_activate(&menu,0,&selected,&failure) == 2);
+        assert(menu_storage_writes == writes); /* Selecting the current value does not wear storage. */
+        menu_storage_fail = 1;
+        menu.page = MENU_PAGE_DEVICE;
+        assert(menu_activate(&menu,BOOT_DEVICE_TB323FU,&selected,&failure) == 0);
+        assert(failure && strcmp(failure,kshim_menu_text(KSHIM_TEXT_SETTINGS_SAVE_FAILED)) == 0);
+        assert(menu.boot.device_choice == BOOT_DEVICE_AUTO && session.sequence == 4);
+        assert(menu_storage_flushes == 4);
+        struct kshim_config_values saved; uint64_t sequence;
+        assert(kshim_config_load(store,&saved,&sequence) == 0);
+        assert(saved.device_choice == BOOT_DEVICE_AUTO && saved.default_target == BOOT_TARGET_ANDROID &&
+               saved.language == KSHIM_MENU_LANG_ZH_CN && sequence == 4);
+        /* A write can reach storage even when flush reports failure. Re-selecting
+         * the cached old value must write it back, not incorrectly skip the save. */
+        menu_storage_fail = 0; menu_storage_flush_fail = 1;
+        menu.page = MENU_PAGE_DEVICE;
+        assert(menu_activate(&menu,BOOT_DEVICE_TB323FU,&selected,&failure) == 0);
+        assert(session.sequence == 4 && menu.boot.device_choice == BOOT_DEVICE_AUTO);
+        assert(kshim_config_load(store,&saved,&sequence) == 0);
+        assert(saved.device_choice == BOOT_DEVICE_TB323FU && sequence == 5);
+        menu_storage_flush_fail = 0;
+        menu.page = MENU_PAGE_DEVICE;
+        assert(menu_activate(&menu,BOOT_DEVICE_AUTO,&selected,&failure) == 2);
+        assert(kshim_config_load(store,&saved,&sequence) == 0);
+        assert(saved.device_choice == BOOT_DEVICE_AUTO && sequence == 6 && session.sequence == 6);
+        info.board = DEVICE_BOARD_TB323FU;
+        memset(&menu,0,sizeof(menu));
+        assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,0,1,1,1) == 0);
+        assert(menu.boot.device_choice == BOOT_DEVICE_AUTO && menu.boot.default_target == BOOT_TARGET_MANIFEST);
+        info.board = DEVICE_BOARD_TB322FC;
+        kshim_platform_bind_settings(NULL);
+    }
+}
+
 static void test_settings_record_pristine(void)
 {
     static const kshim_menu_role_t roles[2] = { KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL };
@@ -2430,6 +2526,57 @@ static void test_settings_record_pristine(void)
 /* The Default page: a resolved default focuses its own selectable row; an
  * unavailable default row is never focused and confirming it never returns a
  * payload; a valid default set returns home focused on that row. */
+static void test_settings_remember_last(void)
+{
+    const char *names[]={"Android","Internal"};
+    const kshim_menu_role_t roles[]={KSHIM_MENU_ROLE_ANDROID,KSHIM_MENU_ROLE_INTERNAL};
+    const enum device_board boards[]={DEVICE_BOARD_UNKNOWN,DEVICE_BOARD_TB322FC};
+    struct device_info info=settings_info(DEVICE_BOARD_TB322FC);
+    struct kshim_settings_session session={0};
+    memset(menu_storage_bytes,0,sizeof(menu_storage_bytes));
+    menu_storage_writes=menu_storage_flushes=0;menu_storage_fail=menu_storage_flush_fail=0;
+    struct kshim_blockdev dev={0};dev.block_size=4096;dev.block_count=16;
+    dev.read=menu_storage_read;dev.write=menu_storage_write;dev.flush=menu_storage_flush;
+    session.source=KSHIM_SETTINGS_INTERNAL;
+    struct kshim_config_store *store=&session.medium[0].config;
+    store->dev=&dev;store->ready=1;store->board_id=DEVICE_BOARD_TB322FC;
+    store->scratch=session.medium[0].scratch;
+    memset(store->partition.uuid,1,16);memset(store->installation_uuid,2,16);
+    struct kshim_config_values values={0,BOOT_TARGET_INTERNAL,0,0, 0};
+    assert(kshim_settings_save(&session,&values)==0);
+    kshim_platform_bind_settings(&session);
+    struct menu_selection menu={0};size_t selected=99;const char *failure=NULL;
+    assert(menu_build(&menu,names,NULL,roles,&info,boards,2,0,0,1,1,1)==0);
+    assert(menu.pages[MENU_PAGE_DEFAULT].actions[3]==MENU_DEFAULT_SET);
+    assert(menu.pages[MENU_PAGE_DEFAULT].payloads[3]==BOOT_TARGET_LAST);
+    menu.page=MENU_PAGE_DEFAULT;
+    assert(menu_activate(&menu,3,&selected,&failure)==2);
+    assert(session.values.default_target==BOOT_TARGET_LAST && session.values.last_target==BOOT_TARGET_INTERNAL);
+    assert(menu.default_ok && menu.original_initial==1 && settings_default_row(&menu)==3);
+    assert(kshim_settings_note_boot(&session,BOOT_TARGET_ANDROID)==0);
+    unsigned writes=menu_storage_writes;
+    memset(&menu,0,sizeof(menu));
+    assert(menu_build(&menu,names,NULL,roles,&info,boards,2,1,0,1,1,1)==0);
+    assert(menu.default_ok && menu.original_initial==0 && menu.boot.last_target==BOOT_TARGET_ANDROID);
+    assert(menu_storage_writes==writes); /* Rebuilding never records a boot. */
+    menu.page=MENU_PAGE_LANGUAGE;
+    assert(menu_activate(&menu,1,&selected,&failure)==2);
+    assert(session.values.last_target==BOOT_TARGET_ANDROID && session.values.language==1);
+    menu.page=MENU_PAGE_DEFAULT;
+    assert(menu_activate(&menu,1,&selected,&failure)==2);
+    assert(session.values.default_target==BOOT_TARGET_INTERNAL && session.values.last_target==BOOT_TARGET_ANDROID);
+    assert(menu.original_initial==1);
+    menu_storage_fail=1;menu.page=MENU_PAGE_DEFAULT;
+    assert(menu_activate(&menu,3,&selected,&failure)==0 && failure);
+    assert(menu.boot.default_target==BOOT_TARGET_INTERNAL && session.values.default_target==BOOT_TARGET_INTERNAL);
+    menu_storage_fail=0;
+    values=(struct kshim_config_values){0,BOOT_TARGET_LAST,0,BOOT_TARGET_TF, 0};
+    assert(kshim_settings_save(&session,&values)==0);
+    memset(&menu,0,sizeof(menu));
+    assert(menu_build(&menu,names,NULL,roles,&info,boards,2,1,0,1,1,1)==0);
+    assert(!menu.default_ok && menu.boot.default_target==BOOT_TARGET_LAST);
+    kshim_platform_bind_settings(NULL);
+}
 static void test_settings_default_page(void)
 {
     static const kshim_menu_role_t roles[2] = { KSHIM_MENU_ROLE_ANDROID, KSHIM_MENU_ROLE_INTERNAL };
@@ -2449,7 +2596,7 @@ static void test_settings_default_page(void)
     assert(h.reset_calls == 0 && h.off_calls == 0 && h.reboot_calls == 0);
     assert(h.info_snap_count == 4); /* home, settings, default, home(after set) */
     const info_snap_t *def = &h.info_snaps[2];
-    assert(def->count == 4);
+    assert(def->count == 5);
     assert(def->initial == 0);
     settings_expect_default(def, 0, KSHIM_MENU_ROLE_ANDROID, 1);
     settings_expect_default(def, 1, KSHIM_MENU_ROLE_INTERNAL, 1);
@@ -2502,7 +2649,7 @@ static void test_settings_default_invalidated(void)
     /* The Default page no longer focuses an unavailable row: internal is now
      * unavailable, so the focus falls on the first selectable row. */
     const info_snap_t *def = &h.info_snaps[4];
-    assert(def->count == 4);
+    assert(def->count == 5);
     settings_expect_default(def, 0, KSHIM_MENU_ROLE_ANDROID, 1);
     settings_expect_default(def, 1, KSHIM_MENU_ROLE_INTERNAL, 0);
     assert(def->initial == 0);
@@ -2764,8 +2911,8 @@ static void test_settings_console_off_gate(void)
 }
 #endif /* !CONFIG_KSHIM_DEBUG_CONSOLE */
 
-/* ---- Manifest diagnostic default (approved behavior, RED pre-fix). -------- */
-/* These cases encode the approved production behavior: only BOOT_TARGET_MANIFEST
+/* Manifest diagnostic default. */
+/* Only BOOT_TARGET_MANIFEST
  * may honor its explicitly indexed, unique, board-safe DIAGNOSTIC caller as the
  * current-session automatic default. The diagnostic stays a fixed row on the
  * advanced page and must never become a selectable Default-page choice. A valid
@@ -2848,7 +2995,7 @@ static void test_settings_explicit_android_overrides_diagnostic(void)
     assert(h.info_snap_count == 5);
     assert(h.info_snaps[0].roles[0] == KSHIM_MENU_ROLE_DIAGNOSTIC);
     const info_snap_t *def = &h.info_snaps[3];
-    assert(def->count == 4); /* exactly Android / internal / TF / back */
+    assert(def->count == 5); /* Android / internal / TF / remember / back */
     settings_expect_default(def, 0, KSHIM_MENU_ROLE_ANDROID, 1);
     settings_expect_default(def, 1, KSHIM_MENU_ROLE_INTERNAL, 0);
     settings_expect_default(def, 2, KSHIM_MENU_ROLE_TF, 0);
@@ -3058,6 +3205,8 @@ int main(void)
     test_settings_no_linux_on_bad_board();
     test_settings_generic_board_bypass();
     test_settings_record_pristine();
+    test_settings_persistent_menu();
+    test_settings_remember_last();
     test_settings_default_page();
     test_settings_default_invalidated();
     test_settings_back_labels();

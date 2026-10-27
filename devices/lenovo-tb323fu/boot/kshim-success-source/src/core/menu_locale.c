@@ -8,6 +8,10 @@
 #include <stdio.h>
 
 #include "menu_locale.h"
+#include "storage_probe.h"
+#if defined(CONFIG_KSHIM_UFS_READ_PROBE) && CONFIG_KSHIM_UFS_READ_PROBE
+#include "storage_ufs_read_native.h"
+#endif
 
 #if defined(CONFIG_KSHIM_MENU_LANGUAGE_SWITCH) && CONFIG_KSHIM_MENU_LANGUAGE_SWITCH
 #define KSHIM_MENU_RUNTIME_TEXT 1
@@ -110,10 +114,13 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
 
         [KSHIM_TEXT_SETTINGS_LABEL]   = "设置",
         [KSHIM_TEXT_SETTINGS_DESC]    = "本次启动有效。",
+        [KSHIM_TEXT_SETTINGS_INTERNAL] = "更改会保存到机身存储。",
+        [KSHIM_TEXT_SETTINGS_TF] = "更改会保存到 TF 卡。",
+        [KSHIM_TEXT_SETTINGS_SAVE_FAILED] = "无法确认保存。",
         [KSHIM_TEXT_DEVICE_LABEL]     = "设备",
         [KSHIM_TEXT_DEVICE_DESC]      = "选择本次启动使用的机型。",
         [KSHIM_TEXT_DEFAULT_LABEL]    = "默认启动项",
-        [KSHIM_TEXT_DEFAULT_DESC]     = "选择本次启动的默认系统。",
+        [KSHIM_TEXT_DEFAULT_DESC]     = "选择默认启动的系统。",
         [KSHIM_TEXT_DEVICE_AUTO_NAME] = "自动识别",
         [KSHIM_TEXT_DEVICE_AUTO_DESC] = "按实际检测到的机型启动。",
         [KSHIM_TEXT_DEVICE_TB322FC_NAME] = "Y700 四代 TB322FC",
@@ -126,6 +133,8 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT] = "设备：%s",
         [KSHIM_TEXT_SETTINGS_DEFAULT_FMT]       = "默认启动项：%s",
         [KSHIM_TEXT_DEFAULT_MANIFEST] = "镜像默认",
+        [KSHIM_TEXT_DEFAULT_LAST] = "记住上一次启动的系统",
+        [KSHIM_TEXT_DEFAULT_LAST_DESC] = "下次默认启动上一次选择的系统。",
         [KSHIM_TEXT_UNAVAILABLE]      = "镜像未提供对应启动内容。",
         [KSHIM_TEXT_ACTION_UNAVAILABLE] = "不可用",
         [KSHIM_TEXT_DESC_BACK_PARENT] = "返回上一级。",
@@ -204,10 +213,13 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
 
         [KSHIM_TEXT_SETTINGS_LABEL]   = "Settings",
         [KSHIM_TEXT_SETTINGS_DESC]    = "Applies to this boot only.",
+        [KSHIM_TEXT_SETTINGS_INTERNAL] = "Changes are saved to internal storage.",
+        [KSHIM_TEXT_SETTINGS_TF] = "Changes are saved to the TF card.",
+        [KSHIM_TEXT_SETTINGS_SAVE_FAILED] = "Could not confirm save.",
         [KSHIM_TEXT_DEVICE_LABEL]     = "Device",
         [KSHIM_TEXT_DEVICE_DESC]      = "Choose the device used for this boot.",
         [KSHIM_TEXT_DEFAULT_LABEL]    = "Default boot entry",
-        [KSHIM_TEXT_DEFAULT_DESC]     = "Choose the default system for this boot.",
+        [KSHIM_TEXT_DEFAULT_DESC]     = "Choose the default system to boot.",
         [KSHIM_TEXT_DEVICE_AUTO_NAME] = "Auto detect",
         [KSHIM_TEXT_DEVICE_AUTO_DESC] = "Boot for the actually detected device.",
         [KSHIM_TEXT_DEVICE_TB322FC_NAME] = "Y700 Gen4 TB322FC",
@@ -220,6 +232,8 @@ static const char *const kshim_menu_text_table[2][KSHIM_TEXT_COUNT] = {
         [KSHIM_TEXT_SETTINGS_DEVICE_MANUAL_FMT] = "Device: %s",
         [KSHIM_TEXT_SETTINGS_DEFAULT_FMT]       = "Default boot entry: %s",
         [KSHIM_TEXT_DEFAULT_MANIFEST] = "Image default",
+        [KSHIM_TEXT_DEFAULT_LAST] = "Remember last booted system",
+        [KSHIM_TEXT_DEFAULT_LAST_DESC] = "Next time, boot the system selected last.",
         [KSHIM_TEXT_UNAVAILABLE]      = "No matching image content is provided.",
         [KSHIM_TEXT_ACTION_UNAVAILABLE] = "Unavailable",
         [KSHIM_TEXT_DESC_BACK_PARENT] = "Return to the previous menu.",
@@ -301,6 +315,38 @@ const char *kshim_menu_text(kshim_menu_text_id id)
     if ((unsigned)id >= (unsigned)KSHIM_TEXT_COUNT) {
         return "";
     }
+#if defined(CONFIG_KSHIM_UFS_READ_PROBE) && CONFIG_KSHIM_UFS_READ_PROBE
+    if (id == KSHIM_TEXT_TITLE) {
+        static char probe_title[80];
+        const struct kshim_ufs_read_report *read_report = storage_ufs_read_entry_report();
+#if defined(CONFIG_KSHIM_UFS_LINK_WAKE) && CONFIG_KSHIM_UFS_LINK_WAKE
+#if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
+        snprintf(probe_title, sizeof(probe_title), "UFS Settings 11 s%u rc%d rel%d",
+#else
+        snprintf(probe_title, sizeof(probe_title), "UFS Read 10 s%u rc%d rel%d",
+#endif
+                 (unsigned)read_report->stage, read_report->status,
+                 read_report->release_status);
+#elif defined(CONFIG_KSHIM_UFS_READ_SCREEN) && CONFIG_KSHIM_UFS_READ_SCREEN
+        snprintf(probe_title, sizeof(probe_title), "UFS Read 5 s%u rc%d rel%d",
+                 (unsigned)read_report->stage, read_report->status,
+                 read_report->release_status);
+#else
+        snprintf(probe_title, sizeof(probe_title), "UFS Read 4 s%u rc%d rel%d",
+                 (unsigned)read_report->stage, read_report->status,
+                 read_report->release_status);
+#endif
+        return probe_title;
+    }
+#elif defined(CONFIG_KSHIM_STORAGE_ENTRY_PROBE) && CONFIG_KSHIM_STORAGE_ENTRY_PROBE
+    if (id == KSHIM_TEXT_TITLE) {
+        static char probe_title[80];
+        const struct storage_probe_snapshot *probe = storage_probe_entry_snapshot();
+        snprintf(probe_title, sizeof(probe_title), "UFS Probe 3  b%u s%u n%u",
+                 (unsigned)probe->board, (unsigned)probe->status, (unsigned)probe->entry_count);
+        return probe_title;
+    }
+#endif
     text = kshim_menu_text_table[kshim_menu_active_language()][id];
     return text ? text : "";
 }

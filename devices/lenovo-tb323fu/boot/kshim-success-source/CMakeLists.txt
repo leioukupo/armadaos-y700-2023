@@ -139,7 +139,7 @@ set(__MB_CAPABLE OFF CACHE BOOL "" FORCE)
 set(TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/picolibc ${CMAKE_BINARY_DIR}/lib/picolibc)
 
-# Add compile flags for a freestanding environment 
+# Add compile flags for a freestanding environment
 
 # Add include directories
 set(INCLUDE_DIRS
@@ -169,6 +169,32 @@ set(SRC_FILES
     src/arch/arm64/psci.S src/arch/arm64/timer.S src/arch/arm64/smc.S src/arch/arm64/gicv3.S
     lib/libfdt/fdt.c lib/libfdt/fdt_check.c lib/libfdt/fdt_ro.c lib/libfdt/fdt_addresses.c
     lib/libfdt/fdt_rw.c lib/libfdt/fdt_sw.c lib/libfdt/fdt_wip.c lib/libfdt/fdt_empty_tree.c lib/libfdt/fdt_strerror.c)
+
+if(CONFIG_KSHIM_STORAGE_ENTRY_PROBE OR CONFIG_KSHIM_UFS_NATIVE_IO)
+    list(APPEND SRC_FILES src/drivers/storage_probe.c src/drivers/storage_ufs_dma.c
+        src/dt/storage_probe_export.c
+        src/arch/arm64/storage_probe_io.c src/arch/arm64/storage_probe_load.S)
+    if(CONFIG_KSHIM_UFS_NATIVE_IO)
+        list(APPEND SRC_FILES src/arch/arm64/storage_ufs_native_io.c
+            src/arch/arm64/storage_ufs_store.S)
+        if(CONFIG_KSHIM_UFS_SETTINGS)
+            list(APPEND SRC_FILES src/arch/arm64/storage_settings_native.c
+                src/drivers/storage_ufs_settings.c src/dt/storage_settings_export.c)
+        endif()
+        if(CONFIG_KSHIM_UFS_READ_PROBE)
+            list(APPEND SRC_FILES src/arch/arm64/storage_ufs_read_native.c
+                src/drivers/storage_ufs_read_probe.c
+                src/dt/storage_ufs_read_export.c)
+            if(CONFIG_KSHIM_UFS_READ_SCREEN)
+                list(APPEND SRC_FILES src/ui/storage_ufs_read_screen.c
+                    src/arch/arm64/storage_ufs_read_screen.c)
+            endif()
+        endif()
+    endif()
+endif()
+# Storage formats are shared by the later hardware backends.
+list(APPEND SRC_FILES src/core/storage_block.c src/core/storage_config.c
+    src/core/storage_settings.c src/drivers/storage_ufs.c src/drivers/storage_sdhci.c)
 
 if(CONFIG_KSHIM_SMP)
     list(APPEND SRC_FILES src/arch/arm64/smp.c
