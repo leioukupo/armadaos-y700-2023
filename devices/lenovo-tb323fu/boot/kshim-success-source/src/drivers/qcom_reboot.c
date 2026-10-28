@@ -370,8 +370,7 @@ int kshim_qcom_reboot_request(const void *fdt, enum kshim_qcom_reboot_target tar
             return KSHIM_QCOM_REBOOT_UNSUPPORTED;
     }
 #if CONFIG_KSHIM_EDL_DISABLE_SDI
-    /* Check before changing the download cookie. This experiment follows
-     * SM8750 qcom_scm_shutdown's BOOT/WDOG_DEBUG_PART fast-call ABI. */
+    /* Check service availability before changing the download cookie. */
     if (target == KSHIM_QCOM_REBOOT_EDL &&
         !scm_available(UINT32_C(0x02000109)))
         return KSHIM_QCOM_REBOOT_UNSUPPORTED;
@@ -403,8 +402,7 @@ int kshim_qcom_reboot_request(const void *fdt, enum kshim_qcom_reboot_target tar
     }
 #if CONFIG_KSHIM_EDL_DISABLE_SDI
     if (target == KSHIM_QCOM_REBOOT_EDL) {
-        /* Disable watchdog debug (1) and SDI (0), as the kernel does before
-         * warm reset. Keep PMIC handling and the selected reset unchanged. */
+        /* Disable watchdog debug (1) and SDI (0) before warm reset. */
         error = scm_call(SCM_DISABLE_SDI, 2, 1, 0, NULL);
         if (error) goto rollback;
     }

@@ -34,11 +34,13 @@ python3 tools/build_runtime.py --config configs/tb323fu_unified_defconfig --out 
 | Y700 四代 / TB322FC | `configs/tb322fc_android_defconfig` | [Android 或 Linux 布局](../../../lenovo-tb322fc/boot/README.md) |
 | Y700 五代 / TB323FU | `configs/tb323fu_unified_defconfig` | [统一内核外置 initramfs](../star-chart-build/README.md) |
 
-两个机型配置都启用 STAR_CHART、简体中文、实体按键、高级操作、设备信息与会话设置。四代关闭调试控制台与启动计时；五代启用启动计时。设置仅对本次启动生效。Linux 与 Android 菜单条目来自所选机型的 manifest 与载荷。
+两个机型配置都启用 STAR_CHART、简体中文、实体按键、高级操作、设备信息与持久化设置。设置保存到机身 UFS 尾部 2 GiB 备份分区内的专用配置区，该配置区须由安装器预先准备。四代关闭调试控制台与启动计时；五代启用启动计时。Linux 与 Android 菜单条目来自所选机型的 manifest 与载荷。
 
 ### 五代外置 initramfs 配置
 
-`configs/tb323fu_unified_defconfig` 是面向外置 initrd Manifest 工作的 TB323FU 配置。它带有共享启动器菜单：仅本次启动生效的设置页、只读的设备信息行，以及自动/手动默认启动行为。会话设置仍只作用于本次启动，从不写入存储。其余选项均保留：STAR_CHART 风格、UI 逆时针旋转 270 度、243712 字节 LVGL 缓冲、无入场动画、带条目详情的简体中文、Android 基座措辞、带 QCOM 重启目标的电源与高级操作、启动计时，以及两个去抖采样的 SPMI 按键；触屏、SMP、UEFI 测试菜单与 QEMU 平台保持关闭。
+`configs/tb323fu_unified_defconfig` 是面向外置 initrd Manifest 工作的 TB323FU 配置。它带有共享启动器菜单：可持久保存的设备选择、默认启动项与语言设置，以及只读的设备信息行。默认启动项可选择“记住上一次启动的系统”。其余选项均保留：STAR_CHART 风格、UI 逆时针旋转 270 度、243712 字节 LVGL 缓冲、无入场动画、带条目详情的简体中文、Android 基座措辞、带 QCOM 重启目标的电源与高级操作、启动计时，以及两个去抖采样的 SPMI 按键；触屏、SMP、UEFI 测试菜单与 QEMU 平台保持关闭。
+
+Linux 安装了 `armada-reboot-edl` 工具后，可用 `sudo armada-reboot-edl --check` 检查入口，再用 `sudo armada-reboot-edl --reboot` 请求启动器进入 9008。五代的电脑端仍须加载配套八文件引导才能访问存储。
 
 ```sh
 python3 tools/build_runtime.py --config configs/tb323fu_unified_defconfig --out build/tb323fu-unified
@@ -173,6 +175,14 @@ python3 tools/build_hdk8250.py --out build/hdk8250
 这条命令生成一个不捆绑 UEFI 的 4 MiB Manifest 运行时。显示布局在启动时探测。上面的独立打包工具只有在读取板卡内存保留区并校验用户提供的 UEFI 包时才需要显式 `--aloha`；它们不会重建或编辑该工作区。
 
 独立 copy-in 会校验其暂存页不与传入载荷重叠，并在写入前拒绝不安全的加载器位置。`tests/boot_emulation.py` 检查重叠与不相交复制、原始参数、栈、BSS、重定位、两种 UEFI 选择以及该拒绝路径。
+
+## TB323FU Android 触摸兼容
+
+`tb323fu_unified_defconfig` 明确启用 `CONFIG_KSHIM_TB323FU_ANDROID_TOUCH_4M8=y`。重编 runtime 时须保留该配置；仅保留兼容函数源码或依赖默认关闭的 CMake 试验开关，都不能保证 Android 交接路径会调用它。
+
+处理仅对实际识别为 TB323FU 的原厂 Android 启动路径生效：校验 NVT 节点及原频率后，就地将控制器的 `spi-max-frequency` 从 19.2 MHz 调为 4.8 MHz，并在交接前清理所改 DT 的缓存。它不修改 Linux DT，也不替代 UFS 设置保存或启动器自身触摸驱动。
+
+`android_touch_profile_test` 使用真实 Kconfig 和 `main.c` 预处理结果检查五代正常构建保留调用、四代配置不启用该处理；`android_touch_spi_trial_test` 检查 DT 修改范围与拒绝条件。签名与真机触摸复测步骤见[五代引导构建说明](../star-chart-build/README.md#android-触摸兼容与回归)。
 
 ## 许可证
 

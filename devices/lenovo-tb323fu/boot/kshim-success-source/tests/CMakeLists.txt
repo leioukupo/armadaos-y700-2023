@@ -489,3 +489,10 @@ target_sources(storage_settings_export_test PRIVATE "${KSHIM_ROOT}/src/dt/storag
 kshim_test(storage_settings_native_test storage_settings_native_test.c
     "${KSHIM_ROOT}/src/arch/arm64/storage_settings_native.c")
 target_compile_definitions(storage_settings_native_test PRIVATE CONFIG_KSHIM_SETTINGS_SAVE_TEST=1)
+
+kshim_test(android_touch_spi_trial_test android_touch_spi_trial_test.c
+    "${KSHIM_ROOT}/src/dt/tb323fu_android_touch.c")
+target_link_libraries(android_touch_spi_trial_test PRIVATE kshim_dt)
+add_test(NAME android_touch_profile_test
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/android_touch_profile_test.py"
+        --cc "${CMAKE_C_COMPILER}" --crdk-include "${CRDK_ROOT}/Include")
