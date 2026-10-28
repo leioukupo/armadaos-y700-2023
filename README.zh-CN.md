@@ -98,15 +98,16 @@ Linux 内核和设备树随 boot 镜像打包；内核启动后，根据所选�
 
 ## 开发与构建
 
-系统镜像沿用 ArmadaOS 的 bootc 构建基础；统一内核位于 [`packages/kernel/`](packages/kernel/)，机型配置位于 [`system_files/usr/lib/armada/devices/`](system_files/usr/lib/armada/devices/)，设备专用资源和引导说明位于 [`devices/`](devices/)。软件包开发说明见 [`packages/`](packages/README.md)，构建命令使用 [just](https://just.systems/) 和 [Podman](https://podman.io/)：
+系统镜像沿用 ArmadaOS 的 bootc 构建基础；统一内核位于 [`packages/kernel/`](packages/kernel/)，机型配置位于 [`system_files/usr/lib/armada/devices/`](system_files/usr/lib/armada/devices/)，设备专用资源和引导说明位于 [`devices/`](devices/)。软件包开发、缓存与发布配置见 [`packages/`](packages/README.md)。构建命令使用 [just](https://just.systems/) 和 [Podman](https://podman.io/)，并依赖 [skopeo](https://github.com/containers/skopeo) 解析已发布的软件包，请先安装：
 
 ```console
 $ git submodule update --init --recursive
 $ just check     # 运行测试并检查构建配方格式
-$ just packages  # 构建镜像使用的软件包
 $ just build     # 构建 bootc 容器镜像；尚非可直接刷入平板的完整镜像
 $ just --list    # 查看开发命令
 ```
+
+`just build` 会在内容哈希一致时复用注册表中已构建的软件包，通常无需先构建软件包。仅在修改了某个软件包或该包缺失时运行 `just package NAME`，它只构建指定的本地软件包；`just packages` 则会主动重建所有软件包。
 
 ### Freedom Control
 

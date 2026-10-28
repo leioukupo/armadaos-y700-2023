@@ -123,16 +123,22 @@ System images use ArmadaOS's bootc build foundation. The shared kernel lives in
 [`packages/kernel/`](packages/kernel/), hardware profiles in
 [`system_files/usr/lib/armada/devices/`](system_files/usr/lib/armada/devices/),
 and device-specific resources and boot guides in [`devices/`](devices/).
-Package development is documented in [`packages/`](packages/README.md). Recipes use
-[just](https://just.systems/) and [Podman](https://podman.io/):
+Package development, cache, and publication setup are documented in
+[`packages/`](packages/README.md). Recipes use [just](https://just.systems/) and
+[Podman](https://podman.io/); published packages are resolved with
+[skopeo](https://github.com/containers/skopeo), so it needs to be installed.
 
 ```console
 $ git submodule update --init --recursive
 $ just check     # Run the test suite and check recipe formatting
-$ just packages  # Build the packages the image consumes
 $ just build     # Build the bootc container; not a ready-to-flash tablet image
 $ just --list    # List development recipes
 ```
+
+`just build` reuses prebuilt packages from the registries when the content hash
+matches, so you normally do not need to build packages first. Run
+`just package NAME` only when you change that package or it is missing; it builds
+one local package. `just packages` intentionally rebuilds every package.
 
 ### Freedom Control
 
