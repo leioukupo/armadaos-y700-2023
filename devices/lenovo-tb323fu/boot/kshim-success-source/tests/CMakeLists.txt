@@ -209,6 +209,11 @@ target_compile_definitions(tb323fu_splash_test PRIVATE
 kshim_test(tb322fc_splash_test tb322fc_splash_test.c)
 target_link_libraries(tb322fc_splash_test PRIVATE kshim_dt)
 
+# TB710FU / SM8650 splash detection (measured register values); builds its
+# DT in-process with libfdt.
+kshim_test(tb710fu_splash_test tb710fu_splash_test.c)
+target_link_libraries(tb710fu_splash_test PRIVATE kshim_dt)
+
 # Parent index cache unit test: wrap fdt_parent_offset to observe cache hits.
 kshim_test(dt_parent_index_test parent_index_test.c)
 target_link_libraries(dt_parent_index_test PRIVATE kshim_dt)
