@@ -122,7 +122,9 @@ $ bash /PATH/TO/repo/build_files/build-edl-package.sh \
 
 把同一个部署包的所有分卷放在同一文件夹中，不要改名，并在匹配的安装器中选择 `.zip.001`；安装器会从该文件夹读取连续编号的分卷，不读取 `parts.json`。
 
-部署包把源码记录为来源信息：一个准确、非全零的 40 位小写提交 SHA，读取时不裁剪、不做规范化。请使用源码读取逻辑恰好接受这种来源形式、且机型注册覆盖包内机型的安装器。已发布的 0.6.5 二进制尚未用此次读取逻辑变更重新构建；在分发依赖该逻辑的部署包之前，需要先构建出采用修订后读取逻辑与机型注册的新安装器。
+部署包把源码记录为来源信息：一个准确、非全零的 40 位小写提交 SHA，读取时不裁剪、不做规范化。[Windows 安装器](https://github.com/mydanyi/armadaos-freedom-installer)负责校验该来源信息，并选择与目标平板匹配的型号配置。
+
+安装器使用本机已校验的恢复资料生成平板专属的 2 GiB `ARMADA_BACKUP`，它不属于共用 Linux 镜像。安装器 0.7.4 新建恢复镜像采用 v3，在最后 64 KiB 留出启动设置区域；各型号能否读取或保存设置仍由各自的启动器实现决定。详见[恢复区约定](https://github.com/mydanyi/armadaos-freedom-installer/blob/main/docs/package-contract.md)。
 
 原有的 SD 卡镜像及其手动安装流程仍然可用。
 
