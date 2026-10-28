@@ -223,6 +223,7 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0528-ASoC-qcom-sc8280xp-suspend-the-card-and-its-streams.patch
 0529-ASoC-qdsp6-q6apm-fail-the-graph-open-when-the-DSP-rejects-it.patch
 0530-ASoC-qdsp6-release-AudioReach-graphs-across-system-suspend.patch
+0531-ASoC-core-wait-for-the-deferred-resume-before-unbinding-the-card.patch
 0532-hwmon-pwm-fan-optionally-run-the-fan-while-charging-in-s2idle.patch
 
 # ============== SM8750 Elden (Lenovo Legion Y700 Gen4 / TB322FC) display ==============

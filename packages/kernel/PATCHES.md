@@ -642,6 +642,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/0530-ASoC-qdsp6-release-AudioReach-graphs-across-system-suspend.patch`
   source: armada
   upstream: local
+- `patches/0531-ASoC-core-wait-for-the-deferred-resume-before-unbinding-the-card.patch`
+  source: armada
+  upstream: local
+  notes: Fixes the use-after-free reachable through `0530` when the ADSP restarts during resume (issue #17); the ASoC core change itself is not specific to any board.
 - `patches/0532-hwmon-pwm-fan-optionally-run-the-fan-while-charging-in-s2idle.patch`
   source: armada
   upstream: local
