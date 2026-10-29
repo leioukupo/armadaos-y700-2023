@@ -73,7 +73,7 @@ KERNEL_OVERLAYS=lenovo-tb710fu bash packages/kernel/scripts/build-kernel.sh
 | `novatek/novatek_nt36532_fw.bin` | 本机 `/vendor/firmware/novatek_ts_fw.bin` |
 | `aw882xx_acf.bin` | 功放配置，来自 tb710fu-linux 的 board-root |
 | `qcom/sm8650/Lenovo-TB710FU-tplg.bin` | tb710fu-linux 的 AudioReach 拓扑，其中唯一的 I2S 输出模块（`0x0700100A`）需改为 TDM 输出模块（`0x0700100E`） |
-| `ath12k/WCN7850/hw2.0/{amss,board-2,m3}.bin` | 镜像自带；`board-2.bin` 含本机一项（`subsystem-device=3378`，取自 linux-firmware） |
+| `ath12k/WCN7850/hw2.0/{amss,board-2,m3}.bin` | 镜像自带；`board-2.bin` 末尾追加了本机一项（`subsystem-device=3378`），数据原样取自 Fedora `atheros-firmware-20261019`（即 linux-firmware），许可为同目录的 [`LICENSE.QualcommAtheros_ath10k`](../../system_files/usr/lib/firmware/ath12k/WCN7850/hw2.0/LICENSE.QualcommAtheros_ath10k)（linux-firmware `WHENCE` 中 `ath12k/WCN7850/hw2.0/board-2.bin` 对应的许可） |
 | `qca/hmtbtfw20.tlv` 等 | linux-firmware（蓝牙） |
 
 提取与修改拓扑的脚本见 [lich-wang/tb710fu-hyperos-steamos](https://github.com/lich-wang/tb710fu-hyperos-steamos)（`tools/collect_firmware.sh`、`tools/patch_tplg.py`）。
