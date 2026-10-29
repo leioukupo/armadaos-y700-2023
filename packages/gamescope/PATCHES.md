@@ -90,3 +90,7 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
 - `patches/0039-wlserver-allow-in-game-touch-gestures.patch`
   source: armada
   notes: The in-game swipe setting defaults on and remains subordinate to the master setting. Every click mode except Disabled supports edge swipes; the Steam UI remains independent of the in-game setting. Menu keys are delivered directly to Steam's X11 focus window so XTest/libei cannot route them to the game. Menu delivery waits for all touch contacts to finish and a short release grace, preserving native game touch across menu transitions. Regressions: `python3 tests/test_in_game_swipes.py` and `python3 tests/test_steam_menu_dispatch.py` (requires Xvfb and X11/XTest development libraries).
+
+- `patches/0042-steamcompmgr-skip-redundant-steam-placeholder.patch`
+  source: armadaos-freedom
+  notes: Avoids reserving or drawing a transparent Steam placeholder when a visible external overlay already exists. Real Steam menus and the no-overlay fallback are preserved. This removes a redundant plane that can force GPU composition on rotated outputs. Regression: `python3 tests/test_steam_overlay_placeholder.py` in the patched source tree.

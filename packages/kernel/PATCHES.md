@@ -1114,3 +1114,12 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: On lenovo,baldur, preserve a public Bluetooth address already configured through MGMT instead of replacing it during the existing 0501 serial-address setup. Other machines retain the existing serial-derived address behavior. The paired startup helper waits for management readiness and confirms the address by reading it back; a request acknowledgement alone is not treated as success.
+
+- `patches/0224-drm-msm-dpu-sm8850-inline-rotation.patch`
+  source: armadaos-freedom
+  upstream: local
+  notes: Adds Kaanapali inline-rotation capabilities, DPU 13 ROT90 register programming, catalog-limited split allocation, rotation-aware clock calculation and the no-pre-downscale bound. Existing SoC catalogs retain their limits.
+- `dts/0201-baldur-panel-orientation.patch`
+  source: armadaos-freedom
+  upstream: local
+  notes: Describes the TB323FU panel orientation after the board DTS files are copied into the kernel tree.
