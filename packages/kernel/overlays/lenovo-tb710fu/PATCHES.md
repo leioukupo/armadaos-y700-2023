@@ -54,9 +54,13 @@ overlay.
   upstream: unknown
   license: GPL-2.0-or-later (the Novatek notice in each file; an SPDX line was added). The repository's [LICENSE](https://github.com/MeteoricmeteorLL/tb710fu-linux/blob/16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3/LICENSE) (section 3) keeps `kernel/sources/` under the kernel's terms.
   notes: Novatek vendor driver as carried by the TB710FU port, moved to nt36532/ (module nt36532_ts) with a clean Makefile; matches only `novatek,nt36532-ts-spi`, so it cannot claim the `novatek,NVT-ts-spi` boards of the NT36536 driver (nt36536_ts), and builds as a module only because the vendor sources share global symbol names with it. Fixed on top of the vendor code: bounds on the /proc/NVTSPI, edge_grid_zone and Pen_ID writes (NVTSPI is now root-only), single_release() for single_open() proc files, no world-writable proc nodes, the Android-only `novatek_ts` platform device dropped (it was unregistered more than once), the pen pressure range changed in place, remove/module-init cleanup, and the TB710FU FW health check run under `ts->lock` and stopped across system suspend. The vendor code's remaining warnings are unchanged.
+- `patches/0202-input-nt36532-scan-for-the-pen-by-default.patch`
+  source: armada
+  upstream: local
+  notes: With `novatek,pen-support` the boot firmware update ends with pen scanning on instead of off (the vendor left it to Android user space); resume and the watchdog recovery restore the same state, and `/proc/support_pen` still overrides it; a failed command is logged. The pen gets a 117 units/mm resolution (32000 x 20000 over 273.5 x 171 mm) so libinput accepts it as a tablet.
 - `dts/sm8650-lenovo-tb710fu-touch.dtso`
   source: armada
-  notes: `novatek,pen-support`, as in the vendor dtbo. The driver registers `NVTCapacitivePen`, but the boot firmware update leaves pen scanning off; user space turns it on with `echo 1 > /proc/support_pen` (root).
+  notes: `novatek,pen-support`, as in the vendor dtbo. The driver registers `NVTCapacitivePen` and, with 0202, scans for the pen from boot.
 
 ## Bluetooth and WiFi
 
@@ -74,7 +78,7 @@ describes both; the Bluetooth address is cleared by the board overlay.
 - `patches/0304-wifi-ath12k-wcn7850-workarounds.patch`
   source: https://github.com/MeteoricmeteorLL/tb710fu-linux/blob/16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3/kernel/patches/TB710FU-full-tree.diff
   upstream: unknown
-  notes: Only what is active on the running unit, gated on lenovo,tb710fu (cached in ath12k_base at allocation, not looked up per packet): CE polling while HTC/WMI wait before the device is registered, firmware log off, STA power save off, hardware-crypto encrypt type. The group-frame IV flags of the original are left out: with the current firmware group frames arrive with their IV (mDNS, DHCP and ARP tested), and mac80211 keeps checking their PN. The periodic CE/DP poller, the A-MPDU refusal, the dedup and reorder switches and the debug counters of the original are left out. board_name is a read-only module parameter; it also names the first regdb lookup, which falls back to the bus name.
+  notes: Only what is active on the running unit, gated on lenovo,tb710fu (cached in ath12k_base at allocation, not looked up per packet): CE polling while HTC/WMI wait before the device is registered, firmware log off, STA power save off, hardware-crypto encrypt type. The group-frame IV flags of the original are left out: with the current firmware group frames arrive with their IV (mDNS, DHCP and ARP tested), and mac80211 keeps checking their PN. The periodic CE/DP poller, the A-MPDU refusal, the dedup and reorder switches and the debug counters of the original are left out. board_name is a read-only module parameter, now only a debug override: the image's WCN7850 board-2.bin carries the TB710FU entry and the name the driver builds by itself (the chip reports board_id 0xff) matches it. When set, it also names the first regdb lookup, which falls back to the bus name.
 
 ## Speakers
 
