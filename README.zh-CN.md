@@ -53,7 +53,7 @@ ArmadaOS Freedom 是基于 [ArmadaOS](https://github.com/armada-os/armada)、由
 
 ## 设备支持
 
-目前适配联想拯救者 Y700 四代与五代，两代共用 Linux **7.2.6** 内核，并分别维护设备树和硬件配置。联想小新 Pad Pro GT（TB710FU，SM8650）通过按需启用的内核 overlay 和共用的 kShimC 启动器支持；它的硬件功能是在 SteamOS 用户空间下验证的，尚未用 ArmadaOS 镜像验证。
+目前适配联想拯救者 Y700 四代与五代，两代共用 Linux **7.2.6** 内核，并分别维护设备树和硬件配置。联想小新 Pad Pro GT（TB710FU，SM8650）使用同一内核和自己的设备树，以及共用的 kShimC 启动器；它的硬件功能已在 SteamOS 用户空间和 ArmadaOS 试跑镜像下验证。
 
 | 设备 | 型号 / SoC | 设备文档 | 已知问题 |
 |---|---|---|---|

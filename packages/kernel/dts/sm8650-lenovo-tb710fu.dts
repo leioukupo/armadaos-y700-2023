@@ -8,7 +8,8 @@
  * 16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3,
  * kernel/sources/arch/arm64/boot/dts/qcom/sm8650-lenovo-tb710fu.dts; that
  * repository's LICENSE (section 3) puts kernel/sources/ under GPL-2.0.
- * Only this header was added; board changes live in the .dtso overlays.
+ * Only this header was added; board changes are in
+ * sm8650-lenovo-tb710fu.dts.patch.
  */
 
 /dts-v1/;

@@ -7,13 +7,13 @@ ArmadaOS Freedom 统一内核与 kShimC 启动菜单对小新 Pad Pro GT 的适�
 | 型号 | TB710FU（小新 Pad Pro GT，3200×2000 120 Hz） |
 | SoC | Qualcomm SM8650（骁龙 8 Gen 3，`qcom,pineapple`） |
 | 设备树标识 | `lenovo,tb710fu`、`qcom,sm8650` |
-| 内核 | ArmadaOS Freedom 统一 Linux 7.2.6 + `lenovo-tb710fu` 内核 overlay |
+| 内核 | ArmadaOS Freedom 统一 Linux 7.2.6（默认构建），DTB `sm8650-lenovo-tb710fu.dtb` |
 | 引导 | kShimC 菜单放在 boot_a，与原厂 Android 共存；Bootloader 未解锁 |
 | 已验证的用户空间 | SteamOS（SteamOS-ARM-Port 的 sm8650 镜像，装在 UFS 上）；**ArmadaOS 镜像尚未在本机验证** |
 
 ## 功能状态
 
-以下为本仓库 `packages/kernel` 加 `lenovo-tb710fu` overlay 构建的内核在本机上的实测结果。
+以下为本仓库 `packages/kernel` 的 TB710FU 内核补丁在本机上的实测结果（测量时这些补丁还以内核 overlay 的形式构建，版本号带 `-armada-tb710fu`；并入统一内核后的设备树与之前逐项相同）。
 
 | 功能 | 当前状态 |
 |---|---|
@@ -41,22 +41,22 @@ ArmadaOS Freedom 统一内核与 kShimC 启动菜单对小新 Pad Pro GT 的适�
 
 ## 内核与启动
 
-TB710FU 的内核支持全部放在按需启用的 overlay [`packages/kernel/overlays/lenovo-tb710fu`](../../packages/kernel/overlays/lenovo-tb710fu/README.md) 中，默认构建不包含它，其它机型的内核不受影响：
+TB710FU 的内核支持在统一内核的默认构建里，与其它机型共用同一个内核包：
 
 ```sh
-KERNEL_OVERLAYS=lenovo-tb710fu bash packages/kernel/scripts/build-kernel.sh
+bash packages/kernel/scripts/build-kernel.sh
 ```
 
-得到的内核版本为 `7.2.6-armada-tb710fu`，启动用的 DTB 为 `dtb/qcom/sm8650-lenovo-tb710fu-kshim.dtb`。overlay 中的代码另外也按 `lenovo,tb710fu`（或专用 compatible）判断：
+启动用的 DTB 为 `dtb/qcom/sm8650-lenovo-tb710fu.dtb`。补丁在 `patches/series` 末尾的 TB710FU 一节，涉及公共驱动的代码都按 `lenovo,tb710fu`（或专用 compatible）判断，其它机型不受影响：
 
-| 部分 | 补丁 | DT overlay |
+| 部分 | 补丁 | 设备树（`dts/sm8650-lenovo-tb710fu.dts.patch`） |
 |---|---|---|
-| 板级、显示、GPU、背光 | `01xx`：SY7758 跟随芯片、NT36532 面板、msm DSI 命令触发口与 ABL 控制器/PHY 状态、DSC 宽度取整、A750 不启用 IFPC | `board`：kShimC framebuffer 模板、GPU 903 MHz、ADSP/CDSP 固件路径、触摸 compatible |
-| 触摸与手写笔 | `0201`：NT36532 SPI 厂商驱动（`novatek,nt36532-ts-spi`） | `touch`：笔 |
-| 蓝牙与 WiFi | `03xx`：DT 蓝牙地址、WCN7850 复位脉冲、ath12k 变通 | — |
-| 扬声器 | `04xx`：上游 TDM 时隙辅助函数（回移植）、q6apm TDM DAI、TDM 输出端点、4 声道上混、`lenovo,tb710fu-sndcard` | `audio`：4 颗 AW882xx 与声卡 |
+| 板级、显示、GPU、背光 | `071x`：SY7758 跟随芯片、NT36532 面板、msm DSI 命令触发口与 ABL 控制器/PHY 状态、DSC 宽度取整、A750 不启用 IFPC | kShimC framebuffer 模板、GPU 903 MHz、ADSP/CDSP 固件路径、触摸 compatible |
+| 触摸与手写笔 | `072x`：NT36532 SPI 厂商驱动（`novatek,nt36532-ts-spi`）、开机打开笔扫描 | 笔 |
+| 蓝牙与 WiFi | `073x`：DT 蓝牙地址、WCN7850 复位脉冲、ath12k 变通 | — |
+| 扬声器 | `074x`：上游 TDM 时隙辅助函数（回移植）、q6apm TDM DAI、TDM 输出端点、4 声道上混、`lenovo,tb710fu-sndcard` | 4 颗 AW882xx 与声卡 |
 
-板级 DTS 取自 MeteoricmeteorLL/tb710fu-linux 的固定提交 `16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3`（该仓库 LICENSE 第 3 节：`kernel/sources/` 适用 GPL-2.0），只加了 SPDX 与来源注释；本项目的改动都写成 `.dtso`，由 fdtoverlay 合成。扬声器功放使用统一构建的 out-of-tree [`aw882xx`](../../packages/kernel/out-of-tree/aw882xx/README.md)（与五代相同的 0x2308 芯片）。
+板级 DTS 取自 MeteoricmeteorLL/tb710fu-linux 的固定提交 `16e800d4f6e5cf4a8517900a9e11eec0ebc91bd3`（该仓库 LICENSE 第 3 节：`kernel/sources/` 适用 GPL-2.0），只加了 SPDX 与来源注释；本项目的改动都在 `dts/sm8650-lenovo-tb710fu.dts.patch` 里。扬声器功放使用统一构建的 out-of-tree [`aw882xx`](../../packages/kernel/out-of-tree/aw882xx/README.md)（与五代相同的 0x2308 芯片）。
 
 引导构建见 [TB710FU 引导说明](boot/README.md)。kShimC 的 TB710FU 支持在共享源码中，全部只在 `qcom,pineapple` 上生效：SM8650 的启动画面读取（ABL 用 4 个 VIG 管线拼接扫描输出）、跳过 size 为 0 的保留内存节点、重启白名单，以及交接前清理只读的 WB 映射；菜单配置为 `configs/tb710fu_android_defconfig`。**TB710FU 的 boot 镜像不能刷到其它机型，反之亦然。**
 
@@ -91,7 +91,7 @@ KERNEL_OVERLAYS=lenovo-tb710fu bash packages/kernel/scripts/build-kernel.sh
   ```
 
   功放音量与 Android 下相同（0x34/0x35 衰减 21 档，0x36/0x37 衰减 11 档）。
-- **手写笔：** overlay 补丁 0202 让驱动开机即打开笔扫描，并给坐标设好分辨率，桌面（KWin/libinput）可以直接使用；`/proc/support_pen` 仍可手动开关。游戏模式下 gamescope 不处理手写笔（tablet-tool）事件，需要另外把笔转成触摸。
+- **手写笔：** 补丁 0721 让驱动开机即打开笔扫描，并给坐标设好分辨率，桌面（KWin/libinput）可以直接使用；`/proc/support_pen` 仍可手动开关。游戏模式下 gamescope 不处理手写笔（tablet-tool）事件，需要另外把笔转成触摸。
 - **PipeWire：** 输出 `alsa_output.platform-sound.pro-output-0`，`audio.format = "S16LE"`、48 kHz、2 声道。建议关闭空闲挂起：每次恢复都会重新启动 4 颗功放，偶尔会锁不上 TDM 时钟。
 
 ## 源码与来源

@@ -22,8 +22,8 @@ python3 tools/build_runtime.py --config configs/tb710fu_android_defconfig --out 
 
 ## 2. 准备 Linux 载荷
 
-- **Image：** `KERNEL_OVERLAYS=lenovo-tb710fu` 构建产物里的 `lib/modules/7.2.6-armada-tb710fu/vmlinuz`（原始 arm64 Image，约 65 MB）。
-- **DTB：** `lib/modules/7.2.6-armada-tb710fu/dtb/qcom/sm8650-lenovo-tb710fu-kshim.dtb`，打包前加上启动参数、initrd 条目号和本机蓝牙地址：
+- **Image：** 内核构建产物里的 `lib/modules/7.2.6/vmlinuz`（原始 arm64 Image，约 65 MB）。
+- **DTB：** `lib/modules/7.2.6/dtb/qcom/sm8650-lenovo-tb710fu.dtb`，打包前加上启动参数、initrd 条目号和本机蓝牙地址：
 
   ```sh
   fdtput -t s linux.dtb /chosen bootargs "console=tty0 loglevel=7 clk_ignore_unused pd_ignore_unused regulator_ignore_unused rdinit=/init"
@@ -62,4 +62,4 @@ python3 avbtool.py extract_public_key --key testkey_rsa4096.pem --output testkey
 
 （不要对 vbmeta.img 用 `--follow_chain_partitions`：它还会去找 recovery、vbmeta_system 等镜像，并用同一把公钥校验，必然报错。）
 
-写入 boot_a 可以在 9008 下用 firehose，也可以在已 root 的 Android 或 Linux 中用 `dd` 写入分区并读回比对。根文件系统中要安装与 Image 版本一致的 `/usr/lib/modules/7.2.6-armada-tb710fu`。出问题时，在菜单中选原厂 Android，或在 9008 下写回 boot_a 备份。
+写入 boot_a 可以在 9008 下用 firehose，也可以在已 root 的 Android 或 Linux 中用 `dd` 写入分区并读回比对。根文件系统中要安装与 Image 版本一致的 `/usr/lib/modules/7.2.6`。出问题时，在菜单中选原厂 Android，或在 9008 下写回 boot_a 备份。

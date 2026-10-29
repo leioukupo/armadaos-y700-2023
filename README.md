@@ -63,9 +63,9 @@ images and OTA integration are still in development.
 
 Current device work covers Lenovo Legion Y700 Gen 4 and Gen 5. Both share a Linux
 **7.2.6** kernel, with separate device trees and hardware configuration. The Lenovo
-Xiaoxin Pad Pro GT (TB710FU, SM8650) is supported by an opt-in kernel overlay
-and the shared kShimC launcher; its hardware is validated with a SteamOS
-userspace, not yet with an ArmadaOS image.
+Xiaoxin Pad Pro GT (TB710FU, SM8650) shares the same kernel with its own device
+tree, and the kShimC launcher; its hardware was validated with a SteamOS
+userspace and an ArmadaOS trial image.
 
 | Device | Model / SoC | Documentation | Known issues |
 |---|---|---|---|
