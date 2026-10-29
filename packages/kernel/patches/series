@@ -315,3 +315,25 @@ v2_20260420_neil_armstrong_arm64_qcom_sm8650_misc_enhancements.patch
 0222-arm64-dts-qcom-kaanapali-describe-ufs-mcq.patch
 0223-Bluetooth-qca-baldur-preserve-configured-address.patch
 0224-drm-msm-dpu-sm8850-inline-rotation.patch
+
+# ============== SM8650 Lenovo Xiaoxin Pad Pro GT (TB710FU) ==============
+# Authored against the full Armada set above, so this section follows all of it.
+0710-dt-bindings-backlight-sy7758-add-follower.patch
+0711-backlight-sy7758-follower-chips.patch
+0712-drm-panel-add-novatek-nt36532.patch
+0713-drm-msm-dsi-bonded-trigger-on-dsi0.patch
+0714-drm-msm-dsi-bootloader-controller-phy-state.patch
+0715-drm-msm-dpu-dsc-width-round-up.patch
+0716-drm-msm-a6xx-a750-without-ifpc.patch
+0720-input-touchscreen-add-nt36532-spi.patch
+0721-input-nt36532-scan-for-the-pen-by-default.patch
+0730-Bluetooth-btqca-dt-bd-address.patch
+0731-power-sequencing-qcom-wcn-reset-pulse.patch
+0732-wifi-ath12k-wcn7850-workarounds.patch
+0740-ASoC-qcom-common-add-DAI-node-TDM-slot-helpers.patch
+0741-ASoC-qcom-common-distinguish-missing-and-invalid-TDM-slots.patch
+0742-ASoC-qcom-q6apm-lpass-dais-add-TDM-DAI-operations.patch
+0743-ASoC-qcom-audioreach-configure-TDM-sink-endpoint.patch
+0744-ASoC-qcom-q6apm-four-speakers.patch
+0745-ASoC-dt-bindings-qcom-sm8250-add-tb710fu-card.patch
+0746-ASoC-qcom-sc8280xp-add-tb710fu-card.patch
