@@ -91,7 +91,7 @@ KERNEL_OVERLAYS=lenovo-tb710fu bash packages/kernel/scripts/build-kernel.sh
   ```
 
   功放音量与 Android 下相同（0x34/0x35 衰减 21 档，0x36/0x37 衰减 11 档）。
-- **手写笔：** 开机时触摸固件更新完成后笔扫描是关的，需要 root 执行 `echo 1 > /proc/support_pen`（例如放在 udev 规则或开机服务里）。
+- **手写笔：** overlay 补丁 0202 让驱动开机即打开笔扫描，并给坐标设好分辨率，桌面（KWin/libinput）可以直接使用；`/proc/support_pen` 仍可手动开关。游戏模式下 gamescope 不处理手写笔（tablet-tool）事件，需要另外把笔转成触摸。
 - **PipeWire：** 输出 `alsa_output.platform-sound.pro-output-0`，`audio.format = "S16LE"`、48 kHz、2 声道。建议关闭空闲挂起：每次恢复都会重新启动 4 颗功放，偶尔会锁不上 TDM 时钟。
 
 ## 源码与来源
