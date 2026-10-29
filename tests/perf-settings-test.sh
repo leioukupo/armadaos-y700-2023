@@ -506,6 +506,25 @@ check("device-env Gen4 explicit-empty little survives",
       gen4_override.get("ARMADA_LITTLE_CORES") == "''")
 check("device-env Gen4 explicit-empty irq survives",
       gen4_override.get("ARMADA_IRQ_CORES") == "''")
+# TB710FU: cpu1 and cpu2 never come online, so the profile replaces the
+# SM8650 defaults (which name them) - as defaults, so overrides still win.
+tb710fu = run_device_env("Lenovo Xiaoxin Pad Pro GT (TB710FU)")
+check("device-env TB710FU little", tb710fu.get("ARMADA_LITTLE_CORES") == "0")
+check("device-env TB710FU big", tb710fu.get("ARMADA_BIG_CORES") == "3-7")
+check("device-env TB710FU prime", tb710fu.get("ARMADA_PRIME_CORES") == "7")
+check("device-env TB710FU irq", tb710fu.get("ARMADA_IRQ_CORES") == "0")
+tb710fu_override = run_device_env("Lenovo Xiaoxin Pad Pro GT (TB710FU)", {
+    "ARMADA_BIG_CORES": "4-7", "ARMADA_PRIME_CORES": "6-7",
+    "ARMADA_LITTLE_CORES": "", "ARMADA_IRQ_CORES": "",
+})
+check("device-env TB710FU custom big survives",
+      tb710fu_override.get("ARMADA_BIG_CORES") == "4-7")
+check("device-env TB710FU custom prime survives",
+      tb710fu_override.get("ARMADA_PRIME_CORES") == "6-7")
+check("device-env TB710FU explicit-empty little survives",
+      tb710fu_override.get("ARMADA_LITTLE_CORES") == "''")
+check("device-env TB710FU explicit-empty irq survives",
+      tb710fu_override.get("ARMADA_IRQ_CORES") == "''")
 thor = run_device_env("AYN Thor")
 check("device-env SM8550 irq littles", thor.get("ARMADA_IRQ_CORES") == "0-2")
 thor_override = run_device_env("AYN Thor", {"ARMADA_IRQ_CORES": ""})
