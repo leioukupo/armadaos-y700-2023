@@ -58,6 +58,15 @@ def format_cpulist(cpus):
 
 
 def online_cpus():
+    # The kernel's online list, not range(cpu_count()): CPU numbers can have
+    # holes (TB710FU has cpu1 and cpu2 offline), and cpu_count() only counts.
+    try:
+        with open("/sys/devices/system/cpu/online") as f:
+            cpus = parse_cpulist(f.read())
+        if cpus:
+            return sorted(set(cpus))
+    except (OSError, ValueError):
+        pass
     return sorted(os.sched_getaffinity(0) | {c for c in range(os.cpu_count() or 1)})
 
 

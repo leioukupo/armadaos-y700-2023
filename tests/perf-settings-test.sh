@@ -102,6 +102,14 @@ ALL = ap.online_cpus()
 # --- armada_perf: cpulist grammar -------------------------------------------
 check("parse order preserved", ap.parse_cpulist("7,3-5") == [7, 3, 4, 5])
 check("format roundtrip", ap.format_cpulist([3, 4, 5, 7]) == "3-5,7")
+# online_cpus follows the kernel's online list, holes included (TB710FU has
+# cpu1 and cpu2 offline), and falls back when sysfs is unavailable.
+import unittest.mock as _mock
+with _mock.patch("builtins.open", _mock.mock_open(read_data="0,3-7\n")):
+    check("online cpus keep holes", ap.online_cpus() == [0, 3, 4, 5, 6, 7])
+with _mock.patch("builtins.open", side_effect=OSError):
+    check("online cpus fallback", ap.online_cpus() ==
+          sorted(os.sched_getaffinity(0) | set(range(os.cpu_count() or 1))))
 for bad in ("3,3", "a", "5-3", "1-x"):
     try:
         ap.parse_cpulist(bad)
