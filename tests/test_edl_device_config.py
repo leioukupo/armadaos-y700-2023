@@ -68,7 +68,30 @@ TB323FU_PROFILE = {
     "diagnosticMode": "verbose",
 }
 
-REAL_PROFILES = {"TB322FC": TB322FC_PROFILE, "TB323FU": TB323FU_PROFILE}
+
+TB320FC_PROFILE = {
+    "displayName": "Lenovo Legion Y700 Gen 2",
+    "compatible": {"soc": "SM8475", "device": "capep"},
+    "dtb": "qcom/sm8475-lenovo-tb320fc.dtb",
+    "required": ["lenovo,tb320fc", "qcom,sm8475"],
+    "forbidden": [
+        "lenovo,elden",
+        "lenovo,tb322fc",
+        "lenovo,baldur",
+        "lenovo,tb323fu",
+        "qcom,sm8750",
+        "qcom,sm8850",
+        "qcom,kaanapali",
+    ],
+    "extraArgs": [],
+    "runtimeConfig": "configs/tb320fc_android_defconfig",
+    "runtimeCmakeArgs": ["-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=OFF"],
+    "bootPartitionBytes": BOOT_PARTITION_BYTES,
+    "diagnosticMode": "rd-break",
+}
+
+REAL_PROFILES = {"TB320FC": TB320FC_PROFILE, "TB322FC": TB322FC_PROFILE,
+                "TB323FU": TB323FU_PROFILE}
 
 TEST_THIRD_PROFILE = {
     "displayName": "Synthetic Test Device",
@@ -264,7 +287,7 @@ class RealConfigurationTests(TempConfigMixin, unittest.TestCase):
 
     def test_document_keeps_json_lists_and_model_order(self):
         document = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(list(document["profiles"]), ["TB322FC", "TB323FU"])
+        self.assertEqual(list(document["profiles"]), ["TB320FC", "TB322FC", "TB323FU"])
         for name, profile in document["profiles"].items():
             with self.subTest(profile=name):
                 for field in ("required", "forbidden", "extraArgs", "runtimeCmakeArgs"):
@@ -276,7 +299,8 @@ class RealConfigurationTests(TempConfigMixin, unittest.TestCase):
         configuration = HELPER.load_configuration(CONFIG_PATH)
         self.assertEqual(configuration["schemaVersion"], SCHEMA_VERSION)
         self.assertEqual(configuration["runtimeSource"], RUNTIME_SOURCE)
-        self.assertEqual(list(configuration["profiles"]), ["TB322FC", "TB323FU"])
+        self.assertEqual(list(configuration["profiles"]), ["TB320FC", "TB322FC", "TB323FU"])
+        self.assertEqual(configuration["profiles"]["TB320FC"], TB320FC_PROFILE)
         self.assertEqual(configuration["profiles"]["TB322FC"], TB322FC_PROFILE)
         self.assertEqual(configuration["profiles"]["TB323FU"], TB323FU_PROFILE)
 
@@ -301,7 +325,7 @@ class SelectionTests(unittest.TestCase):
         self.configuration = HELPER.load_configuration(CONFIG_PATH)
 
     def test_default_selects_every_model_in_configuration_order(self):
-        self.assertEqual(HELPER.select_models(self.configuration), ("TB322FC", "TB323FU"))
+        self.assertEqual(HELPER.select_models(self.configuration), ("TB320FC", "TB322FC", "TB323FU"))
 
     def test_single_model_selection(self):
         self.assertEqual(HELPER.select_models(self.configuration, ["TB323FU"]), ("TB323FU",))
@@ -400,7 +424,7 @@ class CliTests(TempConfigMixin, unittest.TestCase):
     def test_models_lists_every_selected_id(self):
         code, stdout, _stderr = _run_cli(["--config", self._config(), "--format", "models"])
         self.assertEqual(code, 0)
-        self.assertEqual(stdout.splitlines(), ["TB322FC", "TB323FU"])
+        self.assertEqual(stdout.splitlines(), ["TB320FC", "TB322FC", "TB323FU"])
 
     def test_models_lists_a_synthetic_third_profile(self):
         config = self._synthetic_third_config()
@@ -451,6 +475,7 @@ class CliTests(TempConfigMixin, unittest.TestCase):
         self.assertEqual(
             stdout.splitlines(),
             [
+                "TB320FC\tconfigs/tb320fc_android_defconfig",
                 "TB322FC\tconfigs/tb322fc_android_defconfig",
                 "TB323FU\tconfigs/tb323fu_unified_defconfig",
             ],
@@ -553,7 +578,9 @@ class CliTests(TempConfigMixin, unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(
             stdout.splitlines(),
-            ["Lenovo Legion Y700 Gen 4 (TB322FC)", "Lenovo Legion Y700 Gen 5 (TB323FU)"],
+            ["Lenovo Legion Y700 Gen 2 (TB320FC)",
+             "Lenovo Legion Y700 Gen 4 (TB322FC)",
+             "Lenovo Legion Y700 Gen 5 (TB323FU)"],
         )
 
     def test_readme_includes_a_synthetic_third_profile(self):

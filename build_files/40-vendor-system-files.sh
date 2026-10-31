@@ -32,6 +32,9 @@ sha256sum -c <<'EOF'
 EOF
 
 # kShim boot tools: the packer/unpacker and the v4/AVB scripts they feed.
+# The kshim-tools package is not published for this build, so the tools are
+# only vendored when the stage actually provides them.
+if [ -d /packages/kshim-tools ]; then
 for tool in MultiBootKernelPatcher UnpackTool repack_boot_v4.py avbtool.py; do
     install -Dpm 0755 "/packages/kshim-tools/${tool}" \
         "/usr/libexec/armada/kshim-tools/${tool}"
@@ -40,6 +43,7 @@ install -Dpm 0644 /packages/kshim-tools/licenses/packer-LICENSE \
     /usr/share/licenses/armada-kshim-tools/packer-LICENSE
 install -Dpm 0644 /packages/kshim-tools/licenses/inih-LICENSE.txt \
     /usr/share/licenses/armada-kshim-tools/inih-LICENSE.txt
+fi
 
 # TB323FU audio. Everything here is public and inert on other boards: the UCM
 # verb and topology are only used by the LENOVOTB323FU card, the udev rule and

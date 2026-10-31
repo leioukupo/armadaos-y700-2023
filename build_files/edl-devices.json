@@ -2,6 +2,34 @@
   "schemaVersion": 1,
   "runtimeSource": "devices/lenovo-tb323fu/boot/kshim-success-source",
   "profiles": {
+    "TB320FC": {
+      "displayName": "Lenovo Legion Y700 Gen 2",
+      "compatible": {
+        "soc": "SM8475",
+        "device": "capep"
+      },
+      "dtb": "qcom/sm8475-lenovo-tb320fc.dtb",
+      "required": [
+        "lenovo,tb320fc",
+        "qcom,sm8475"
+      ],
+      "forbidden": [
+        "lenovo,elden",
+        "lenovo,tb322fc",
+        "lenovo,baldur",
+        "lenovo,tb323fu",
+        "qcom,sm8750",
+        "qcom,sm8850",
+        "qcom,kaanapali"
+      ],
+      "extraArgs": [],
+      "runtimeConfig": "configs/tb320fc_android_defconfig",
+      "runtimeCmakeArgs": [
+        "-DKSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=OFF"
+      ],
+      "bootPartitionBytes": 100663296,
+      "diagnosticMode": "rd-break"
+    },
     "TB322FC": {
       "displayName": "Lenovo Legion Y700 Gen 4",
       "compatible": {

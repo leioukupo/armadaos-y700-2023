@@ -1,0 +1,12 @@
+# SM8475 (Cape) tablets. Board compatibles from packages/kernel/dts, identity
+# from system_files/usr/lib/armada/devices/*.conf.
+
+[[device]]
+dt.compatible = "lenovo,tb320fc"
+device        = "lenovo_tb320fc"
+variant       = "TB320FC"
+friendly_name = "Lenovo Legion Y700 Gen 2"
+
+# armada-powerd owns the governor and serves CpuScaling1 over remotes.d.
+[cpu_scaling]
+driver = "none"

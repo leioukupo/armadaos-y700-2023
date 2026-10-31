@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euxo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/gh-fetch.sh"
 
 # Copy dist from the image build stage, not the source tree. The destination
 # keeps the historical armada-control directory name; the source defaults to the
@@ -49,11 +50,11 @@ install -d -m 0755 /usr/share/decky-loader
 decky_loader_tmp="$(mktemp)"
 decky_service_tmp="$(mktemp)"
 cleanup_decky_tmp() {
-    rm -f "${decky_loader_tmp}" "${decky_service_tmp}"
+    rm -f "${decky_loader_tmp}" "${decky_service_tmp}" "${decky_loader_tmp}.service"
 }
 trap cleanup_decky_tmp EXIT
 
-curl --retry 12 --retry-delay 10 -fL -o "${decky_loader_tmp}" "${decky_url}"
+armada_fetch "${decky_loader_tmp}" "${decky_url}"
 printf '%s  %s\n' "${decky_digest#sha256:}" "${decky_loader_tmp}" | sha256sum -c -
 python3 - "${decky_loader_tmp}" <<'PY'
 import struct
@@ -74,9 +75,9 @@ PY
 install -m 0755 "${decky_loader_tmp}" /usr/share/decky-loader/PluginLoader
 printf '%s\n' "${decky_version}" > /usr/share/decky-loader/.loader.version
 
-curl --retry 12 --retry-delay 10 -fsSL "${decky_service_url}" |
-    sed 's#${HOMEBREW_FOLDER}#/var/home/armada/homebrew#g' \
-        >"${decky_service_tmp}"
+armada_fetch "${decky_loader_tmp}.service" "${decky_service_url}"
+sed 's#${HOMEBREW_FOLDER}#/var/home/armada/homebrew#g' "${decky_loader_tmp}.service" \
+    >"${decky_service_tmp}"
 install -D -m 0644 "${decky_service_tmp}" /etc/systemd/system/plugin_loader.service
 
 systemctl enable armada-decky-sync.service

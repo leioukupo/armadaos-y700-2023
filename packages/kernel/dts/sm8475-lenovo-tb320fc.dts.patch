@@ -1,0 +1,43 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] arm64: dts: qcom: sm8475-lenovo-tb320fc: adapt the board
+ file to the kShim handoff
+
+The XBL loader populates the DDR map in the runtime (Android) DTB and
+kShim rebuilds the payload memory node from it, so the placeholder
+needs no patching.  The Gen2 board has no fixed splash or ramoops
+reservation in the saved DTB, so there is nothing to disable.
+
+Detach the DPU from the application SMMU and drop the inert
+qcom,preserve-boot-mappings property: mainline has no SM8475 boot-
+mapping handoff, and the DPU runs identity-mapped like the sm8450
+board file.
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8475-lenovo-tb320fc.dts b/arch/arm64/boot/dts/qcom/sm8475-lenovo-tb320fc.dts
+--- a/arch/arm64/boot/dts/qcom/sm8475-lenovo-tb320fc.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-lenovo-tb320fc.dts
+@@ -448,7 +448,13 @@
+ };
+ 
+ &mdss_mdp {
+-	iommus = <&apps_smmu 0x800 0x2>;
++	/*
++	 * kShim handoff: run the DPU without the application SMMU, like the
++	 * upstream sm8450 board file.  The vendor tree attaches SID 0x800, but
++	 * mainline has no SM8475 boot-mapping handoff (the elden patch only
++	 * covers the SM8750 DPU), so v1 uses identity mapping.
++	 */
++	/delete-property/ iommus;
+ };
+ 
+ &mdss_dsi0 {
+@@ -598,7 +604,7 @@
+ };
+ 
+ &apps_smmu {
+-	qcom,preserve-boot-mappings;
++	/* No mainline consumer on SM8475; the property is dropped here. */
+ };
+ 
+ &tlmm {
+-- 
+2.53.0

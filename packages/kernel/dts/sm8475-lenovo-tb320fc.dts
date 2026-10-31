@@ -1,0 +1,893 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Lenovo Legion Y700 Gen 2 (TB320FC)
+ *
+ * SoC: SM8475 (Qualcomm "Cape"/"CapeP"), first generation Snapdragon 8+.
+ *
+ * This board file is reconstructed from the vendor device tree captured
+ * from a live device:
+ *   base:    vendor_boot DTB vb_02 ("CapeP SoC")
+ *   overlay: dtbo_14 ("Cape MTP with PM8008")
+ *
+ * Display: Novatek NT36523N, 1600x2560 FHD+ (144 Hz "hyper" capable),
+ * bonded dual MIPI-DSI (2 x 800 pixels), 3 lanes C-PHY, video mode,
+ * DSC 8bpc (800x20 slices), external Kinetic KTZ8866 backlight.
+ *
+ * Touch: Novatek NVT36xxx SPI (pen capable) on SPI4 (se4).
+ *
+ * PMICs: SPMI0 pmk8350 / pm8350 / pm8350c / pm8350b / pmr735a / pmr735b /
+ * pm8450.  The i2c5 PM8008 is a haptics PMIC (AWINIC actuators) and has
+ * no mainline consumer yet; it is left disabled.
+ *
+ * Wi-Fi: the QCA6490 is the WCN6855 package (PCIe0, PCI ID 17cb:1103);
+ * mainline ath11k + PCI pwrctrl power it through the wcn6855-pmu power
+ * sequencer, and Bluetooth (same package) is hci_qca over uart20.
+ * External PMU rails come from the pm8350-family PMIC at SPMI 3
+ * (smps10/11/12 + ldo5) and the pmr735a smps2 at SPMI 4; the PM8450 at
+ * SPMI 7 provides the 1.2 V panel extvdd (its ldo1).  Firmware
+ * (ath11k/WCN6855 hw2.0 + hw2.1, qca/hpnv20|hpnv21) ships in the
+ * rootfs; the stock Qualcomm board-2.bin already carries the 17cb:0108
+ * and 1dac board keys, so no per-board board-data rebuild is needed.
+ *
+ * Panel supply mapping (vendor "dsi_panel_pwr_supply_extvdd"), decoded
+ * from the live base DTB regulator tree:
+ *   vddio   = pm8350c L2  (1.95 V / 1.98 V)
+ *   vci     = pm8350c L7  (3.0 V / 3.544 V)
+ *   extvdd  = pm8350b L1  (1.2 V / 1.296 V)
+ *   lab/ibb = "display_panel_avdd" 5.5 V fixed rail gated by GPIO186
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include "sm8475.dtsi"
+#include "pm8350.dtsi"
+#include "pm8350b.dtsi"
+#include "pm8350c.dtsi"
+#include "pm8450.dtsi"
+#include "pmk8350.dtsi"
+#include "pmr735a.dtsi"
+#include "pmr735b.dtsi"
+
+/ {
+	model = "Lenovo Legion Y700 Gen2";
+	compatible = "lenovo,tb320fc", "qcom,sm8475";
+	chassis-type = "tablet";
+
+	aliases {
+		serial0 = &uart7;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/*
+	 * The XBL loader populates the DDR map at boot; the kShim handoff
+	 * code rebuilds this node from the live Android DTB before Linux
+	 * starts, so no static map is encoded here.
+	 */
+	memory {
+		device_type = "memory";
+		reg = <0 0 0 0>;
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * Panel AVDD: 5.5 V fixed rail gated by GPIO186 (vendor
+	 * "display_gpio_regulator@1").  The vendor "lab" and "ibb" panel
+	 * supplies both tap this rail; it is on from boot.
+	 */
+	display_panel_avdd: regulator-display-panel-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "display_panel_avdd";
+		regulator-min-microvolt = <5500000>;
+		regulator-max-microvolt = <5500000>;
+		regulator-enable-ramp-delay = <233>;
+		gpio = <&tlmm 186 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	wcn6855-pmu {
+		compatible = "qcom,wcn6855-pmu";
+
+		pinctrl-0 = <&bt_en_state>, <&wlan_en_state>, <&xo_clk_state>;
+		pinctrl-names = "default";
+
+		wlan-enable-gpios = <&tlmm 80 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+		swctrl-gpios = <&tlmm 82 GPIO_ACTIVE_HIGH>;
+		xo-clk-gpios = <&tlmm 204 GPIO_ACTIVE_HIGH>;
+
+		vddio-supply = <&pm8350b_s10>;
+		vddaon-supply = <&pmr735a_s2>;
+		vddpmu-supply = <&pm8350b_s11>;
+		vddpmumx-supply = <&pmr735a_s2>;
+		vddpmucx-supply = <&pm8350b_s11>;
+		vddrfa0p95-supply = <&pm8350b_s11>;
+		vddrfa1p3-supply = <&pm8350b_s12>;
+		vddrfa1p9-supply = <&pm8350c_s1>;
+		vddpcie1p3-supply = <&pm8350b_s12>;
+		vddpcie1p9-supply = <&pm8350c_s1>;
+
+		/*
+		 * PMU internal LDOs: phandle targets only (no mainline
+		 * PMU regulator driver); the wifi@0 / bluetooth nodes
+		 * reference them so the pwrseq match (vddaon-supply
+		 * grandparent == this node) binds the consumers.
+		 */
+		regulators {
+			vreg_pmu_rfa_cmn_0p8: ldo0 {
+				regulator-name = "vreg_pmu_rfa_cmn_0p8";
+			};
+
+			vreg_pmu_aon_0p8: ldo1 {
+				regulator-name = "vreg_pmu_aon_0p8";
+			};
+
+			vreg_pmu_wlcx_0p8: ldo2 {
+				regulator-name = "vreg_pmu_wlcx_0p8";
+			};
+
+			vreg_pmu_wlmx_0p8: ldo3 {
+				regulator-name = "vreg_pmu_wlmx_0p8";
+			};
+
+			vreg_pmu_btcmx_0p8: ldo4 {
+				regulator-name = "vreg_pmu_btcmx_0p8";
+			};
+
+			vreg_pmu_pcie_1p8: ldo5 {
+				regulator-name = "vreg_pmu_pcie_1p8";
+			};
+
+			vreg_pmu_pcie_0p9: ldo6 {
+				regulator-name = "vreg_pmu_pcie_0p9";
+			};
+
+			vreg_pmu_rfa_0p8: ldo7 {
+				regulator-name = "vreg_pmu_rfa_0p8";
+			};
+
+			vreg_pmu_rfa_1p2: ldo8 {
+				regulator-name = "vreg_pmu_rfa_1p2";
+			};
+
+			vreg_pmu_rfa_1p7: ldo9 {
+				regulator-name = "vreg_pmu_rfa_1p7";
+			};
+		};
+	};
+
+	regulators-1 {
+		compatible = "qcom,pm8350c-rpmh-regulators";
+		qcom,pmic-id = "c";
+
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vph_pwr>;
+		vdd-s3-supply = <&vph_pwr>;
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
+		vdd-s6-supply = <&vph_pwr>;
+		vdd-s7-supply = <&vph_pwr>;
+		vdd-s8-supply = <&vph_pwr>;
+		vdd-s9-supply = <&vph_pwr>;
+		vdd-s10-supply = <&vph_pwr>;
+
+		vdd-l1-l12-supply = <&vreg_bob_c>;
+		vdd-l2-l8-supply = <&vreg_bob_c>;
+		vdd-l3-l4-l5-l7-l13-supply = <&vreg_bob_c>;
+		vdd-l6-l9-l11-supply = <&vreg_bob_c>;
+		vdd-l10-supply = <&pm8350b_s12>;
+		vdd-bob-supply = <&vph_pwr>;
+
+		vreg_bob_c: bob {
+			regulator-name = "vreg_bob_c";
+			regulator-min-microvolt = <3008000>;
+			regulator-max-microvolt = <3960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+		};
+
+		/* UFS PHY VDDA: 0.88 V (vendor uses pm8350b L5). */
+		vreg_l1c_0p88: ldo1 {
+			regulator-name = "vreg_l1c_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* Panel vddio: 1.95 V, managed by the panel driver. */
+		vreg_l2c_1p95: ldo2 {
+			regulator-name = "vreg_l2c_1p95";
+			regulator-min-microvolt = <1950000>;
+			regulator-max-microvolt = <1980000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* DSI1 PHY VDDS: 0.8 V. */
+		vreg_l3c_0p8: ldo3 {
+			regulator-name = "vreg_l3c_0p8";
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* UFS VCC: 2.5 V (vendor uses pm8350b L7). */
+		vreg_l5c_2p5: ldo5 {
+			regulator-name = "vreg_l5c_2p5";
+			regulator-min-microvolt = <2500000>;
+			regulator-max-microvolt = <2500000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* DSI0 PHY VDDS: 0.8 V. */
+		vreg_l6c_0p8: ldo6 {
+			regulator-name = "vreg_l6c_0p8";
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* Panel vci (video interface): 3.0-3.544 V, on from boot. */
+		vreg_l7c_3p0: ldo7 {
+			regulator-name = "vreg_l7c_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3544000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* DSI0 VDDA: 1.2 V. */
+		vreg_l9c_1p2: ldo9 {
+			regulator-name = "vreg_l9c_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* UFS VCCQ: 1.2 V. */
+		vreg_l11c_1p2: ldo11 {
+			regulator-name = "vreg_l11c_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* DSI1 VDDA: 1.2 V. */
+		vreg_l12c_1p2: ldo12 {
+			regulator-name = "vreg_l12c_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* UFS PHY VDDA_PLL: 1.2-1.304 V (vendor ldoc10; the PCIE
+		 * PHY PLL shares this rail). */
+		vreg_l13c_1p2: ldo13 {
+			regulator-name = "vreg_l13c_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		/* WLAN RFA1 1.9-2.024 V (vendor smpc1). */
+		pm8350c_s1: smps1 {
+			regulator-name = "pm8350c_s1";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2024000>;
+		};
+
+		/* PCIE PHY PLL / UFS PHY VDDA_PLL: 1.2-1.304 V (vendor ldoc10). */
+		pm8350c_l10: ldo10 {
+			regulator-name = "pm8350c_l10";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-2 {
+		compatible = "qcom,pm8450-rpmh-regulators";
+		qcom,pmic-id = "h";
+
+		/*
+		 * Panel extvdd: 1.2-1.304 V.  The vendor names this rail
+		 * "pm8350b_l1" but its RPMh resource (ldod1) belongs to
+		 * the PM8450 at SPMI 7, not to the pm8350-family PMIC at
+		 * SPMI 3 (whose ldo1 runs at 0.912 V for the USB3/DP
+		 * QMP PHY PLL).  On from boot.
+		 */
+		vdd-l1-supply = <&vph_pwr>;
+
+		vreg_l1h_1p2: ldo1 {
+			regulator-name = "vreg_l1h_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
+
+	/*
+	 * The pm8350-family PMIC at SPMI 3 (the vendor "pm8350b"):
+	 * smps10/11/12 feed the QCA6490 PMU, ldo5 feeds the PCIE and
+	 * UFS PHY VDDA.  The same PMIC's ldo1 (0.912 V, USB3/DP QMP
+	 * PHY PLL) is left at the bootloader default.
+	 */
+	regulators-0 {
+		compatible = "qcom,pm8350-rpmh-regulators";
+		qcom,pmic-id = "b";
+
+		vdd-s10-supply = <&vph_pwr>;
+		vdd-s11-supply = <&vph_pwr>;
+		vdd-s12-supply = <&vph_pwr>;
+		vdd-l3-l5-supply = <&pm8350b_s11>;
+
+		/* WLAN VDDIO: 1.8 V fixed (vendor smpb10). */
+		pm8350b_s10: smps10 {
+			regulator-name = "pm8350b_s10";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		/* WLAN digital core: 0.966-1.17 V (vendor smpb11). */
+		pm8350b_s11: smps11 {
+			regulator-name = "pm8350b_s11";
+			regulator-min-microvolt = <382000>;
+			regulator-max-microvolt = <1170000>;
+		};
+
+		/* WLAN RFA2: 1.35-2.04 V (vendor smpb12). */
+		pm8350b_s12: smps12 {
+			regulator-name = "pm8350b_s12";
+			regulator-min-microvolt = <1224000>;
+			regulator-max-microvolt = <2040000>;
+		};
+
+		/* PCIE/UFS PHY VDDA: 0.88 V (vendor ldob5). */
+		pm8350b_l5: ldo5 {
+			regulator-name = "pm8350b_l5";
+			regulator-min-microvolt = <720000>;
+			regulator-max-microvolt = <958000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-3 {
+		compatible = "qcom,pmr735a-rpmh-regulators";
+		qcom,pmic-id = "e";
+
+		/* WLAN AON: 0.5-1.04 V (vendor smpe2), on from boot. */
+		vdd-s2-supply = <&vph_pwr>;
+
+		pmr735a_s2: smps2 {
+			regulator-name = "pmr735a_s2";
+			regulator-min-microvolt = <500000>;
+			regulator-max-microvolt = <1040000>;
+			regulator-always-on;
+		};
+	};
+
+	gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+
+		key-volume-up {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&pm8350_gpios 6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+
+	thermal-zones {
+		cpu-0-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_0_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_0_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-1-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_1_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_1_passive>;
+					cooling-device = <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-2-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_2_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_2_passive>;
+					cooling-device = <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-3-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_3_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_3_passive>;
+					cooling-device = <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-4-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_4_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_4_passive>;
+					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-5-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_5_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_5_passive>;
+					cooling-device = <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-6-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_6_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_6_passive>;
+					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpu-7-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				cpu_7_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_7_passive>;
+					cooling-device = <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		gpu-thermal {
+			polling-delay-passive = <100>;
+
+			trips {
+				gpu_passive: passive {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu_passive>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+	};
+
+	/*
+	 * The PM8008 on i2c5 (se5) is a haptics PMIC for the AWINIC
+	 * actuators; there is no mainline consumer yet, so both i2c
+	 * channels stay disabled until a driver lands.
+	 */
+
+};
+
+&spmi_bus {
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_mdp {
+	iommus = <&apps_smmu 0x800 0x2>;
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l9c_1p2>;
+
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	qcom,master-dsi;
+
+	status = "okay";
+
+	panel_nt36523n: panel@0 {
+		reg = <0>;
+		compatible = "lenovo,tb320fc-nt36523n";
+
+		reset-gpios = <&tlmm 0 GPIO_ACTIVE_LOW>;
+		vddio-supply = <&vreg_l2c_1p95>;
+
+		pinctrl-0 = <&panel_reset_active>, <&panel_te_active>;
+		pinctrl-1 = <&panel_reset_suspend>;
+		pinctrl-names = "default", "sleep";
+
+		backlight = <&ktz8866>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				panel_in_0: endpoint {
+					remote-endpoint = <&mdss_dsi0_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				panel_in_1: endpoint {
+					remote-endpoint = <&mdss_dsi1_out>;
+				};
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2>;
+	remote-endpoint = <&panel_in_0>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l6c_0p8>;
+	phy-type = <PHY_TYPE_CPHY>;
+	/* Vendor "PHY TIMINGS REVISION YK" values from the nt36523n C-PHY dtsi. */
+	qcom,cphy-timing-ctrl = [00 00 00 00 15 1d 06 19 07 02 04 00 00 00];
+	status = "okay";
+};
+
+&mdss_dsi1 {
+	vdda-supply = <&vreg_l12c_1p2>;
+
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	/* DSI1 is the slave link; it uses the DSI0 PLLs. */
+	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,
+				 <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>;
+	status = "okay";
+};
+
+&mdss_dsi1_out {
+	data-lanes = <0 1 2>;
+	remote-endpoint = <&panel_in_1>;
+};
+
+&mdss_dsi1_phy {
+	vdds-supply = <&vreg_l3c_0p8>;
+	phy-type = <PHY_TYPE_CPHY>;
+	qcom,cphy-timing-ctrl = [00 00 00 00 15 1d 06 19 07 02 04 00 00 00];
+	status = "okay";
+};
+
+&i2c2 {
+	ktz8866: ktz8866_bkl@11 {
+		compatible = "kinetic,ktz8866";
+		reg = <0x11>;
+
+		bkl,hwen-gpio = <&tlmm 62 GPIO_ACTIVE_HIGH>;
+		bkl,enp-gpio = <&tlmm 61 GPIO_ACTIVE_HIGH>;
+		bkl,enn-gpio = <&tlmm 65 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-0 = <&bkl_bias_active>;
+		pinctrl-1 = <&bkl_bias_suspend>;
+		pinctrl-names = "default", "sleep";
+
+		default-brightness = <128>;
+		max-brightness = <255>;
+	};
+};
+
+&spi4 {
+	status = "okay";
+
+	novatek@0 {
+		compatible = "novatek,NVT-ts-spi";
+		reg = <0>;
+
+		spi-max-frequency = <9600000>;
+
+		novatek,reset-gpio = <&tlmm 20 GPIO_ACTIVE_HIGH>;
+		novatek,irq-gpio = <&tlmm 21 GPIO_ACTIVE_LOW>;
+
+		novatek,pen-support;
+		novatek,stylus-resol-double;
+	};
+};
+
+&uart7 {
+	status = "okay";
+};
+
+&uart20 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,wcn6855-bt";
+
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn_0p8>;
+		vddaon-supply = <&vreg_pmu_aon_0p8>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p8>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p8>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+
+		max-speed = <3200000>;
+	};
+};
+
+&pcie0 {
+	status = "okay";
+};
+
+&pcieport0 {
+	wifi@0 {
+		compatible = "pci17cb,1103";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn_0p8>;
+		vddaon-supply = <&vreg_pmu_aon_0p8>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p8>;
+		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
+		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p8-supply = <&vreg_pmu_rfa_1p7>;
+	};
+};
+
+&pcie0_phy {
+	vdda-phy-supply = <&pm8350b_l5>;
+	vdda-pll-supply = <&pm8350c_l10>;
+	status = "okay";
+};
+
+&ufs_mem_hc {
+	status = "okay";
+
+	vcc-supply = <&vreg_l5c_2p5>;
+	vcc-max-microamp = <1100000>;
+	vccq-supply = <&vreg_l11c_1p2>;
+	vccq-max-microamp = <1200000>;
+};
+
+&ufs_mem_phy {
+	status = "okay";
+
+	vdda-phy-supply = <&pm8350b_l5>;
+	vdda-pll-supply = <&pm8350c_l10>;
+};
+
+&pon_pwrkey {
+	linux,code = <KEY_POWER>;
+	status = "okay";
+};
+
+&pon_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+	status = "okay";
+};
+
+&apps_smmu {
+	qcom,preserve-boot-mappings;
+};
+
+&tlmm {
+	avdd_reg_en: avdd-reg-en-state {
+		pins = "gpio186";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-none;
+	};
+
+	panel_reset_active: panel-reset-active-state {
+		pins = "gpio0";
+		function = "gpio";
+		drive-strength = <16>;
+		output-high;
+		bias-none;
+	};
+
+	panel_reset_suspend: panel-reset-suspend-state {
+		pins = "gpio0";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+		bias-pull-down;
+	};
+
+	panel_te_active: panel-te-active-state {
+		pins = "gpio86";
+		function = "gpio";
+		drive-strength = <2>;
+		input-enable;
+		bias-pull-down;
+	};
+
+	bkl_bias_active: bkl-bias-active-state {
+		pins = "gpio61", "gpio65";
+		function = "gpio";
+		drive-strength = <16>;
+		output-high;
+		bias-none;
+	};
+
+	bkl_bias_suspend: bkl-bias-suspend-state {
+		pins = "gpio61", "gpio65";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+		bias-pull-down;
+	};
+
+	nvt_ts_active: nvt-ts-active-state {
+		pins = "gpio20", "gpio21";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-up;
+		input-enable;
+	};
+
+	/*
+	 * QCA6490 module control lines (vendor gpio80/81/82/204).  The
+	 * pwrseq driver owns the values; the states define pin
+	 * direction and the off-state pull.
+	 */
+	wlan_en_state: wlan-en-state {
+		pins = "gpio80";
+		function = "gpio";
+		drive-strength = <16>;
+		output-low;
+		bias-pull-down;
+	};
+
+	bt_en_state: bt-en-state {
+		pins = "gpio81";
+		function = "gpio";
+		drive-strength = <16>;
+		output-low;
+		bias-pull-down;
+	};
+
+	xo_clk_state: xo-clk-state {
+		pins = "gpio204";
+		function = "gpio";
+		drive-strength = <16>;
+		output-low;
+		bias-pull-down;
+	};
+};

@@ -145,6 +145,7 @@ CONFIG_RMI4_F12=y
 CONFIG_RMI4_F30=y
 CONFIG_TOUCHSCREEN_SYNAPTICS_DSX=m
 CONFIG_TOUCHSCREEN_NOVATEK_NVT36XXX_SPI=m # Lenovo Y700 Gen4 (TB322FC)
+CONFIG_TOUCHSCREEN_NVT36XXX_HOSTDL_SPI=m  # Lenovo Y700 Gen2 (TB320FC)
 
 # ============== LEDs / RGB ==============
 CONFIG_LEDS_HTR3212=y
@@ -292,6 +293,41 @@ CONFIG_SECURITY_SELINUX=y
 CONFIG_BPF_SYSCALL=y
 CONFIG_CGROUP_BPF=y
 
+# ============== SM8475 (Lenovo Y700 Gen2 TB320FC; mainline drivers are the SM8450 set) ==============
+CONFIG_SM_GCC_8450=y
+CONFIG_SM_DISPCC_8450=y
+CONFIG_SM_GPUCC_8450=y
+CONFIG_SM_CAMCC_8450=y
+CONFIG_SM_VIDEOCC_8450=y
+CONFIG_INTERCONNECT_QCOM_SM8450=y
+CONFIG_BACKLIGHT_KTZ8866=y                  # TB320FC panel backlight (I2C 0x11)
+# QCA6490 Wi-Fi (WCN6855 package): built-in, not modular.  The
+# pwrseq-qcom-wcn power-on sequence must complete before the chip's
+# PCIe enumeration, and the stage-1 RAM image has no module tree; =y
+# is the deterministic choice (matches x13s / hdk / liuqin firstboot).
+# The rest of the stack follows: mac80211/cfg80211/rfkill built-in,
+# PCI pwrctrl+pwrseq for the module, hci_qca over uart20 for BT.
+CONFIG_ATH11K_DEBUG=y
+CONFIG_MAC80211=y
+CONFIG_CFG80211=y
+CONFIG_RFKILL=y
+CONFIG_PCI_PWRCTRL=y
+CONFIG_PCI_PWRCTRL_PWRSEQ=y
+CONFIG_BT=y
+# ...and its dependency set spelled out: with BT left at the defconfig
+# =m, the implicit 'depends on BT' (drivers/bluetooth sits inside
+# 'menuconfig BT') caps every tristate child (BT_HCIUART, BT_QCA) at =m;
+# and BT itself is 'depends on RFKILL || !RFKILL', so rfkill (above)
+# must be built-in for BT=y to survive.  Same pattern as the liuqin
+# firstboot config.
+CONFIG_TTY=y
+CONFIG_NVMEM=y
+CONFIG_SERIAL_DEV_BUS=y
+CONFIG_SERIAL_QCOM_GENI=y
+CONFIG_BT_HCIUART=y
+CONFIG_BT_HCIUART_QCA=y
+# PINCTRL_SM8450 defaults to y on ARCH_QCOM; the QMP PHYs come from the
+# shared PHY_QCOM_QMP* set above.
 # ============== SM8650 (AYANEO Pocket S2, KONKR Pocket FIT) ==============
 # No SM_DISPCC_8650: display clock is the combined dispcc-sm8550.c (=y above).
 CONFIG_SM_GCC_8650=y
@@ -322,8 +358,8 @@ CONFIG_CHARGER_HL7139=y                   # MANGMI Pocket Max + Air Y Pro
 CONFIG_BATTERY_QCOM_FG=y
 CONFIG_SENSORS_PWM_FAN=m
 CONFIG_POWER_SEQUENCING_QCOM_WCN=y
-CONFIG_ATH11K=m
-CONFIG_ATH11K_PCI=m
+CONFIG_ATH11K=y
+CONFIG_ATH11K_PCI=y
 CONFIG_LEDS_GROUP_MULTICOLOR=y
 CONFIG_SND_SOC_SM8250=m
 CONFIG_SND_SOC_WCD938X=m
@@ -346,7 +382,7 @@ CONFIG_SM_VIDEOCC_8750=y
 CONFIG_SM_TCSRCC_8750=y
 CONFIG_PINCTRL_SM8750=y
 CONFIG_INTERCONNECT_QCOM_SM8750=y
-CONFIG_BT_QCA=m
+CONFIG_BT_QCA=y
 
 CONFIG_DEVFREQ_GOV_PERFORMANCE=y
 

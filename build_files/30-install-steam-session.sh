@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euxo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/gh-fetch.sh"
 
 # Patched Turnip includes the Mesa #14656 VM_BIND fix.
 dnf5 -y install --setopt=install_weak_deps=False /packages/mesa/mesa-*.fc44.armada.*.rpm
@@ -57,7 +58,7 @@ dnf5 -y install --setopt=install_weak_deps=False \
 # which doesn't exist on aarch64. winetricks itself is only a shell script.
 WINETRICKS_VER="20260125"
 WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b"
-curl --retry 3 --retry-delay 2 -fsSL -o /usr/bin/winetricks \
+armada_fetch /usr/bin/winetricks \
     "https://raw.githubusercontent.com/Winetricks/winetricks/${WINETRICKS_VER}/src/winetricks"
 echo "${WINETRICKS_SHA256}  /usr/bin/winetricks" | sha256sum -c -
 chmod 0755 /usr/bin/winetricks
@@ -88,7 +89,11 @@ dnf5 -y install --setopt=install_weak_deps=False /packages/fex/fex-emu-*.rpm
 mkdir -p /usr/share/fex-emu/RootFS
 ARCH_ROOTFS_URL="https://rootfs.fex-emu.gg/ArchLinux/2026-08-11/ArchLinux.sqsh"
 ARCH_ROOTFS_SHA256="5d0c1a38590c68e5c2597c2c8a26d2f80170b1b738c857d63e1cdadada5f5f2a"
-curl --retry 3 --retry-delay 2 -fsSL -o /usr/share/fex-emu/RootFS/ArchLinux.sqsh "${ARCH_ROOTFS_URL}"
+# BunnyCDN origin is reachable; the guard only stops a stalled transfer so
+        # --retry can restart it instead of hanging the whole image build.
+curl --retry 3 --retry-delay 2 --connect-timeout 20 \
+    --speed-limit 200000 --speed-time 60 \
+    -fsSL -o /usr/share/fex-emu/RootFS/ArchLinux.sqsh "${ARCH_ROOTFS_URL}"
 echo "${ARCH_ROOTFS_SHA256}  /usr/share/fex-emu/RootFS/ArchLinux.sqsh" | sha256sum -c -
 # Steam's FEX compat tool needs the manifest the rootfs ships; a bump to a
 # rootfs without one would otherwise fail only at x86 game launch.
@@ -131,8 +136,15 @@ STEAM_HOME="${STEAM_BOOTSTRAP_HOME}/.local/share/Steam"
 rm -rf "${STEAM_BOOTSTRAP_HOME}"
 mkdir -p "${STEAM_BOOTSTRAP_HOME}"
 tar --zstd -xf /packages/steam-bootstrap/steam-bootstrap.tar.zst -C "${STEAM_BOOTSTRAP_HOME}"
-python3 /ctx/build_files/verify-steam-bootstrap.py \
-    "${STEAM_HOME}/package/steam_client_steamdeck_stable_linuxarm64.installed" "${STEAM_HOME}"
+# The bootstrap tar carries one package manifest per client branch; verify
+# whichever branch the artifact actually ships instead of pinning a name.
+steam_manifest="$(find "${STEAM_HOME}/package" -maxdepth 1 -type f \
+    -name "steam_client_*.installed" -print -quit)"
+[ -n "${steam_manifest}" ] || {
+    echo "steam bootstrap: no package manifest found in ${STEAM_HOME}/package" >&2
+    exit 1
+}
+python3 /ctx/build_files/verify-steam-bootstrap.py "${steam_manifest}" "${STEAM_HOME}"
 # A fresh install always starts at the Steam OOBE; existing users get the
 # marker removed at boot once their real registry/account shows completion.
 touch /etc/steamos-oobe-image
@@ -145,8 +157,8 @@ PROTON_TAR="${PROTON_ARCHIVE_NAME}.tar.xz"
 PROTON_URL="https://github.com/CachyOS/proton-cachyos/releases/download/cachyos-${PROTON_VER}/${PROTON_TAR}"
 PROTON_SHA512_URL="https://github.com/CachyOS/proton-cachyos/releases/download/cachyos-${PROTON_VER}/${PROTON_ARCHIVE_NAME}.sha512sum"
 
-curl --retry 12 --retry-delay 10 -fsSL -o "/tmp/${PROTON_TAR}" "${PROTON_URL}"
-curl --retry 12 --retry-delay 10 -fsSL -o "/tmp/${PROTON_ARCHIVE_NAME}.sha512sum" "${PROTON_SHA512_URL}"
+armada_fetch "/tmp/${PROTON_TAR}" "${PROTON_URL}"
+armada_fetch "/tmp/${PROTON_ARCHIVE_NAME}.sha512sum" "${PROTON_SHA512_URL}"
 cd /tmp
 sha512sum -c "${PROTON_ARCHIVE_NAME}.sha512sum"
 

@@ -1,0 +1,87 @@
+diff --git a/src/core/main.c b/src/core/main.c
+index 9ea02f4..a614ae8 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -260,6 +260,38 @@ static void sync_image_cache(uint64_t address, uint64_t size)
+     asm volatile("dsb ish\nisb" : : : "memory");
+ }
+ 
++/* The Gen2 (TB320FC/SM8475) packer patches the base image entry site
++ * itself: word zero becomes a branch to the attached shim and the
++ * original prologue is preserved only in the manifest backup slots.
++ * Classic images keep a branch at word one and are entered at offset
++ * four.  The protocol is chosen from the image contents so a single
++ * runtime serves both layouts; for the Gen2 layout the five backed-up
++ * slots are restored first and the entry is word zero. */
++static bool word_is_branch(uint32_t word)
++{
++    return (word & 0xfc000000u) == 0x14000000u ||
++           (word & 0xfc000000u) == 0x94000000u;
++}
++
++static uint64_t base_image_entry_offset(uint64_t linux_base,
++                                        const MANIFEST *manifest)
++{
++    const uint32_t word0 = *(const uint32_t *)(linux_base);
++    const uint32_t word1 = *(const uint32_t *)(linux_base + 4);
++    const uint32_t backup_word0 =
++        (uint32_t)manifest->header.base_image.instructions;
++    const bool gen2 = word_is_branch(word0) && !word_is_branch(word1) &&
++                      !word_is_branch(backup_word0);
++    if (!gen2)
++        return 4;
++    const uint64_t *backup =
++        (const uint64_t *)&manifest->header.base_image.instructions;
++    for (uint64_t offset = 0; offset <= 0x30; offset += 0x08)
++        *(uint64_t *)(linux_base + offset) = backup[offset / 8];
++    sync_image_cache(linux_base, 0x40);
++    return 0;
++}
++
+ #if KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
+ /* The Android tree stays at ABL's original address. Make the one-cell update
+  * visible at PoC before the original kernel changes its cache/MMU state. */
+@@ -1329,7 +1361,9 @@ int kshim_main(
+ 
+                     printf("Memory checkpoint m30:reject=report\n");
+                     prepare_boot();
+-                    arm64_boot_linux(linux_base, device_tree_address, 4);
++                    arm64_boot_linux(linux_base, device_tree_address,
++                                     base_image_entry_offset(linux_base,
++                                                             view.manifest));
+                 } else {
+                     if (rn > 0 && rn < (int)sizeof(report)) {
+                         printf("Memory checkpoint %s\n", report);
+@@ -1337,7 +1371,9 @@ int kshim_main(
+                     }
+ 
+                     prepare_boot();
+-                    arm64_boot_linux(linux_base, device_tree_address, 4);
++                    arm64_boot_linux(linux_base, device_tree_address,
++                                     base_image_entry_offset(linux_base,
++                                                             view.manifest));
+                 }
+             }
+ #endif
+@@ -1355,7 +1391,9 @@ int kshim_main(
+                 remember_selected_boot(1,0);
+ #endif
+                 prepare_boot();
+-                arm64_boot_linux(linux_base, device_tree_address, 4);
++                arm64_boot_linux(linux_base, device_tree_address,
++                                 base_image_entry_offset(linux_base,
++                                                         view.manifest));
+             }
+         }
+ #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
+@@ -1382,7 +1420,9 @@ int kshim_main(
+ 
+         if (entry->type == MF_ENTRY_TYPE_LINUX) {
+             uint64_t entry_offset = entry->flags & MF_ENTRY_FLAG_BASE_IMAGE
+-                ? 4 : entry->entry_offset;
++                ? base_image_entry_offset(linux_base + entry->offset,
++                                          view.manifest)
++                : entry->entry_offset;
+             printf("Booting ");
+             print_entry_name(entry);
+             printf(" at 0x%lx with DTB at 0x%lx\n",

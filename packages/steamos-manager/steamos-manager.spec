@@ -21,6 +21,7 @@ Source2:        sm8250.toml
 Source3:        sm8550.toml
 Source4:        sm8650.toml
 Source5:        sm8750.toml
+Source6:        sm8475.toml
 Patch1:         0001-Initial-support-for-Steam-Frame.patch
 Patch2:         0002-Factor-out-platform-profiles-into-its-own-manager.patch
 Patch3:         0003-Add-a-custom-platform-profile-mechanism.patch
@@ -69,7 +70,7 @@ rm -f %{buildroot}%{_datadir}/steamos-manager/devices/*.toml
 install -Dpm0644 %{SOURCE1} %{buildroot}%{_datadir}/steamos-manager/platform.toml
 install -dm0755 %{buildroot}%{_datadir}/steamos-manager/devices
 install -pm0644 -t %{buildroot}%{_datadir}/steamos-manager/devices \
-    %{SOURCE2} %{SOURCE3} %{SOURCE4} %{SOURCE5}
+    %{SOURCE2} %{SOURCE3} %{SOURCE4} %{SOURCE5} %{SOURCE6}
 
 # SteamOS-only: we run SDDM, and orca isn't installed even though libspeechd is
 rm -f %{buildroot}%{_unitdir}/sddm.service.d/reset-oneshot-boot.conf
