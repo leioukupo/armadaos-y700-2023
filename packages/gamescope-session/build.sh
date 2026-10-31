@@ -20,11 +20,11 @@ cat >/etc/rpm/macros.armada <<EOF
 %vendor Armada
 EOF
 
-git clone https://github.com/terrapkg/packages.git /tmp/packages
+if [ -n "$(ls -A /tmp/pkgsrc 2>/dev/null)" ]; then rm -rf /tmp/packages; cp -a /tmp/pkgsrc /tmp/packages; echo USING_LAN_PKGSRC; else git clone https://github.com/terrapkg/packages.git /tmp/packages; fi
 
 cd /tmp/packages
 
-git checkout ${TERRA_COMMIT}
+if [ -d /tmp/packages/.git ]; then git checkout ${TERRA_COMMIT}; else echo USING_TARBALL_NO_GIT; fi
 
 PKG=anda/games/gamescope-session
 SPEC="${PKG}/gamescope-session.spec"
