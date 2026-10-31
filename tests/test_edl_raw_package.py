@@ -1,7 +1,8 @@
 #!/usr/bin/python3
-"""Contract tests for the direct EDL raw producer and firstboot guard.
+"""IG001 contract tests for the direct EDL raw producer and firstboot guard.
 
-These cover the producer contract and synthetic filesystem layouts.
+These are real contract and synthetic-filesystem tests. Every producer/guard
+API is a NotImplementedError stub in IG001, so RED here must be genuine NI.
 The filesystem pair case uses a real loop/btrfs pair; missing container
 capability is reported as an environment error, never skipped.
 """

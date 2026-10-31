@@ -1,6 +1,6 @@
 use crate::{
-    ChannelBackend, ColorCorrection, GcmHidBackend, LightingBackend, MulticolorBackend,
-    SerialBackend,
+    ChannelBackend, ColorCorrection, LightingBackend, MulticolorBackend, SerialBackend,
+    SerialProtocol,
 };
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 
 const CONFIG_PATH: &str = "/etc/armada/rgb.json";
 const DEV_ROOT: &str = "/dev";
-const HIDRAW_ROOT: &str = "/sys/class/hidraw";
 const MODEL_PATH: &str = "/sys/firmware/devicetree/base/model";
 const PROFILE_VERSION: u32 = 1;
 const PROFILES_PATH: &str = "/usr/share/armada-rgb/profiles.json";
@@ -36,10 +35,23 @@ struct DeviceProfile {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum BackendProfile {
-    Gcmhid { vendor: String, product: String, strips: Vec<u8> },
-    Serial { device: String },
-    Channels { targets: Vec<String> },
-    Multicolor { targets: Vec<String> },
+    Serial {
+        device: String,
+        protocol: ProfileSerialProtocol,
+    },
+    Channels {
+        targets: Vec<String>,
+    },
+    Multicolor {
+        targets: Vec<String>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ProfileSerialProtocol {
+    Micro2,
+    PocketS2,
 }
 
 pub(crate) fn from_env() -> (PathBuf, LightingBackend) {
@@ -58,13 +70,9 @@ pub(crate) fn from_env() -> (PathBuf, LightingBackend) {
     let dev_root: PathBuf = env::var_os("ARMADA_RGB_DEV_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| DEV_ROOT.into());
-    let hidraw_root: PathBuf = env::var_os("ARMADA_RGB_HIDRAW_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| HIDRAW_ROOT.into());
 
-    let backend: LightingBackend =
-        load_backend(&profiles_path, &model_path, sysfs_root, dev_root, hidraw_root)
-            .unwrap_or_else(|error| LightingBackend::Unsupported(format!("{error:#}")));
+    let backend: LightingBackend = load_backend(&profiles_path, &model_path, sysfs_root, dev_root)
+        .unwrap_or_else(|error| LightingBackend::Unsupported(format!("{error:#}")));
     (config_path, backend)
 }
 
@@ -73,7 +81,6 @@ fn load_backend(
     model_path: &Path,
     root: PathBuf,
     dev_root: PathBuf,
-    hidraw_root: PathBuf,
 ) -> Result<LightingBackend> {
     let input: String = fs::read_to_string(profiles_path)
         .with_context(|| format!("read RGB profiles from {}", profiles_path.display()))?;
@@ -98,16 +105,16 @@ fn load_backend(
         .transpose()?;
 
     match profile.backend {
-        BackendProfile::Gcmhid { vendor, product, strips } if !strips.is_empty() => {
-            Ok(LightingBackend::GcmHid(
-                GcmHidBackend::new(hidraw_root, dev_root, &vendor, &product, strips)
+        BackendProfile::Serial { device, protocol } => {
+            let serial_protocol = match protocol {
+                ProfileSerialProtocol::Micro2 => SerialProtocol::Micro2,
+                ProfileSerialProtocol::PocketS2 => SerialProtocol::PocketS2,
+            };
+            Ok(LightingBackend::Serial(
+                SerialBackend::new(dev_root, device, serial_protocol)
                     .with_correction(profile.correction),
             ))
         }
-        BackendProfile::Gcmhid { .. } => bail!("device profile has no RGB strips"),
-        BackendProfile::Serial { device } => Ok(LightingBackend::Serial(
-            SerialBackend::new(dev_root, device).with_correction(profile.correction),
-        )),
         BackendProfile::Channels { targets } if !targets.is_empty() => {
             Ok(LightingBackend::Channels(
                 ChannelBackend::new(root, targets).with_correction(profile.correction),
@@ -156,6 +163,7 @@ mod tests {
         let catalog: ProfileCatalog = parse_catalog(include_str!("../profiles.json")).unwrap();
         for model in [
             "AYANEO Pocket MICRO 2",
+            "AYANEO Pocket S2",
             "AYN Odin 2",
             "AYN Odin 2 Portal",
             "AYN Thor",
@@ -177,37 +185,6 @@ mod tests {
                 .iter()
                 .any(|profile| profile.models.iter().any(|candidate| candidate == model)));
         }
-    }
-
-    #[test]
-    fn packaged_profiles_have_exact_gen4_legion_g9_entry() {
-        let catalog: ProfileCatalog = parse_catalog(include_str!("../profiles.json")).unwrap();
-        let gen4: Vec<&DeviceProfile> = catalog
-            .profiles
-            .iter()
-            .filter(|profile| {
-                profile
-                    .models
-                    .iter()
-                    .any(|model| model == "Lenovo Legion Y700 Gen4")
-            })
-            .collect();
-        assert_eq!(gen4.len(), 1);
-        assert_eq!(gen4[0].models.len(), 1);
-        assert_eq!(gen4[0].models[0], "Lenovo Legion Y700 Gen4");
-        match &gen4[0].backend {
-            BackendProfile::Gcmhid {
-                vendor,
-                product,
-                strips,
-            } => {
-                assert_eq!(vendor, "3537");
-                assert_eq!(product, "1134");
-                assert_eq!(strips, &vec![1u8, 2u8]);
-            }
-            _ => panic!("Gen4 Legion G9 profile must use the gcmhid backend"),
-        }
-        assert!(gen4[0].correction.is_none());
     }
 
     #[test]

@@ -17,7 +17,11 @@ URL:            %{forgeurl}
 Source0:        %{forgeurl}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Patch1:         0001-fix-gamepad-share-raw-input.patch
 Patch2:         0002-fix-force-feedback-reset-effects-when-replacing-targets.patch
-Patch3:         0003-feat-Hardware-Support-Add-AYN-Thor-Lite.patch
+Patch4:         0004-fix-Hardware-Support-KONKR-Pocket-FIT-MCU-system-buttons.patch
+Patch5:         0005-feat-ssc-qualcomm-sensor-core-support.patch
+Patch6:         0006-feat-ssc-gyro-auto-calibration.patch
+Patch7:         0007-feat-ssc-device-enablement.patch
+Patch8:         0008-feat-ssc-suspend-source-devices-across-system-sleep.patch
 
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -30,7 +34,6 @@ BuildRequires:  pkgconf-pkg-config
 BuildRequires:  systemd-devel
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  libevdev-devel
-BuildRequires:  libiio-devel
 BuildRequires:  openssl-devel
 BuildRequires:  dbus-devel
 BuildRequires:  git-core
@@ -68,7 +71,7 @@ make install PREFIX=%{buildroot}%{_prefix}
 %systemd_postun_with_restart inputplumber.service
 
 %files
-%license LICENSE
+%license LICENSE LICENSE-GamepadMotionHelpers
 %doc README.md
 %{_bindir}/inputplumber
 %{_datadir}/dbus-1/system.d/%{dbusname}.conf
@@ -76,6 +79,7 @@ make install PREFIX=%{buildroot}%{_prefix}
 %{_datadir}/polkit-1/rules.d/%{dbusname}.rules
 %{_prefix}/lib/systemd/system/inputplumber.service
 %{_prefix}/lib/systemd/system/inputplumber-suspend.service
+%{_prefix}/lib/modules-load.d/inputplumber-hrtimer.conf
 %{_prefix}/lib/udev/hwdb.d/*.hwdb
 %{_prefix}/lib/udev/rules.d/*.rules
 %dir %{_datadir}/inputplumber

@@ -29,5 +29,7 @@ to a commit, or `armada` if it is original; a URL source with no `notes` is verb
   notes: Corrects the KONKR Pocket FIT Elite quirk from `OUTPUT_MM` to
   `FAKE_OUTPUT_MM`, which is the variable forwarded to Gamescope for SteamUI
   physical-size scaling.
-- `patches/0009-fix-konkr-fit-refresh-rates.patch`
+- `patches/0009-Keep-the-lease-companion-locked-until-Steam-reports-in.patch`
+  source: armada
+- `patches/0010-add-retroid-pocket-duo-quirks.patch`
   source: armada

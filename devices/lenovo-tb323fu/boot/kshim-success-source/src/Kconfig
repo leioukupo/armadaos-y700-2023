@@ -84,14 +84,6 @@ config KSHIM_SETTINGS_SAVE_TEST
         settings pair is written, once, with AUTO/internal Linux/Chinese.
         Existing settings and unprovisioned backups are left untouched.
 
-config KSHIM_TB323FU_ANDROID_TOUCH_4M8
-    bool "Preserve TB323FU Android touch SPI compatibility"
-    default n
-    help
-        Keep the original Android NVT controller at 4.8 MHz on TB323FU.
-        Applies only to the detected board's original Android device tree;
-        does not enable touch input in the launcher or change Linux trees.
-
 config KSHIM_BOOT_TIMING
     bool "Record boot stages in the selected Linux device tree"
     default n
@@ -106,9 +98,11 @@ config KSHIM_EDL_DISABLE_SDI
     depends on KSHIM_QCOM_REBOOT
     default n
     help
-        Disable watchdog debug and SDI before EDL reset on TB322FC and
-        TB323FU. Firmware support is checked before changing the download
-        cookie; preparation failure restores its previous value.
+        Disable watchdog debug and SDI before EDL reset, as in the SM8750
+        kernel. The TB322FC profile enables this after a verified software
+        EDL read-and-return cycle. Firmware support is required before any
+        cookie write; preparation failure restores the old download cookie.
+        Other reset targets and the read-only probe remain unchanged.
 
 config KSHIM_EDL_PROBE
     bool "Report read-only Qualcomm EDL reset capabilities to Linux"

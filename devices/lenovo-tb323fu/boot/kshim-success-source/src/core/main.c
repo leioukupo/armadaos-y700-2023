@@ -260,8 +260,7 @@ static void sync_image_cache(uint64_t address, uint64_t size)
     asm volatile("dsb ish\nisb" : : : "memory");
 }
 
-#if (defined(CONFIG_KSHIM_TB323FU_ANDROID_TOUCH_4M8) && \
-     CONFIG_KSHIM_TB323FU_ANDROID_TOUCH_4M8) || KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
+#if KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
 /* The Android tree stays at ABL's original address. Make the one-cell update
  * visible at PoC before the original kernel changes its cache/MMU state. */
 static void clean_android_trial_fdt(const void *fdt)
@@ -833,13 +832,11 @@ int kshim_main(
         if ((entry->flags & MF_ENTRY_FLAG_BASE_IMAGE) &&
             !(entry->flags & MF_ENTRY_FLAG_HAS_DEVICE_TREE_BLOB)) {
             dt_probe_report((void *)runtime_fdt, "m14:base=selected");
-#if (defined(CONFIG_KSHIM_TB323FU_ANDROID_TOUCH_4M8) && \
-     CONFIG_KSHIM_TB323FU_ANDROID_TOUCH_4M8) || KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
-            if (runtime_fdt && device_info.board == DEVICE_BOARD_TB323FU &&
-                entry->type == MF_ENTRY_TYPE_LINUX) {
+#if KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL
+            if (runtime_fdt && entry->type == MF_ENTRY_TYPE_LINUX) {
                 int touch_rc = tb323fu_android_touch_spi_trial(
                     (void *)runtime_fdt, fdt_totalsize(runtime_fdt));
-                printf("Android touch SPI 4.8 MHz: %d\n", touch_rc);
+                printf("Android touch SPI 4.8 MHz trial: %d\n", touch_rc);
                 if (touch_rc >= 0)
                     clean_android_trial_fdt(runtime_fdt);
             }

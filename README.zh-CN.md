@@ -53,15 +53,14 @@ ArmadaOS Freedom 是基于 [ArmadaOS](https://github.com/armada-os/armada)、由
 
 ## 设备支持
 
-目前适配联想拯救者 Y700 四代与五代，两代共用 Linux **7.2.6** 内核，并分别维护设备树和硬件配置。联想小新 Pad Pro GT（TB710FU，SM8650）使用同一内核和自己的设备树，以及共用的 kShimC 启动器；它的硬件功能已在 SteamOS 用户空间和 ArmadaOS 试跑镜像下验证。
+目前适配联想拯救者 Y700 四代与五代，两代共用 Linux **7.2.6** 内核，并分别维护设备树和硬件配置。
 
 | 设备 | 型号 / SoC | 设备文档 | 已知问题 |
 |---|---|---|---|
 | 联想拯救者 Y700 四代 | TB322FC / SM8750 | [四代设备文档](devices/lenovo-tb322fc/README.md) | [四代已知问题](devices/lenovo-tb322fc/README.md#已知问题与待完成项) |
 | 联想拯救者 Y700 五代 | TB323FU / SM8850P | [五代设备文档](devices/lenovo-tb323fu/README.md) | [五代已知问题](devices/lenovo-tb323fu/README.md#已知限制) |
-| 联想小新 Pad Pro GT | TB710FU / SM8650 | [TB710FU 设备文档](devices/lenovo-tb710fu/README.md) | [TB710FU 已知问题](devices/lenovo-tb710fu/README.md#已知问题与待完成项) |
 
-各机型的启动镜像仍需匹配各自设备，不能直接互刷。
+两代的启动镜像仍需匹配各自设备，不能直接互刷。
 
 ## kShimC 多系统启动
 
@@ -81,7 +80,7 @@ Linux 内核和设备树随 boot 镜像打包；内核启动后，根据所选�
 
 *上图为当前实现生成的 STAR_CHART 菜单渲染预览，非平板实拍。*
 
-各机型共用 [kShimC 启动器源码](devices/lenovo-tb323fu/boot/kshim-success-source/README.md)，分别选择对应的机型配置和启动载荷。构建入口见[四代引导说明](devices/lenovo-tb322fc/boot/README.md)、[五代引导说明](devices/lenovo-tb323fu/boot/star-chart-build/README.md)与[小新 Pad Pro GT 引导说明](devices/lenovo-tb710fu/boot/README.md)。
+两代共用 [kShimC 启动器源码](devices/lenovo-tb323fu/boot/kshim-success-source/README.md)，分别选择对应的机型配置和启动载荷。构建入口见[四代引导说明](devices/lenovo-tb322fc/boot/README.md)与[五代引导说明](devices/lenovo-tb323fu/boot/star-chart-build/README.md)。
 
 ## 文档导航
 
@@ -98,16 +97,15 @@ Linux 内核和设备树随 boot 镜像打包；内核启动后，根据所选�
 
 ## 开发与构建
 
-系统镜像沿用 ArmadaOS 的 bootc 构建基础；统一内核位于 [`packages/kernel/`](packages/kernel/)，机型配置位于 [`system_files/usr/lib/armada/devices/`](system_files/usr/lib/armada/devices/)，设备专用资源和引导说明位于 [`devices/`](devices/)。软件包开发、缓存与发布配置见 [`packages/`](packages/README.md)。构建命令使用 [just](https://just.systems/) 和 [Podman](https://podman.io/)，并依赖 [skopeo](https://github.com/containers/skopeo) 解析已发布的软件包，请先安装：
+系统镜像沿用 ArmadaOS 的 bootc 构建基础；统一内核位于 [`packages/kernel/`](packages/kernel/)，机型配置位于 [`system_files/usr/lib/armada/devices/`](system_files/usr/lib/armada/devices/)，设备专用资源和引导说明位于 [`devices/`](devices/)。软件包开发说明见 [`packages/`](packages/README.md)，构建命令使用 [just](https://just.systems/) 和 [Podman](https://podman.io/)：
 
 ```console
 $ git submodule update --init --recursive
 $ just check     # 运行测试并检查构建配方格式
+$ just packages  # 构建镜像使用的软件包
 $ just build     # 构建 bootc 容器镜像；尚非可直接刷入平板的完整镜像
 $ just --list    # 查看开发命令
 ```
-
-`just build` 会在内容哈希一致时复用注册表中已构建的软件包，通常无需先构建软件包。仅在修改了某个软件包或该包缺失时运行 `just package NAME`，它只构建指定的本地软件包；`just packages` 则会主动重建所有软件包。
 
 ### Freedom Control
 

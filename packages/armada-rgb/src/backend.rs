@@ -13,10 +13,8 @@ use std::time::Duration;
 
 const SERIAL_FRAME_GAP: Duration = Duration::from_millis(40);
 const SERIAL_FRAME_REPEATS: usize = 3;
-const GCM_PACKET_GAP: Duration = Duration::from_millis(30);
 
 pub enum LightingBackend {
-    GcmHid(GcmHidBackend),
     Serial(SerialBackend),
     Channels(ChannelBackend),
     Multicolor(MulticolorBackend),
@@ -26,7 +24,6 @@ pub enum LightingBackend {
 impl LightingBackend {
     pub fn apply(&self, config: &LightingConfig) -> Result<()> {
         match self {
-            Self::GcmHid(backend) => backend.apply(config),
             Self::Serial(backend) => backend.apply(config),
             Self::Channels(backend) => backend.apply(config),
             Self::Multicolor(backend) => backend.apply(config),
@@ -36,18 +33,8 @@ impl LightingBackend {
 
     pub fn unsupported_reason(&self) -> Option<&str> {
         match self {
-            Self::GcmHid(_) | Self::Serial(_) | Self::Channels(_) | Self::Multicolor(_) => None,
+            Self::Serial(_) | Self::Channels(_) | Self::Multicolor(_) => None,
             Self::Unsupported(reason) => Some(reason),
-        }
-    }
-
-    /// Whether this backend can drive lighting right now. Unlike
-    /// [`Self::unsupported_reason`], this reflects live device availability for
-    /// backends that drive an external controller, such as GCM HID.
-    pub fn is_supported(&self) -> bool {
-        match self {
-            Self::GcmHid(backend) => backend.is_supported(),
-            _ => self.unsupported_reason().is_none(),
         }
     }
 
@@ -57,7 +44,6 @@ impl LightingBackend {
 
     pub(crate) fn default_correction(&self) -> Option<ColorCorrection> {
         match self {
-            Self::GcmHid(backend) => backend.correction.clone(),
             Self::Serial(backend) => backend.correction.clone(),
             Self::Channels(backend) => backend.correction.clone(),
             Self::Multicolor(backend) => backend.correction.clone(),
@@ -66,167 +52,28 @@ impl LightingBackend {
     }
 }
 
-/// GameSir "GCM" lighting over a controller's vendor HID interface, as on the
-/// Lenovo Legion G9 that docks to the Legion Tab Gen 5. Colors are HSB; each
-/// strip takes `05 0C 0C 01 <strip> H S B <effect> <speed> <brightness>` plus
-/// a byte sum. The controller keeps the last setting itself.
-///
-/// Candidate adaptation of the upstream GCM protocol written for USB
-/// 3537:1134; the attached G9 2026 reports 3537:1136 and is not yet physically
-/// validated.
-pub struct GcmHidBackend {
-    hidraw_root: PathBuf,
-    dev_root: PathBuf,
-    hid_id: String,
-    strips: Vec<u8>,
-    correction: Option<ColorCorrection>,
-}
-
-const GCM_EFFECT_STATIC: u8 = 0x01;
-const GCM_EFFECT_OFF: u8 = 0xFF;
-const GCM_SPEED: u8 = 0x80;
-const GCM_BRIGHTNESS: u8 = 0xFF;
-// Usage page 0xFF7A: the interface that answers GCM commands.
-const GCM_DESCRIPTOR_PREFIX: [u8; 3] = [0x06, 0x7A, 0xFF];
-
-impl GcmHidBackend {
-    pub fn new(
-        hidraw_root: PathBuf,
-        dev_root: PathBuf,
-        vendor: &str,
-        product: &str,
-        strips: Vec<u8>,
-    ) -> Self {
-        Self {
-            hidraw_root,
-            dev_root,
-            hid_id: format!(
-                "HID_ID=0003:{:0>8}:{:0>8}",
-                vendor.to_ascii_uppercase(),
-                product.to_ascii_uppercase()
-            ),
-            strips,
-            correction: None,
-        }
-    }
-
-    pub(crate) fn with_correction(mut self, correction: Option<ColorCorrection>) -> Self {
-        self.correction = correction;
-        self
-    }
-
-    /// Whether the matching controller is attached. Read-only: it inspects the
-    /// sysfs HID tree and the device node but never opens for writes or sends
-    /// HID commands.
-    pub(crate) fn is_supported(&self) -> bool {
-        self.find_device().is_ok()
-    }
-
-    /// Locate the writable `/dev/hidrawN` for the vendor interface. A sysfs node
-    /// only qualifies when its `HID_ID` matches this controller and its report
-    /// descriptor starts with the vendor usage page; if such a node's device
-    /// file is missing (stale sysfs) it is skipped in favour of the next match.
-    fn find_device(&self) -> Result<PathBuf> {
-        let entries = fs::read_dir(&self.hidraw_root)
-            .with_context(|| format!("read {}", self.hidraw_root.display()))?;
-        let mut names: Vec<String> = entries
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("hidraw"))
-            .collect();
-        names.sort();
-        for name in names {
-            let device: PathBuf = self.hidraw_root.join(&name).join("device");
-            let uevent: String = fs::read_to_string(device.join("uevent")).unwrap_or_default();
-            if !uevent.lines().any(|line| line.eq_ignore_ascii_case(&self.hid_id)) {
-                continue;
-            }
-            let descriptor: Vec<u8> = fs::read(device.join("report_descriptor")).unwrap_or_default();
-            if !descriptor.starts_with(&GCM_DESCRIPTOR_PREFIX) {
-                continue;
-            }
-            let path: PathBuf = self.dev_root.join(&name);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-        bail!("controller not connected")
-    }
-
-    fn apply(&self, config: &LightingConfig) -> Result<()> {
-        let path: PathBuf = self.find_device()?;
-        let [hue, saturation, value]: [u8; 3] = if config.enabled {
-            let [h, s, v] = gcm_hsb(corrected_rgb(config, self.correction.as_ref()));
-            [h, s, scale(config.brightness, u32::from(v)) as u8]
-        } else {
-            [0, 0, 0]
-        };
-        let effect: u8 = if config.enabled { GCM_EFFECT_STATIC } else { GCM_EFFECT_OFF };
-        let mut device: File = OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
-        for (index, strip) in self.strips.iter().enumerate() {
-            if index > 0 {
-                thread::sleep(GCM_PACKET_GAP);
-            }
-            let packet: [u8; 13] = gcm_strip_packet(*strip, [hue, saturation, value], effect);
-            device
-                .write_all(&packet)
-                .with_context(|| format!("write {}", path.display()))?;
-        }
-        Ok(())
-    }
-}
-
-/// RGB to the controller's HSB: hue scaled to a byte, saturation and
-/// brightness in percent.
-fn gcm_hsb([red, green, blue]: [u8; 3]) -> [u8; 3] {
-    let (r, g, b) = (f64::from(red), f64::from(green), f64::from(blue));
-    let max: f64 = r.max(g).max(b);
-    let min: f64 = r.min(g).min(b);
-    let delta: f64 = max - min;
-    let hue: f64 = if delta == 0.0 {
-        0.0
-    } else if max == r {
-        60.0 * (((g - b) / delta).rem_euclid(6.0))
-    } else if max == g {
-        60.0 * ((b - r) / delta + 2.0)
-    } else {
-        60.0 * ((r - g) / delta + 4.0)
-    };
-    let saturation: f64 = if max == 0.0 { 0.0 } else { delta / max * 100.0 };
-    let value: f64 = max / 255.0 * 100.0;
-    [
-        ((hue / 360.0 * 255.0).round() as u32 % 256) as u8,
-        saturation.round() as u8,
-        value.round() as u8,
-    ]
-}
-
-/// Report-ID-less output report: a leading 0 for hidraw, then the command.
-fn gcm_strip_packet(strip: u8, [hue, saturation, value]: [u8; 3], effect: u8) -> [u8; 13] {
-    let mut packet: [u8; 13] = [
-        0x00, 0x05, 0x0C, 0x0C, 0x01, strip, hue, saturation, value, effect, GCM_SPEED,
-        GCM_BRIGHTNESS, 0,
-    ];
-    packet[12] = packet[1..12]
-        .iter()
-        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
-    packet
+/// MCU packet family spoken over the serial device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SerialProtocol {
+    /// 11-byte frame used by the AYANEO Pocket MICRO 2.
+    Micro2,
+    /// 27-byte frame used by the AYANEO Pocket S2 analogue-stick rings.
+    PocketS2,
 }
 
 pub struct SerialBackend {
     root: PathBuf,
     device: String,
+    protocol: SerialProtocol,
     correction: Option<ColorCorrection>,
 }
 
 impl SerialBackend {
-    pub fn new(root: PathBuf, device: String) -> Self {
+    pub fn new(root: PathBuf, device: String, protocol: SerialProtocol) -> Self {
         Self {
             root,
             device,
+            protocol,
             correction: None,
         }
     }
@@ -245,7 +92,10 @@ impl SerialBackend {
         } else {
             [0, 0, 0]
         };
-        let frame: [u8; 11] = serial_frame(rgb);
+        let frame: Vec<u8> = match self.protocol {
+            SerialProtocol::Micro2 => serial_frame(rgb).to_vec(),
+            SerialProtocol::PocketS2 => pocket_s2_frame(rgb).to_vec(),
+        };
         let name: &str = &self.device;
         let mut device: File = OpenOptions::new()
             .write(true)
@@ -275,6 +125,20 @@ impl SerialBackend {
 fn serial_frame([red, green, blue]: [u8; 3]) -> [u8; 11] {
     let mut frame: [u8; 11] = [0xF7, 0x01, red, green, blue, 0, 0, 0, 0, 0, 0xED];
     frame[9] = frame[1..9]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    frame
+}
+
+/// The S2 MCU takes a per-channel brightness byte; the scaled colour is sent
+/// at full brightness so saturation and correction stay in one place.
+fn pocket_s2_frame([red, green, blue]: [u8; 3]) -> [u8; 27] {
+    let brightness: u8 = if red | green | blue == 0 { 0 } else { 0xFF };
+    let mut frame: [u8; 27] = [
+        0xF7, 0x00, 0x1C, 0x20, 0x01, 0x80, 0x00, 0x81, 0x00, 0x8B, 0x0F, 0x88, red, 0x89, green,
+        0x8A, blue, 0x86, brightness, 0x87, brightness, 0x58, 0x08, 0x45, 0x00, 0, 0xED,
+    ];
+    frame[25] = frame[1..25]
         .iter()
         .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
     frame
@@ -620,6 +484,18 @@ mod tests {
         assert_eq!(gamma(128, 100), 22);
         assert_eq!(gamma(255, 255), 255);
         assert_eq!(scale(25, 255), 64);
+    }
+
+    #[test]
+    fn builds_pocket_s2_frames() {
+        assert_eq!(
+            pocket_s2_frame([0xFF, 0, 0]),
+            [
+                0xF7, 0x00, 0x1C, 0x20, 0x01, 0x80, 0x00, 0x81, 0x00, 0x8B, 0x0F, 0x88, 0xFF, 0x89,
+                0x00, 0x8A, 0x00, 0x86, 0xFF, 0x87, 0xFF, 0x58, 0x08, 0x45, 0x00, 0x22, 0xED
+            ]
+        );
+        assert_eq!(pocket_s2_frame([0, 0, 0])[25], 0x25);
     }
 
     #[test]

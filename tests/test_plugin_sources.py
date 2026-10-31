@@ -437,45 +437,6 @@ class PluginSourceTests(unittest.TestCase):
         self.assertEqual(entry["sha256"], lsfg["sha256"])
         self.assertEqual(entry["releaseTag"], "v0.14.5-r17")
 
-    def test_production_catalogue_resolves_with_legacy_lsfg_lock(self):
-        """A legacy LSFG lock/archive must not survive resolution of the real catalogue."""
-        production = (HELPER_PATH.parent.parent / CONFIG_RELATIVE).read_text(
-            encoding="utf-8"
-        )
-        self.assertEqual(
-            json.loads((self.source / CONFIG_RELATIVE).read_text(encoding="utf-8"))[
-                "releases"
-            ][0]["repository"],
-            LSFG_REPOSITORY,
-            "fixture config must start with the LSFG release",
-        )
-        (self.source / CONFIG_RELATIVE).write_text(production, encoding="utf-8")
-        self._publish_r17()
-        self._seed_legacy_lock()
-        self.github.offline.add(LSFG_REPOSITORY)
-        self._resolve()
-        urls = self.github.json_calls + self.github.byte_calls
-        self.assertFalse(
-            any(LSFG_REPOSITORY in url for url in urls),
-            "resolver must not contact the private LSFG repository: %r" % (urls,),
-        )
-        lock = self._lock()
-        self.assertEqual(
-            [entry["name"] for entry in lock],
-            ["DeckyClash"],
-            "lock must list only DeckyClash after the LSFG release is removed",
-        )
-        for entry in lock:
-            self.assertEqual(set(entry), LOCK_KEYS)
-        report = json.loads(
-            (self.source / REPORT_RELATIVE).read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            [entry["name"] for entry in report["plugins"]],
-            ["DeckyClash", "Freedom Control", "Armada Store"],
-        )
-        self._validate()
-
     def test_every_bundled_release_is_updated_and_reported(self):
         self._seed_legacy_lock()
         self._publish_r17()

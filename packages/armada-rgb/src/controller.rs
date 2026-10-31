@@ -29,7 +29,7 @@ impl Controller {
     }
 
     pub fn is_supported(&self) -> bool {
-        self.backend.is_supported()
+        self.backend.unsupported_reason().is_none()
     }
 
     pub fn set(&self, config: LightingConfig) -> Result<LightingConfig> {

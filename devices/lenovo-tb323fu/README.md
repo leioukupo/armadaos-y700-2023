@@ -16,7 +16,6 @@ ArmadaOS Freedom 为 Y700 五代提供 kShimC 多系统启动、Steam 游戏模�
 |---|---|
 | 机身 Linux | 统一 Linux 7.2.6 已启动到 Steam，原生 DRM／Adreno 840 显示已运行 |
 | 内屏显示 | 30／60／90／120／165 Hz 档位按机型匹配，真实 165 Hz 时序已接入 |
-| 硬件旋转 | SM8850 DPU 旋转与游戏/HUD 两层直出已在动态 PV 验证，详见[硬件旋转说明](docs/dpu-rotation.md) |
 | kShimC 启动菜单 | STAR_CHART 中英文菜单，提供 Android、机身／TF 卡 Linux、设置和高级启动入口 |
 | 输入与性能配置 | 已接入设备识别、CPU 拓扑、性能配置及桌面触摸校准 |
 | 音频与网络 | 已有扬声器保护、双 USB 路由和 5 GHz Wi-Fi 扫描适配 |

@@ -121,11 +121,7 @@ sudoif command *args:
     sudoif {{ command }} {{ args }}
 
 # Registry holding published package images (override to use a fork's)
-export pkg_registry := env("ARMADA_PKG_REGISTRY", "ghcr.io/mydanyi/armada/pkg")
-
-# Registry consulted when a package is absent from pkg_registry
-# (override to use another source)
-export pkg_fallback_registry := env("ARMADA_PKG_FALLBACK_REGISTRY", "ghcr.io/armada-os/armada/pkg")
+export pkg_registry := env("ARMADA_PKG_REGISTRY", "ghcr.io/armada-os/armada/pkg")
 
 # Build one package and tag it by content hash, the way CI does
 [group('Packages')]
@@ -163,28 +159,16 @@ packages:
 packages-status:
     #!/usr/bin/env bash
     set -euo pipefail
-    failed=0
     for dir in packages/*/; do
         pkg="$(basename "${dir}")"
         [ -f "${dir}/build.sh" ] || continue
         hash="$(packages/package-hash.sh "${pkg}")"
         if podman image exists "localhost/armada/pkg/${pkg}:${hash}" 2>/dev/null; then
             printf '  %-24s %s  local\n' "${pkg}" "${hash}"
-            continue
-        fi
-        status=0
-        actual="$(bash packages/resolve-package-ref.sh "${pkg}" "${hash}" "${pkg_registry}" "${pkg_fallback_registry}")" || status=$?
-        if [ "${status}" -eq 0 ]; then
-            printf '  %-24s %s  %s\n' "${pkg}" "${hash}" "${actual}"
-        elif [ "${status}" -eq 3 ]; then
-            printf '  %-24s %s  missing\n' "${pkg}" "${hash}"
-            failed=1
         else
-            printf '  %-24s %s  lookup-error (exit %s)\n' "${pkg}" "${hash}" "${status}"
-            failed=1
+            printf '  %-24s %s  %s\n' "${pkg}" "${hash}" "${pkg_registry}/${pkg}:${hash}"
         fi
     done
-    exit "${failed:-0}"
 
 build $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
@@ -206,18 +190,8 @@ build $target_image=image_name $tag=default_tag:
         local_ref="localhost/armada/pkg/${pkg}:${hash}"
         if podman image exists "${local_ref}" 2>/dev/null; then
             echo "${var}=${local_ref}" >> "${REFS}"
-            continue
-        fi
-        status=0
-        actual="$(bash packages/resolve-package-ref.sh "${pkg}" "${hash}" "${pkg_registry}" "${pkg_fallback_registry}")" || status=$?
-        if [ "${status}" -eq 0 ]; then
-            echo "${var}=${actual}" >> "${REFS}"
-        elif [ "${status}" -eq 3 ]; then
-            echo "${pkg}:${hash} is not built locally and is not published; run 'just package ${pkg}' first" >&2
-            exit 1
         else
-            echo "Failed to resolve ${pkg}:${hash} from published registries (exit ${status})" >&2
-            exit "${status}"
+            echo "${var}=${pkg_registry}/${pkg}:${hash}" >> "${REFS}"
         fi
     done
     expected=$(grep -c '^ARG [A-Z0-9_]*_REF$' Containerfile)

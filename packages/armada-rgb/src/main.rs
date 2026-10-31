@@ -14,9 +14,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check whether this device's lighting is available. For profiles that
-    /// drive an external controller this also requires it to be docked and
-    /// detected (exits non-zero when it is unavailable).
+    /// Check whether this device has a lighting profile.
     Supported,
     /// Show the saved lighting configuration.
     Get,

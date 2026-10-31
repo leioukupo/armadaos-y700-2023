@@ -4,13 +4,29 @@
 #
 # Contract every build.sh sees, here and under ./build-local.sh:
 #   /work  the package directory, cwd. Artifacts land in ./out
-#   /src   the packages root: toolchain.env, TERRA.env, sibling packages
+#   /src   the packages root: toolchain.env, sibling packages
 
 ARG BUILDER_IMAGE
 ARG GUEST_BUILDER_IMAGE
 
 FROM ${BUILDER_IMAGE} AS builder-base
 COPY toolchain.env scrub-scratch.sh /src/
+
+FROM builder-base AS pkg-armada-aurora
+COPY armada-aurora/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-armada-aurora
+COPY --from=pkg-armada-aurora /work/out/ /rpms/
+
+FROM builder-base AS pkg-openabl-updater
+COPY openabl-updater/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-openabl-updater
+COPY --from=pkg-openabl-updater /work/out/ /rpms/
 
 FROM builder-base AS pkg-armada-rgb
 COPY armada-rgb/ /work/
@@ -21,13 +37,13 @@ FROM scratch AS out-armada-rgb
 COPY --from=pkg-armada-rgb /work/out/ /rpms/
 
 
-FROM builder-base AS pkg-btop-cn
-COPY btop-cn/ /work/
+FROM builder-base AS pkg-armada-ssc
+COPY armada-ssc/ /work/
 WORKDIR /work
 RUN ./build.sh && /src/scrub-scratch.sh
 
-FROM scratch AS out-btop-cn
-COPY --from=pkg-btop-cn /work/out/ /rpms/
+FROM scratch AS out-armada-ssc
+COPY --from=pkg-armada-ssc /work/out/ /rpms/
 
 
 FROM builder-base AS pkg-armada-splash
@@ -38,9 +54,15 @@ RUN ./build.sh && /src/scrub-scratch.sh
 FROM scratch AS out-armada-splash
 COPY --from=pkg-armada-splash /work/out/ /rpms/
 
+FROM builder-base AS pkg-armada-logos
+COPY armada-logos/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-armada-logos
+COPY --from=pkg-armada-logos /work/out/ /rpms/
 
 FROM builder-base AS pkg-gamescope
-COPY TERRA.env /src/
 COPY gamescope/ /work/
 WORKDIR /work
 RUN ./build.sh && /src/scrub-scratch.sh
@@ -50,7 +72,7 @@ COPY --from=pkg-gamescope /work/out/ /rpms/
 
 
 FROM builder-base AS pkg-gamescope-session
-COPY TERRA.env /src/
+COPY gamescope/TERRA.env /src/gamescope/
 COPY gamescope-session/ /work/
 WORKDIR /work
 RUN ./build.sh && /src/scrub-scratch.sh
@@ -58,8 +80,9 @@ RUN ./build.sh && /src/scrub-scratch.sh
 FROM scratch AS out-gamescope-session
 COPY --from=pkg-gamescope-session /work/out/ /rpms/
 
+
 FROM builder-base AS pkg-gamescope-session-steam
-COPY TERRA.env /src/
+COPY gamescope/TERRA.env /src/gamescope/
 COPY gamescope-session-steam/ /work/
 WORKDIR /work
 RUN ./build.sh && /src/scrub-scratch.sh
@@ -77,6 +100,24 @@ FROM scratch AS out-inputplumber
 COPY --from=pkg-inputplumber /work/out/ /rpms/
 
 
+FROM builder-base AS pkg-libssc
+COPY libssc/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-libssc
+COPY --from=pkg-libssc /work/out/ /rpms/
+
+
+FROM builder-base AS pkg-hexagonrpc
+COPY hexagonrpc/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-hexagonrpc
+COPY --from=pkg-hexagonrpc /work/out/ /rpms/
+
+
 FROM builder-base AS pkg-jupiter-hw-support
 COPY jupiter-hw-support/ /work/
 WORKDIR /work
@@ -84,15 +125,6 @@ RUN ./build.sh && /src/scrub-scratch.sh
 
 FROM scratch AS out-jupiter-hw-support
 COPY --from=pkg-jupiter-hw-support /work/out/ /rpms/
-
-
-FROM builder-base AS pkg-kshim-tools
-COPY kshim-tools/ /work/
-WORKDIR /work
-RUN ./build.sh && /src/scrub-scratch.sh
-
-FROM scratch AS out-kshim-tools
-COPY --from=pkg-kshim-tools /work/out/ /kshim-tools/
 
 
 FROM builder-base AS pkg-kwin
@@ -141,7 +173,6 @@ COPY --from=pkg-wpa_supplicant /work/out/ /rpms/
 
 
 FROM builder-base AS pkg-scx-scheds
-COPY TERRA.env /src/
 COPY scx-scheds/ /work/
 WORKDIR /work
 RUN ./build.sh && /src/scrub-scratch.sh
@@ -167,6 +198,13 @@ RUN ./build.sh && /src/scrub-scratch.sh
 FROM scratch AS out-powerdevil
 COPY --from=pkg-powerdevil /work/out/ /rpms/
 
+FROM builder-base AS pkg-proton-cachyos
+COPY proton-cachyos/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-proton-cachyos
+COPY --from=pkg-proton-cachyos /work/out/ /
 
 FROM builder-base AS pkg-protontricks
 COPY protontricks/ /work/
@@ -208,6 +246,14 @@ RUN ./build.sh && /src/scrub-scratch.sh
 
 FROM scratch AS out-fex
 COPY --from=pkg-fex /work/out/ /rpms/
+
+FROM builder-base AS pkg-fex-rootfs-archlinux
+COPY fex-rootfs-archlinux/ /work/
+WORKDIR /work
+RUN ./build.sh && /src/scrub-scratch.sh
+
+FROM scratch AS out-fex-rootfs-archlinux
+COPY --from=pkg-fex-rootfs-archlinux /work/out/ /rpms/
 
 
 FROM builder-base AS pkg-kernel

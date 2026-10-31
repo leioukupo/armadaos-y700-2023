@@ -10,30 +10,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// Packaged model name of the Lenovo Legion G9 (Tab Gen 5) controller dock.
-const G9_MODEL: &str = "Lenovo Legion Tab Y700 5th Gen";
-/// `HID_ID` line the G9's vendor interface reports (USB 3537:1136).
-const G9_HID_ID: &str = "HID_ID=0003:00003537:00001136";
-/// Same vendor, wrong product: the older 3537:1134 controller.
-const G9_HID_ID_WRONG_PRODUCT: &str = "HID_ID=0003:00003537:00001134";
-/// Wrong vendor id with the G9 product id.
-const G9_HID_ID_WRONG_VENDOR: &str = "HID_ID=0003:0000ABCD:00001136";
-
-/// Synthetic report descriptor fixture. Only its first three bytes -- the
-/// vendor usage page (0xFF7A) that marks the interface answering GCM commands
-/// -- are verified against the live device; the remaining bytes are filler.
-const GCM_DESCRIPTOR: [u8; 10] = [0x06, 0x7A, 0xFF, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x06, 0x95];
-/// A non-vendor generic-desktop gamepad interface.
-const GAMEPAD_DESCRIPTOR: [u8; 6] = [0x05, 0x01, 0x09, 0x05, 0xA1, 0x01];
-/// A non-vendor consumer-control interface.
-const CONSUMER_DESCRIPTOR: [u8; 5] = [0x05, 0x0C, 0x09, 0x01, 0xA1];
-
 struct Fixture {
     root: PathBuf,
     backlight: PathBuf,
     config: PathBuf,
     dev: PathBuf,
-    hidraw: PathBuf,
     leds: PathBuf,
     model: PathBuf,
     profiles: PathBuf,
@@ -61,13 +42,11 @@ impl Fixture {
             config: root.join("etc/rgb.json"),
             backlight,
             dev: root.join("dev"),
-            hidraw: root.join("hidraw"),
             leds,
             model: root.join("model"),
             profiles: root.join("profiles.json"),
             root,
         };
-        fs::create_dir_all(&fixture.hidraw).unwrap();
         fs::write(&fixture.model, b"Test Device\0").unwrap();
         fixture
     }
@@ -128,61 +107,10 @@ impl Fixture {
     }
 
     fn serial_command(&self) -> Command {
-        fs::write(&self.model, b"AYANEO Pocket MICRO 2\0").unwrap();
-        fs::write(&self.profiles, include_bytes!("../profiles.json")).unwrap();
-        self.binary()
+        self.serial_command_for("AYANEO Pocket MICRO 2")
     }
 
-    /// Fake sysfs `hidraw` node under `fixture.root/hidraw`: a `device/uevent`
-    /// carrying `hid_id` and a `device/report_descriptor` with `descriptor`.
-    fn hidraw_sysfs(&self, name: &str, hid_id: &str, descriptor: &[u8]) {
-        let device: PathBuf = self.hidraw.join(name).join("device");
-        fs::create_dir_all(&device).unwrap();
-        fs::write(
-            device.join("uevent"),
-            format!("DRIVER=hid-generic\n{hid_id}\nHID_NAME=GameSir GCM\n"),
-        )
-        .unwrap();
-        fs::write(device.join("report_descriptor"), descriptor).unwrap();
-    }
-
-    /// Regular file standing in for `/dev/hidrawN`; the backend writes reports
-    /// into it just like a character device.
-    fn hidraw_node(&self, name: &str) -> PathBuf {
-        fs::create_dir_all(&self.dev).unwrap();
-        let path: PathBuf = self.dev.join(name);
-        fs::write(&path, b"").unwrap();
-        path
-    }
-
-    /// A complete fake controller: sysfs node plus its writable device file.
-    fn hidraw(&self, name: &str, hid_id: &str, descriptor: &[u8]) -> PathBuf {
-        self.hidraw_sysfs(name, hid_id, descriptor);
-        self.hidraw_node(name)
-    }
-
-    /// A catalog with a single `gcmhid` profile for the G9 (vendor 3537,
-    /// product 1136, strips 1 and 2) and the G9 as the connected model.
-    fn gcmhid_command(&self, model: &str) -> Command {
-        let catalog = serde_json::json!({
-            "version": 1,
-            "profiles": [{
-                "models": [model],
-                "backend": {
-                    "type": "gcmhid",
-                    "vendor": "3537",
-                    "product": "1136",
-                    "strips": [1, 2],
-                },
-            }],
-        });
-        fs::write(&self.profiles, serde_json::to_vec(&catalog).unwrap()).unwrap();
-        fs::write(&self.model, format!("{model}\0")).unwrap();
-        self.binary()
-    }
-
-    /// The shipped catalog, with `model` as the connected device.
-    fn packaged_command(&self, model: &str) -> Command {
+    fn serial_command_for(&self, model: &str) -> Command {
         fs::write(&self.model, format!("{model}\0")).unwrap();
         fs::write(&self.profiles, include_bytes!("../profiles.json")).unwrap();
         self.binary()
@@ -195,7 +123,6 @@ impl Fixture {
             .env("ARMADA_RGB_SYSFS_ROOT", &self.leds)
             .env("ARMADA_BACKLIGHT_ROOT", &self.backlight)
             .env("ARMADA_RGB_DEV_ROOT", &self.dev)
-            .env("ARMADA_RGB_HIDRAW_ROOT", &self.hidraw)
             .env("ARMADA_RGB_MODEL_PATH", &self.model)
             .env("ARMADA_RGB_PROFILES_PATH", &self.profiles);
         command
@@ -393,12 +320,21 @@ fn cli_supports_channel_backend() {
 }
 
 #[test]
-fn air_y_pro_profile_controls_both_aw20036_rings() {
+fn air_y_pro_profile_controls_both_aw20036_rings_and_logo() {
+    assert_mangmi_profile("MANGMI Air Y Pro", 18);
+}
+
+#[test]
+fn pocket_max_profile_controls_both_aw20036_rings_without_logo() {
+    assert_mangmi_profile("MANGMI Pocket Max", 16);
+}
+
+fn assert_mangmi_profile(model: &str, led_count: usize) {
     let fixture: Fixture = Fixture::new();
-    fs::write(&fixture.model, b"MANGMI Air Y Pro\0").unwrap();
+    fs::write(&fixture.model, format!("{model}\0")).unwrap();
     fs::write(&fixture.profiles, include_bytes!("../profiles.json")).unwrap();
 
-    for index in 0..16 {
+    for index in 0..led_count {
         for color in ["red", "green", "blue"] {
             fixture.channel_target(&format!("{color}:indicator-{index}"), "255");
         }
@@ -418,7 +354,7 @@ fn air_y_pro_profile_controls_both_aw20036_rings() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for index in 0..16 {
+    for index in 0..led_count {
         assert_eq!(
             fixture.value(&format!("red:indicator-{index}"), "brightness"),
             "64"
@@ -452,6 +388,39 @@ fn pocket_micro2_profile_sends_static_frames_to_the_mcu() {
     let output: std::process::Output = run(&["off"]);
     assert!(output.status.success());
     let frame: [u8; 11] = [0xF7, 0x01, 0, 0, 0, 0, 0, 0, 0, 0x01, 0xED];
+    assert_eq!(fs::read(&tty).unwrap(), frame.repeat(3));
+}
+
+#[test]
+fn pocket_s2_profile_sends_stick_ring_frames_to_the_mcu() {
+    let fixture: Fixture = Fixture::new();
+    let tty: PathBuf = fixture.serial_target("ttyHS0");
+    let run = |args: &[&str]| {
+        fixture
+            .serial_command_for("AYANEO Pocket S2")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let output: std::process::Output = run(&["set", "--color", "FF0000", "--brightness", "100"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let frame: [u8; 27] = [
+        0xF7, 0x00, 0x1C, 0x20, 0x01, 0x80, 0x00, 0x81, 0x00, 0x8B, 0x0F, 0x88, 0xFF, 0x89, 0x00,
+        0x8A, 0x00, 0x86, 0xFF, 0x87, 0xFF, 0x58, 0x08, 0x45, 0x00, 0x22, 0xED,
+    ];
+    assert_eq!(fs::read(&tty).unwrap(), frame.repeat(3));
+
+    let output: std::process::Output = run(&["off"]);
+    assert!(output.status.success());
+    let frame: [u8; 27] = [
+        0xF7, 0x00, 0x1C, 0x20, 0x01, 0x80, 0x00, 0x81, 0x00, 0x8B, 0x0F, 0x88, 0x00, 0x89, 0x00,
+        0x8A, 0x00, 0x86, 0x00, 0x87, 0x00, 0x58, 0x08, 0x45, 0x00, 0x25, 0xED,
+    ];
     assert_eq!(fs::read(&tty).unwrap(), frame.repeat(3));
 }
 
@@ -705,289 +674,4 @@ fn cli_reports_profile_support() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-}
-
-// --- G9 2026 GcmHid regression coverage -------------------------------------
-//
-// These tests drive the CLI only; they never link `GcmHidBackend`, so they
-// still compile (and fail on their runtime assertions) before the production
-// backend exists. They talk to a fake sysfs HID tree under `fixture.hidraw`
-// and regular files under `fixture.dev`, selected via ARMADA_RGB_HIDRAW_ROOT.
-
-#[test]
-fn gcmhid_supported_tracks_the_connected_vendor_hid() {
-    let fixture: Fixture = Fixture::new();
-    let device: PathBuf = fixture.hidraw("hidraw3", G9_HID_ID, &GCM_DESCRIPTOR);
-
-    let output: std::process::Output = fixture
-        .gcmhid_command(G9_MODEL)
-        .arg("supported")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "supported should accept the connected G9: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // supported is read-only: it must not write to the controller.
-    assert!(
-        fs::read(&device).unwrap().is_empty(),
-        "supported must not write to the device"
-    );
-
-    fs::remove_dir_all(fixture.hidraw.join("hidraw3")).unwrap();
-    fs::remove_file(&device).unwrap();
-    let output: std::process::Output = fixture
-        .gcmhid_command(G9_MODEL)
-        .arg("supported")
-        .output()
-        .unwrap();
-    assert!(
-        !output.status.success(),
-        "supported should fail once the matching controller is gone"
-    );
-}
-
-#[test]
-fn gcmhid_supported_rejects_wrong_ids_and_nonvendor_descriptors() {
-    let cases: [(&str, &str, &[u8]); 4] = [
-        // Right descriptor, wrong product id (the older 3537:1134 controller).
-        ("hidraw0", G9_HID_ID_WRONG_PRODUCT, GCM_DESCRIPTOR.as_slice()),
-        // Right descriptor, wrong vendor id.
-        ("hidraw1", G9_HID_ID_WRONG_VENDOR, GCM_DESCRIPTOR.as_slice()),
-        // Right ids, but a non-vendor gamepad interface.
-        ("hidraw2", G9_HID_ID, GAMEPAD_DESCRIPTOR.as_slice()),
-        // Right ids, but a non-vendor consumer-control interface.
-        ("hidraw3", G9_HID_ID, CONSUMER_DESCRIPTOR.as_slice()),
-    ];
-    for (name, hid_id, descriptor) in cases {
-        let fixture: Fixture = Fixture::new();
-        fixture.hidraw(name, hid_id, descriptor);
-        let output: std::process::Output = fixture
-            .gcmhid_command(G9_MODEL)
-            .arg("supported")
-            .output()
-            .unwrap();
-        assert!(
-            !output.status.success(),
-            "{name} ({hid_id}) must not be accepted as the controller"
-        );
-
-        // Adding the real controller on a later-sorted node must make support
-        // true, proving selection rejected the impostor and not the connection.
-        fixture.hidraw("hidraw9", G9_HID_ID, &GCM_DESCRIPTOR);
-        let output: std::process::Output = fixture
-            .gcmhid_command(G9_MODEL)
-            .arg("supported")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "the valid node after {name} must be found: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-}
-
-#[test]
-fn gcmhid_supported_requires_the_device_node() {
-    let fixture: Fixture = Fixture::new();
-    let device: PathBuf = fixture.hidraw("hidraw2", G9_HID_ID, &GCM_DESCRIPTOR);
-
-    let output: std::process::Output = fixture
-        .gcmhid_command(G9_MODEL)
-        .arg("supported")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    fs::remove_file(&device).unwrap();
-    let output: std::process::Output = fixture
-        .gcmhid_command(G9_MODEL)
-        .arg("supported")
-        .output()
-        .unwrap();
-    assert!(
-        !output.status.success(),
-        "supported must be false without the writable device node"
-    );
-}
-
-#[test]
-fn gcmhid_writes_only_to_the_matching_vendor_hid() {
-    let fixture: Fixture = Fixture::new();
-    // Sorted first: same G9 ids but a non-vendor gamepad descriptor.
-    fixture.hidraw_sysfs("hidraw0", G9_HID_ID, &GAMEPAD_DESCRIPTOR);
-    let decoy: PathBuf = fixture.hidraw_node("hidraw0");
-    // Wrong product id, right descriptor.
-    fixture.hidraw_sysfs("hidraw1", G9_HID_ID_WRONG_PRODUCT, &GCM_DESCRIPTOR);
-    let wrong_product: PathBuf = fixture.hidraw_node("hidraw1");
-    // Wrong vendor id, right descriptor.
-    fixture.hidraw_sysfs("hidraw2", G9_HID_ID_WRONG_VENDOR, &GCM_DESCRIPTOR);
-    let wrong_vendor: PathBuf = fixture.hidraw_node("hidraw2");
-    // Right ids, consumer-control descriptor.
-    fixture.hidraw_sysfs("hidraw3", G9_HID_ID, &CONSUMER_DESCRIPTOR);
-    let consumer: PathBuf = fixture.hidraw_node("hidraw3");
-    // The real controller: right ids and the vendor descriptor.
-    let controller: PathBuf = fixture.hidraw("hidraw7", G9_HID_ID, &GCM_DESCRIPTOR);
-
-    let output: std::process::Output = fixture
-        .gcmhid_command(G9_MODEL)
-        .args([
-            "set",
-            "--color",
-            "FF0000",
-            "--brightness",
-            "50",
-            "--link-brightness",
-            "false",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let left: [u8; 13] = [0, 5, 12, 12, 1, 1, 0, 100, 50, 1, 128, 255, 53];
-    let right: [u8; 13] = [0, 5, 12, 12, 1, 2, 0, 100, 50, 1, 128, 255, 54];
-    let mut expected: Vec<u8> = Vec::new();
-    expected.extend_from_slice(&left);
-    expected.extend_from_slice(&right);
-    assert_eq!(
-        fs::read(&controller).unwrap(),
-        expected,
-        "only the matching node receives both strip reports"
-    );
-    for path in [&decoy, &wrong_product, &wrong_vendor, &consumer] {
-        assert!(
-            fs::read(path).unwrap().is_empty(),
-            "unmatched device files must stay untouched: {}",
-            path.display()
-        );
-    }
-}
-
-#[test]
-fn gcmhid_set_writes_one_report_per_strip_and_persists() {
-    let fixture: Fixture = Fixture::new();
-    let device: PathBuf = fixture.hidraw("hidraw4", G9_HID_ID, &GCM_DESCRIPTOR);
-    // An unrelated node must not receive the reports.
-    let other: PathBuf = fixture.hidraw("hidraw1", G9_HID_ID_WRONG_VENDOR, &GCM_DESCRIPTOR);
-
-    let output: std::process::Output = fixture
-        .gcmhid_command(G9_MODEL)
-        .args([
-            "set",
-            "--color",
-            "FF0000",
-            "--brightness",
-            "50",
-            "--link-brightness",
-            "false",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let trace: Vec<u8> = fs::read(&device).unwrap();
-    let left: [u8; 13] = [0, 5, 12, 12, 1, 1, 0, 100, 50, 1, 128, 255, 53];
-    let right: [u8; 13] = [0, 5, 12, 12, 1, 2, 0, 100, 50, 1, 128, 255, 54];
-    let mut expected: Vec<u8> = Vec::new();
-    expected.extend_from_slice(&left);
-    expected.extend_from_slice(&right);
-    assert_eq!(trace, expected, "RED at 50% is one 13-byte report per strip");
-    assert!(
-        fs::read(&other).unwrap().is_empty(),
-        "unrelated node must stay untouched"
-    );
-
-    let saved: LightingConfig =
-        serde_json::from_slice(&fs::read(&fixture.config).unwrap()).unwrap();
-    assert!(saved.enabled);
-    assert!(!saved.link_brightness);
-    assert_eq!(saved.color, "FF0000");
-    assert_eq!(saved.brightness, 50);
-}
-
-#[test]
-fn gcmhid_off_writes_zero_hsb_with_effect_off() {
-    let fixture: Fixture = Fixture::new();
-    let device: PathBuf = fixture.hidraw("hidraw5", G9_HID_ID, &GCM_DESCRIPTOR);
-    let run = |args: &[&str]| {
-        fixture
-            .gcmhid_command(G9_MODEL)
-            .args(args)
-            .output()
-            .unwrap()
-    };
-
-    let output: std::process::Output = run(&[
-        "set",
-        "--color",
-        "FF0000",
-        "--brightness",
-        "50",
-        "--link-brightness",
-        "false",
-    ]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Regular files keep their bytes instead of streaming like a HID node, so
-    // clear it before asserting the exact off trace.
-    fs::write(&device, b"").unwrap();
-    let output: std::process::Output = run(&["off"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let trace: Vec<u8> = fs::read(&device).unwrap();
-    let left: [u8; 13] = [0, 5, 12, 12, 1, 1, 0, 0, 0, 255, 128, 255, 157];
-    let right: [u8; 13] = [0, 5, 12, 12, 1, 2, 0, 0, 0, 255, 128, 255, 158];
-    let mut expected: Vec<u8> = Vec::new();
-    expected.extend_from_slice(&left);
-    expected.extend_from_slice(&right);
-    assert_eq!(trace, expected, "off is zero HSB with effect 0xFF per strip");
-
-    let saved: LightingConfig =
-        serde_json::from_slice(&fs::read(&fixture.config).unwrap()).unwrap();
-    assert!(!saved.enabled, "off must persist the disabled state");
-}
-
-#[test]
-fn packaged_g9_profile_supports_every_alias() {
-    let aliases: [&str; 3] = [
-        "Lenovo Legion Tab Y700 5th Gen",
-        "Lenovo Legion Y700 Gen 5 (TB323FU)",
-        "Lenovo Legion Tab Y700 (TB323FU)",
-    ];
-    for alias in aliases {
-        let fixture: Fixture = Fixture::new();
-        fixture.hidraw("hidraw6", G9_HID_ID, &GCM_DESCRIPTOR);
-        let output: std::process::Output = fixture
-            .packaged_command(alias)
-            .arg("supported")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{alias} should be covered by the packaged profile: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
 }

@@ -162,33 +162,6 @@ assert_eq "$(dt_value ARMADA_DEVICE_ID 'AYN Odin 3')" ayn-odin-3 'explicit model
 write_dt_model 'Lenovo Legion Y700 Gen4'
 assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb322fc 'gen4 fallback device id'
 
-# TB710FU: the exact compatible selects its profile, also behind qcom,sm8650.
-write_dt_model 'Some Unrecognized Board'
-write_dt_compatible 'lenovo,tb710fu' 'qcom,sm8650'
-assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb710fu 'tb710fu compatible device id'
-assert_eq "$(dt_value ARMADA_DEVICE_NAME)" 'Lenovo Xiaoxin Pad Pro GT (TB710FU)' 'tb710fu device name'
-assert_eq "$(dt_value ARMADA_SOC_CLASS)" SM8650 'tb710fu soc class'
-assert_eq "$(dt_value ARMADA_PRIMARY_TOUCHSCREEN)" "$TOUCHSCREEN" 'tb710fu touchscreen'
-assert_eq "$(dt_value ARMADA_BUILTIN_GAMEPAD)" 0 'tb710fu has no built-in gamepad'
-assert_eq "$(dt_value ARMADA_PANEL_ORIENTATION)" normal 'tb710fu orientation default'
-assert_eq "$(dt_value ARMADA_DESKTOP_TOUCHSCREEN_CALIBRATION)" '' 'tb710fu calibration empty'
-write_dt_model 'Some Unrecognized Board'
-write_dt_compatible 'qcom,sm8650' 'lenovo,tb710fu'
-assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb710fu 'tb710fu second compatible device id'
-write_dt_model 'Some Unrecognized Board'
-write_dt_compatible 'lenovo,tb710fu-rev2' 'qcom,sm8650'
-assert_eq "$(dt_value ARMADA_DEVICE_ID)" unknown 'tb710fu-rev2 is not an exact match'
-# The model string alone also selects it.
-write_dt_model 'Lenovo Xiaoxin Pad Pro GT (TB710FU)'
-write_dt_compatible 'qcom,sm8650'
-assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb710fu 'tb710fu model fallback device id'
-# The compatible wins over a conflicting model; an explicit ARMADA_MODEL wins
-# over the compatible.
-write_dt_model 'AYN Odin 3'
-write_dt_compatible 'lenovo,tb710fu' 'qcom,sm8650'
-assert_eq "$(dt_value ARMADA_DEVICE_ID)" lenovo-tb710fu 'tb710fu compatible wins over model'
-assert_eq "$(dt_value ARMADA_DEVICE_ID 'AYN Odin 3')" ayn-odin-3 'explicit model over tb710fu compatible'
-
 # --- fixtures ---------------------------------------------------------------
 stub_bin="$TEST_ROOT/bin"
 mkdir -p "$stub_bin"

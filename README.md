@@ -62,16 +62,12 @@ images and OTA integration are still in development.
 ## Device support
 
 Current device work covers Lenovo Legion Y700 Gen 4 and Gen 5. Both share a Linux
-**7.2.6** kernel, with separate device trees and hardware configuration. The Lenovo
-Xiaoxin Pad Pro GT (TB710FU, SM8650) shares the same kernel with its own device
-tree, and the kShimC launcher; its hardware was validated with a SteamOS
-userspace and an ArmadaOS trial image.
+**7.2.6** kernel, with separate device trees and hardware configuration.
 
 | Device | Model / SoC | Documentation | Known issues |
 |---|---|---|---|
 | Lenovo Legion Y700 Gen 4 | TB322FC / SM8750 | [Gen 4 documentation](devices/lenovo-tb322fc/README.md) | [Gen 4 known issues](devices/lenovo-tb322fc/README.md#已知问题与待完成项) |
 | Lenovo Legion Tab Gen 5 / Y700 Gen 5 | TB323FU / SM8850P | [Gen 5 documentation](devices/lenovo-tb323fu/README.md) | [Gen 5 known issues](devices/lenovo-tb323fu/README.md#已知限制) |
-| Lenovo Xiaoxin Pad Pro GT | TB710FU / SM8650 | [TB710FU documentation](devices/lenovo-tb710fu/README.md) | [TB710FU known issues](devices/lenovo-tb710fu/README.md#已知问题与待完成项) |
 
 Boot images remain model-specific and must not be cross-flashed.
 
@@ -123,22 +119,16 @@ System images use ArmadaOS's bootc build foundation. The shared kernel lives in
 [`packages/kernel/`](packages/kernel/), hardware profiles in
 [`system_files/usr/lib/armada/devices/`](system_files/usr/lib/armada/devices/),
 and device-specific resources and boot guides in [`devices/`](devices/).
-Package development, cache, and publication setup are documented in
-[`packages/`](packages/README.md). Recipes use [just](https://just.systems/) and
-[Podman](https://podman.io/); published packages are resolved with
-[skopeo](https://github.com/containers/skopeo), so it needs to be installed.
+Package development is documented in [`packages/`](packages/README.md). Recipes use
+[just](https://just.systems/) and [Podman](https://podman.io/):
 
 ```console
 $ git submodule update --init --recursive
 $ just check     # Run the test suite and check recipe formatting
+$ just packages  # Build the packages the image consumes
 $ just build     # Build the bootc container; not a ready-to-flash tablet image
 $ just --list    # List development recipes
 ```
-
-`just build` reuses prebuilt packages from the registries when the content hash
-matches, so you normally do not need to build packages first. Run
-`just package NAME` only when you change that package or it is missing; it builds
-one local package. `just packages` intentionally rebuilds every package.
 
 ### Freedom Control
 

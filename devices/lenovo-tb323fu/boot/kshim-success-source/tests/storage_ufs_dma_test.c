@@ -138,26 +138,6 @@ static void test_captured_accepts(void)
     assert(accepts(&snapshot, UINT64_C(0x1000), UINT64_C(0x2000)));
 }
 
-static void test_gen5_inherited_context(void)
-{
-    struct storage_probe_snapshot snapshot;
-
-    captured(&snapshot);
-    snapshot.board = DEVICE_BOARD_TB323FU;
-    snapshot.read_attempts = 176U;
-    snapshot.stream_count = snapshot.streams_scanned = 122U;
-    set_value(&snapshot, SMMU_BASE, UINT32_C(0x00270406));
-    set_value(&snapshot, SMMU_BASE + 0x20U, UINT32_C(0x4c017e7a));
-    set_value(&snapshot, SMMU_BASE + 0x24U, UINT32_C(0x60000051));
-    set_value(&snapshot, SMMU_BASE + 0x28U, UINT32_C(0x00005211));
-    assert(accepts(&snapshot, UINT64_C(0x80000000), UINT64_C(0x8000)));
-    assert(accepts(&snapshot, UINT64_C(0xffffff000), UINT64_C(0x1000)));
-    assert(!accepts(&snapshot, UINT64_C(0x1000000000), UINT64_C(0x1000)));
-
-    set_value(&snapshot, SMMU_BASE + 0x80000U, UINT32_C(0x0a9f00e1));
-    assert(!accepts(&snapshot, UINT64_C(0x80000000), UINT64_C(0x8000)));
-}
-
 /* 16 KiB and 64 KiB granule capabilities are independent supported bits and
  * must not cause a rejection on their own. */
 static void test_granule_capabilities_accepted(void)
@@ -429,7 +409,6 @@ static void test_derived_bank_geometry(void)
 int main(void)
 {
     test_captured_accepts();
-    test_gen5_inherited_context();
     test_granule_capabilities_accepted();
     test_64k_stride_accepts();
     test_span_rejected();

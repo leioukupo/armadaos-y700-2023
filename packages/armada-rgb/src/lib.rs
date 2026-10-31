@@ -11,7 +11,7 @@ mod state;
 mod watcher;
 
 pub use backend::{
-    ChannelBackend, GcmHidBackend, LightingBackend, MulticolorBackend, SerialBackend,
+    ChannelBackend, LightingBackend, MulticolorBackend, SerialBackend, SerialProtocol,
 };
 pub use controller::Controller;
 pub use correction::ColorCorrection;

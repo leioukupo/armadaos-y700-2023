@@ -56,41 +56,18 @@ to a commit, or `armada` if it's original; a URL source with no `notes` is verba
   source: armada
 - `patches/0027-steamcompmgr-elapsed-time-fps-limiter.patch`
   source: armada
-
-- `patches/0028-drm-collect-refresh-rates-without-edid.patch`
-  source: armadaos-freedom (TB323FU adaptation)
-  Empty EDID still reaches the existing device profile lookup; rates-only profiles use the kernel's modes. Unknown profiles retain real-mode fallback.
-
-- `patches/0033-wlserver-only-take-an-edge-swipe-that-starts-at-the-edge.patch`
-  source: https://github.com/armada-os/armada/blob/310c011470319aa40d264a10db855a7056842db5/packages/gamescope/patches/0028-wlserver-only-take-an-edge-swipe-that-starts-at-the-edge.patch
-  PR: https://github.com/armada-os/armada/pull/665
-  Original 0028 renumbered to 0033 only; body unchanged. Scope: an edge swipe must start at the edge.
-
-- `patches/0034-edid-clamp-synthetic-pixel-clock-above-the-dtd-limit.patch`
-  source: https://github.com/enij90/armada-tb321fu/commit/8d4b5530ab8afbc41d35e6577fa91e77ee872c3a
-  notes: Rebased to the PR665 + Y705 tree; the two production hunks are only relocated, and the Y700 mode-list test expectation is adapted. EDID DTD metadata clamps pixel clocks above 655.35 MHz while preserving geometry; the actual scanout modes remain the kernel modes. This does NOT fix physical 165 Hz, change panel clocks, or fix the 90 Hz physical corruption. No new tests or physical fixes are claimed.
-  The patch header's "not executed" statement dates from artifact generation. The unchanged patch was subsequently built in the ARM64 RPM; 17 related tests / 113 assertions passed. This sync verifies it against that RPM's source package and reuses the recorded build results. See the TB323FU status record for device acceptance and remaining issues.
-
-- `patches/0035-wlserver-associate-spi-touchscreens-with-internal-display.patch`
+- `patches/0029-drm-mirror-internal-screen-sleep-to-the-lease-companion.patch`
   source: armada
-  The connector heuristic only mapped i2c to the internal connector and usb to the external one. An SPI digitizer (TB322FC: input -> spi -> spi_master -> platform) matched neither, so touch stayed unassociated and skipped the connector's orientation transform. spi is now handled like i2c. No angle is hardcoded; calibration, DPI, kernel, UI, Steam arguments and the USB path are unchanged. Not built or device-tested here.
-
-- `patches/0036-improve-frame-pacing.patch`
-  source: https://github.com/mydanyi/armada-danyi-build/blob/ec6055d92099c616ff76cad8d34cd60514d9b036/packages/gamescope/patches/0028-improve-frame-pacing.patch
-  notes: Valve PR #2417 frame pacing: wake steamcompmgr after host event reads, avoid scheduling the same refresh twice, and keep nested refresh overrides on their own schedule. Includes the VBlankSchedule tests.
-
-- `patches/0037-fifo-display-identity-hud.patch`
-  source: https://github.com/mydanyi/armada-danyi-build/blob/ec6055d92099c616ff76cad8d34cd60514d9b036/packages/gamescope/patches/0029-personal-fifo-display-identity-hud.patch
-  notes: FIFO head-of-line blocking fix; binds displayed DRM frames to the base/app identity and publishes the HUD wire layout, matched by the receiver.
-
-- `patches/0038-steamcompmgr-steamui-refresh-ceiling.patch`
+- `patches/0030-drm-lock-the-lease-companion-with-the-broker.patch`
   source: armada
-  notes: Optional maximum 60 Hz / 60 FPS refresh ceiling for the Steam main UI on a supported internal display. Lower refresh rates already in effect are kept, and idle rendering stays event-driven with no forced redraws. Game FPS limits are preserved, and the current game's refresh policy is restored when game focus returns.
-
-- `patches/0039-wlserver-allow-in-game-touch-gestures.patch`
+- `patches/0031-drm-wait-for-the-lock-state-before-lighting-the-companion.patch`
   source: armada
-  notes: The in-game swipe setting defaults on and remains subordinate to the master setting. Every click mode except Disabled supports edge swipes; the Steam UI remains independent of the in-game setting. Menu keys are delivered directly to Steam's X11 focus window so XTest/libei cannot route them to the game. Menu delivery waits for all touch contacts to finish and a short release grace, preserving native game touch across menu transitions. Regressions: `python3 tests/test_in_game_swipes.py` and `python3 tests/test_steam_menu_dispatch.py` (requires Xvfb and X11/XTest development libraries).
+- `patches/0032-steamcompmgr-use-the-exact-rate-for-refresh-only-requests.patch`
+  source: armada
 
-- `patches/0042-steamcompmgr-skip-redundant-steam-placeholder.patch`
-  source: armadaos-freedom
-  notes: Avoids reserving or drawing a transparent Steam placeholder when a visible external overlay already exists. Real Steam menus and the no-overlay fallback are preserved. This removes a redundant plane that can force GPU composition on rotated outputs. Regression: `python3 tests/test_steam_overlay_placeholder.py` in the patched source tree.
+- `patches/0033-steamcompmgr-optional-blank-overlay-placeholder.patch`
+  source: armada
+  notes: Context refreshed for the repeat-frame argument on the current Gamescope base; behaviour unchanged.
+
+- `patches/0034-vulkan-allow-linear-composition-output.patch`
+  source: armada
