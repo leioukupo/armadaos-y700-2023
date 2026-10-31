@@ -91,9 +91,17 @@ ARCH_ROOTFS_URL="https://rootfs.fex-emu.gg/ArchLinux/2026-08-11/ArchLinux.sqsh"
 ARCH_ROOTFS_SHA256="5d0c1a38590c68e5c2597c2c8a26d2f80170b1b738c857d63e1cdadada5f5f2a"
 # BunnyCDN origin is reachable; the guard only stops a stalled transfer so
         # --retry can restart it instead of hanging the whole image build.
-curl --retry 3 --retry-delay 2 --connect-timeout 20 \
-    --speed-limit 200000 --speed-time 60 \
-    -fsSL -o /usr/share/fex-emu/RootFS/ArchLinux.sqsh "${ARCH_ROOTFS_URL}"
+ARCH_SQSH=/usr/share/fex-emu/RootFS/ArchLinux.sqsh
+if [ -s /mirror/ArchLinux.sqsh ]; then
+    # The build host stages an offline copy of the 1.36 GB squashfs:
+    # rootfs.fex-emu.gg throttles hard on CN links and the upstream speed
+    # guard below aborts anything under 200 KB/s.
+    install -m 0644 /mirror/ArchLinux.sqsh "${ARCH_SQSH}"
+else
+    curl --retry 3 --retry-delay 2 --connect-timeout 20 \
+        --speed-limit 200000 --speed-time 60 \
+        -fsSL -o "${ARCH_SQSH}" "${ARCH_ROOTFS_URL}"
+fi
 echo "${ARCH_ROOTFS_SHA256}  /usr/share/fex-emu/RootFS/ArchLinux.sqsh" | sha256sum -c -
 # Steam's FEX compat tool needs the manifest the rootfs ships; a bump to a
 # rootfs without one would otherwise fail only at x86 game launch.
