@@ -75,17 +75,34 @@ dnf5 -y install --setopt=install_weak_deps=False \
     btop \
     tailscale
 
-curl --connect-timeout 30 --max-time 120 --retry 3 -fsSL \
-    -o /etc/yum.repos.d/negativo17-fedora-multimedia.repo \
-    https://negativo17.org/repos/fedora-multimedia.repo
+# negativo17.org throttles to about 10 KB/s from CN links, and the whole rootfs
+# is one RUN layer: a stalled download there costs a full rebuild. The build
+# host stages the fedora-multimedia closure in /mirror/neg17 (read-only bind
+# mount); dnf5 still solves every dependency against the Fedora repos, so a
+# missing RPM fails loudly instead of silently shrinking the image.
+if compgen -G "/mirror/neg17/*.rpm" > /dev/null; then
+    dnf5 -y --nogpgcheck install --setopt=install_weak_deps=False /mirror/neg17/*.rpm
+else
+    curl --connect-timeout 30 --max-time 120 --retry 3 -fsSL \
+        -o /etc/yum.repos.d/negativo17-fedora-multimedia.repo \
+        https://negativo17.org/repos/fedora-multimedia.repo
 
-dnf5 -y install --setopt=install_weak_deps=False \
-    ffmpeg \
-    ffmpeg-libs \
-    libavcodec \
-    libfdk-aac \
-    gstreamer1-plugins-ugly \
-    gstreamer1-plugin-libav
+    dnf5 -y install --setopt=install_weak_deps=False \
+        ffmpeg \
+        ffmpeg-libs \
+        libavcodec \
+        libfdk-aac \
+        gstreamer1-plugins-ugly \
+        gstreamer1-plugin-libav
+fi
+
+for multimedia in ffmpeg ffmpeg-libs libavcodec libfdk-aac \
+                  gstreamer1-plugins-ugly gstreamer1-plugin-libav; do
+    rpm -q "${multimedia}" >/dev/null || {
+        echo "ERROR: ${multimedia} is not installed" >&2
+        exit 1
+    }
+done
 
 # Install the remaining plugins from Fedora; Negativo17's full -bad package
 # pulls a large soundfont payload that Armada does not need.
