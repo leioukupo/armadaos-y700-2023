@@ -1,0 +1,35 @@
+# Keep every text file LF in the index *and* in the working tree: buildah/build.sh
+# steps, kernel patches and .dts files either break or churn on CRLF checkouts.
+* text=auto eol=lf
+
+*.bin binary
+*.tlv binary
+*.mdt binary
+*.mbn binary
+*.tplg binary
+*.elf binary
+*.ko binary
+*.dtb binary
+*.dtbo binary
+*.mem binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.gz binary
+*.xz binary
+*.zst binary
+*.tar binary
+*.img binary
+*.iso binary
+*.zip binary
+*.pdf binary
+*.pyc binary
+*.exe binary
+*.dll binary
+*.so binary

@@ -17,3 +17,16 @@ __pycache__/
 /decky/bundled-plugins/plugins.resolved.json
 /decky/bundled-plugins/assets/
 
+
+# Local-only build scratch (board helper scripts, progress log, editor state)
+/.work/
+/PROGRESS.md
+/.vscode/
+/_board.py
+/_*.sh
+/_*.py
+/tmp_*
+
+# Extracted ath11k WCN6855 blobs stay local: the image ships them from the
+# atheros-firmware rpm, and these older copies would shadow its board-2.bin.
+/system_files/usr/lib/firmware/ath11k/
