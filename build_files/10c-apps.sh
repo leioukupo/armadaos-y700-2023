@@ -3,8 +3,17 @@ set -euxo pipefail
 
 dnf5 -y install --setopt=install_weak_deps=False firefox
 
-dnf5 -y install --setopt=install_weak_deps=False \
-    heroic-games-launcher
+# heroic-games-launcher is a 116 MiB RPM on repos.fyralabs.com, which can
+# throttle to a few hundred B/s over CN links and stall the whole image build.
+# Prefer the copy staged on the build host in the read-only /mirror bind mount
+# (sha256 taken from the terra44 repodata, verified there).
+if ls /mirror/terra/heroic-games-launcher-*.rpm >/dev/null 2>&1; then
+    dnf5 -y --nogpgcheck install --setopt=install_weak_deps=False \
+        /mirror/terra/heroic-games-launcher-*.rpm
+else
+    dnf5 -y install --setopt=install_weak_deps=False \
+        heroic-games-launcher
+fi
 
 # scx_cosmos/scx_lavd for the Armada Control scheduler setting; without the
 # binaries armada-powerd reports the scheduler choice as unavailable.
