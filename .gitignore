@@ -30,3 +30,4 @@ __pycache__/
 # Extracted ath11k WCN6855 blobs stay local: the image ships them from the
 # atheros-firmware rpm, and these older copies would shadow its board-2.bin.
 /system_files/usr/lib/firmware/ath11k/
+/probe_last.txt

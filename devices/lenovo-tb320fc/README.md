@@ -18,7 +18,7 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 | Android 启动 | 未实机验证；要求 bootloader 已解锁（AVB `NONE` 重封） |
 | 机身 Linux | 未实机验证 |
 | 触屏/手写笔 | 未实机验证（NVT36xxx host-download SPI 驱动已移植，设备名 `NVTCapacitiveTouchScreen`） |
-| Wi-Fi | 不可用：QCA6490 尚无主线驱动，PCIe/i2c 节点保持禁用 |
+| Wi-Fi | 已启用（待实机验证）：QCA6490 = WCN6855 包，走主线 `ath11k` PCI 路径，内核 `CONFIG_ATH11K=y`/`CONFIG_ATH11K_PCI=y`，设备树 `&pcie0` + `wifi@0 compatible = "pci17cb,1103"` 已使能并带 10 路 PMU 供电；固件由 `atheros-firmware` 提供（`/usr/lib/firmware/ath11k/WCN6855/hw2.0/{amss,board-2,m3,regdb}.bin.xz`） |
 | 触觉反馈 | PM8008（i2c5）尚无主线消费方，节点保持禁用 |
 | 内置手柄 | 本机无内置手柄，`ARMADA_BUILTIN_GAMEPAD=0`，不等待 CompositeDevice |
 
@@ -45,6 +45,14 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 
 引导构建见[二代引导文档](boot/README.md)；kShimC 复用[五代共享源码树](../lenovo-tb323fu/boot/kshim-success-source/README.md)的 `tb320fc_android_defconfig` 配置。
 
+## 在设备上构建镜像
+
+二代 57 GB eMMC 装不下单次 RUN 的 rootfs 提交（build 容器 diff + layer blob + 解包层需要约三份 ~12 GB），所以 rootfs 分成 5 段 RUN 分层提交：`10a-core` → `10b-desktop + 10c-apps` → `20 + 30` → `40 + 45 + 46` → `50-80`；`build_files/build.sh` 接受步骤号前缀，无参数时仍按原顺序跑全部步骤（上游 CI 的行为不变）。
+
+- `/mirror` 是构建机提供的只读 bind mount：`gh-fetch.sh`、`10a/10c` 会优先读取其中预置的资产（terra RPM、FEX Arch rootfs、fedora-multimedia、heroic RPM），没有该挂载时自动回退到网络源。
+- GitHub 资产可经一个上游 HTTP 代理下载：`build_files/gh-proxy.conf`（单行 `http://host:port`）或环境变量 `ARMADA_HTTP_PROXY`；该 conf 属于本地环境，不入库。
+- `bootc-image-builder` 打包在 57 GB eMMC 上需要 zram 暂存（实测峰值 ~34 GB），成品 raw 38 GB、gz 约 7.2 GB。
+- ESP 上的 `/KERNEL`（内核 + initramfs + `supported-dtbs`，含 `sm8475-lenovo-tb320fc`）由二代 boot 打包流程写入，见[二代引导文档](boot/README.md)。
 ## 源码与来源
 
 | 文件 | 用途 |
