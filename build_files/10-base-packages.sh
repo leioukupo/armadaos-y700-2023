@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euxo pipefail
 
+bash "$(dirname "${BASH_SOURCE[0]}")/pin-fedora-mirror.sh"
+
 dnf5 -y install --nogpgcheck \
     --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' \
     terra-release
@@ -98,11 +100,6 @@ dnf5 -y install --setopt=install_weak_deps=False \
 dnf5 -y install --setopt=install_weak_deps=False \
     /packages/umtp-responder/umtp-responder-*.rpm
 
-# The Chinese btop fork is a separate package: Fedora's btop above stays the
-# English command, and this only adds /usr/libexec/armada/btop-cn beside it.
-dnf5 -y install --setopt=install_weak_deps=False \
-    /packages/btop-cn/btop-cn-[0-9]*.aarch64.rpm
-
 # kshim-tools scripts run under python3 and call dtc, gzip and openssl.
 dnf5 -y install --setopt=install_weak_deps=False \
     python3 \
@@ -192,5 +189,26 @@ dnf5 -y install --setopt=install_weak_deps=False \
     krunner-bazaar
 
 mkdir -p /etc/flatpak/remotes.d
-curl --retry 3 -fsSL -o /etc/flatpak/remotes.d/flathub.flatpakrepo \
-    https://dl.flathub.org/repo/flathub.flatpakrepo
+# dl.flathub.org intermittently resets connections from some networks and the
+# build hard-fails on it, so retry with transfer timeouts and fall back to the
+# copy vendored in the build context (the GPG key in it is the long-lived
+# Flathub repo signing key; refresh it manually if flathub ever rotates keys).
+flathub_repo=/etc/flatpak/remotes.d/flathub.flatpakrepo
+flathub_ok=0
+for flathub_url in \
+        https://dl.flathub.org/repo/flathub.flatpakrepo \
+        https://dl.flathub.net/repo/flathub.flatpakrepo; do
+    if curl --retry 3 --retry-delay 5 --connect-timeout 15 \
+            --speed-limit 2000 --speed-time 20 -fsSL -o "${flathub_repo}.tmp" "${flathub_url}" &&
+            [[ -s "${flathub_repo}.tmp" ]]; then
+        mv -f "${flathub_repo}.tmp" "${flathub_repo}"
+        flathub_ok=1
+        break
+    fi
+    rm -f "${flathub_repo}.tmp"
+done
+if [[ ${flathub_ok} != 1 ]]; then
+    echo "10-base-packages: flathub.flatpakrepo download failed, using vendored copy" >&2
+    install -m 0644 "$(dirname "${BASH_SOURCE[0]}")/flathub.flatpakrepo" "${flathub_repo}"
+fi
+grep -q "^Url=" "${flathub_repo}"
