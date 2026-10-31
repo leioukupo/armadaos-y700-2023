@@ -52,7 +52,9 @@ int kshim_qcom_reboot_parse(const void *fdt,
     if (fdt_node_check_compatible(fdt, 0, "qcom,canoep") &&
         fdt_node_check_compatible(fdt, 0, "lenovo,tb323fu") &&
         fdt_node_check_compatible(fdt, 0, "lenovo,baldur") &&
-        fdt_node_check_compatible(fdt, 0, "qcom,sunp"))
+        fdt_node_check_compatible(fdt, 0, "qcom,sunp") &&
+        /* TB710FU (SM8650): same SCM dload + SDAM restart_reason DT ABI. */
+        fdt_node_check_compatible(fdt, 0, "qcom,pineapple"))
         return KSHIM_QCOM_REBOOT_UNSUPPORTED;
 
     int scm = unique_compatible(fdt, "qcom,scm");
@@ -368,8 +370,7 @@ int kshim_qcom_reboot_request(const void *fdt, enum kshim_qcom_reboot_target tar
             return KSHIM_QCOM_REBOOT_UNSUPPORTED;
     }
 #if CONFIG_KSHIM_EDL_DISABLE_SDI
-    /* Check before changing the download cookie. This experiment follows
-     * SM8750 qcom_scm_shutdown's BOOT/WDOG_DEBUG_PART fast-call ABI. */
+    /* Check service availability before changing the download cookie. */
     if (target == KSHIM_QCOM_REBOOT_EDL &&
         !scm_available(UINT32_C(0x02000109)))
         return KSHIM_QCOM_REBOOT_UNSUPPORTED;
@@ -401,8 +402,7 @@ int kshim_qcom_reboot_request(const void *fdt, enum kshim_qcom_reboot_target tar
     }
 #if CONFIG_KSHIM_EDL_DISABLE_SDI
     if (target == KSHIM_QCOM_REBOOT_EDL) {
-        /* Disable watchdog debug (1) and SDI (0), as the kernel does before
-         * warm reset. Keep PMIC handling and the selected reset unchanged. */
+        /* Disable watchdog debug (1) and SDI (0) before warm reset. */
         error = scm_call(SCM_DISABLE_SDI, 2, 1, 0, NULL);
         if (error) goto rollback;
     }

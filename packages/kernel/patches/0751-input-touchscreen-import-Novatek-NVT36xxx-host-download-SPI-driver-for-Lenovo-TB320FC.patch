@@ -12,7 +12,9 @@ mechanical fixes for the modern kernel:
     1-argument form;
   - the Kconfig symbol is normalized to TOUCHSCREEN_NVT36XXX_HOSTDL_SPI.
 
-The driver binds "novatek,NVT-ts-spi" and reads the novatek,reset-gpio /
+The driver binds "novatek,nvt36xxx-ts-spi" (its own compatible: the generic
+"novatek,NVT-ts-spi" belongs to the NT36536 driver, nt36536_ts) and reads the
+novatek,reset-gpio /
 novatek,irq-gpio / novatek,pen-support / novatek,stylus-resol-double
 properties from the board file; the penraw character device and the
 proc flash/debug helpers come along with it.
@@ -20,20 +22,24 @@ proc flash/debug helpers come along with it.
 diff --git a/drivers/input/touchscreen/Kconfig b/drivers/input/touchscreen/Kconfig
 --- a/drivers/input/touchscreen/Kconfig
 +++ b/drivers/input/touchscreen/Kconfig
-@@ -1458,6 +1458,7 @@
+@@ -1457,8 +1458,9 @@ config TOUCHSCREEN_HIMAX_HX83112B
+ 	  To compile this driver as a module, choose M here: the
  	  module will be called himax_hx83112b.
  
- source "drivers/input/touchscreen/nt36536/Kconfig"
 +source "drivers/input/touchscreen/nvt_touch_spi/Kconfig"
+ source "drivers/input/touchscreen/nt36532/Kconfig"
+ source "drivers/input/touchscreen/nt36536/Kconfig"
  
  config TOUCHSCREEN_ST7123
  	tristate "Sitronix ST7123 touchscreen controller"
 diff --git a/drivers/input/touchscreen/Makefile b/drivers/input/touchscreen/Makefile
 --- a/drivers/input/touchscreen/Makefile
 +++ b/drivers/input/touchscreen/Makefile
-@@ -126,3 +126,4 @@
+@@ -125,5 +126,6 @@
+ obj-$(CONFIG_TOUCHSCREEN_IQS7211)	+= iqs7211.o
  obj-$(CONFIG_TOUCHSCREEN_ZINITIX)	+= zinitix.o
  obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX83112B)	+= himax_hx83112b.o
+ obj-$(CONFIG_TOUCHSCREEN_NT36532_SPI)	+= nt36532/
  obj-$(CONFIG_TOUCHSCREEN_NT36536_SPI)	+= nt36536/
 +obj-$(CONFIG_TOUCHSCREEN_NVT36XXX_HOSTDL_SPI)	+= nvt_touch_spi/
 diff --git a/drivers/input/touchscreen/nvt_touch_spi/Kconfig b/drivers/input/touchscreen/nvt_touch_spi/Kconfig
@@ -4463,7 +4469,7 @@ index 000000000000..123456789012
 +
 +#ifdef CONFIG_OF
 +static struct of_device_id nvt_match_table[] = {
-+	{ .compatible = "novatek,NVT-ts-spi",},
++	{ .compatible = "novatek,nvt36xxx-ts-spi",},
 +	{ },
 +};
 +#endif

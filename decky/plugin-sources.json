@@ -2,12 +2,6 @@
   "schemaVersion": 1,
   "releases": [
     {
-      "name": "LSFG-VK ARM64",
-      "directory": "LSFG-VK ARM64",
-      "repository": "mydanyi/decky-lsfg-vk-arm64",
-      "assetPattern": "LSFG-VK-ARM64-*-full.zip"
-    },
-    {
       "name": "DeckyClash",
       "directory": "DeckyClash",
       "repository": "chenx-dust/DeckyClash",

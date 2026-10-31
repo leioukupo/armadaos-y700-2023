@@ -209,6 +209,11 @@ target_compile_definitions(tb323fu_splash_test PRIVATE
 kshim_test(tb322fc_splash_test tb322fc_splash_test.c)
 target_link_libraries(tb322fc_splash_test PRIVATE kshim_dt)
 
+# TB710FU / SM8650 splash detection (measured register values); builds its
+# DT in-process with libfdt.
+kshim_test(tb710fu_splash_test tb710fu_splash_test.c)
+target_link_libraries(tb710fu_splash_test PRIVATE kshim_dt)
+
 # Parent index cache unit test: wrap fdt_parent_offset to observe cache hits.
 kshim_test(dt_parent_index_test parent_index_test.c)
 target_link_libraries(dt_parent_index_test PRIVATE kshim_dt)
@@ -484,3 +489,10 @@ target_sources(storage_settings_export_test PRIVATE "${KSHIM_ROOT}/src/dt/storag
 kshim_test(storage_settings_native_test storage_settings_native_test.c
     "${KSHIM_ROOT}/src/arch/arm64/storage_settings_native.c")
 target_compile_definitions(storage_settings_native_test PRIVATE CONFIG_KSHIM_SETTINGS_SAVE_TEST=1)
+
+kshim_test(android_touch_spi_trial_test android_touch_spi_trial_test.c
+    "${KSHIM_ROOT}/src/dt/tb323fu_android_touch.c")
+target_link_libraries(android_touch_spi_trial_test PRIVATE kshim_dt)
+add_test(NAME android_touch_profile_test
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/android_touch_profile_test.py"
+        --cc "${CMAKE_C_COMPILER}" --crdk-include "${CRDK_ROOT}/Include")

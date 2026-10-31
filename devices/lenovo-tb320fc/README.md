@@ -41,7 +41,7 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 
 二代使用 `packages/kernel` 的 Linux 7.2.6 + Freedom 补丁集。SM8475 基础设备树派生自主线 sm8450 家族（`sm8475.dtsi`），板级文件由 live 抓取的 vendor DTB（vendor_boot `vb_02` "CapeP SoC" + `dtbo_14` "Cape MTP with PM8008"）重构。
 
-显示为 Novatek NT36523N 1600×2560 FHD+ 144 Hz 面板（双 DSI bonded 2×800、C-PHY 3 lane、DSC 8bpc、外置 Kinetic KTZ8866 背光）；触摸为 Novatek NVT36xxx host-download SPI（支持手写笔），分别由内核补丁 `0224`、`0225` 引入。
+显示为 Novatek NT36523N 1600×2560 FHD+ 144 Hz 面板（双 DSI bonded 2×800、C-PHY 3 lane、DSC 8bpc、外置 Kinetic KTZ8866 背光）；触摸为 Novatek NVT36xxx host-download SPI（支持手写笔），分别由内核补丁 `0750`、`0751` 引入。
 
 引导构建见[二代引导文档](boot/README.md)；kShimC 复用[五代共享源码树](../lenovo-tb323fu/boot/kshim-success-source/README.md)的 `tb320fc_android_defconfig` 配置。
 
@@ -53,8 +53,8 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 | [板级 DTS](../../packages/kernel/dts/sm8475-lenovo-tb320fc.dts) | 由 live vendor 设备树重构 |
 | [DTS 适配补丁](../../packages/kernel/dts/sm8475-lenovo-tb320fc.dts.patch) | kShim 交接（SMMU 解绑等） |
 | [基础设备树](../../packages/kernel/dts/sm8475.dtsi) | 派生自主线 sm8450.dtsi |
-| [面板驱动补丁](../../packages/kernel/patches/0224-drm-panel-nt36523-add-Lenovo-TB320FC-NT36523N.patch) | NT36523N 面板驱动 |
-| [触摸驱动补丁](../../packages/kernel/patches/0225-input-touchscreen-import-Novatek-NVT36xxx-host-download-SPI-driver-for-Lenovo-TB320FC.patch) | NVT36xxx host-download SPI 触摸驱动 |
+| [面板驱动补丁](../../packages/kernel/patches/0750-drm-panel-nt36523-add-Lenovo-TB320FC-NT36523N.patch) | NT36523N 面板驱动 |
+| [触摸驱动补丁](../../packages/kernel/patches/0751-input-touchscreen-import-Novatek-NVT36xxx-host-download-SPI-driver-for-Lenovo-TB320FC.patch) | NVT36xxx host-download SPI 触摸驱动 |
 | [kShimC 补丁](patches/boot/kshim-gen2-entry-protocol.patch) | 二代入口协议（自适应二/四代布局） |
 | [boot 打包器](boot/build_android_boot.py) | MZ/PE 感知的二代 boot 打包器 |
 | [edl-devices profile](../../build_files/edl-devices.json) | 构建机设备 profile（SM8475/capep） |

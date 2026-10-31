@@ -16,6 +16,28 @@ def fixture(version=1):
     struct.pack_into('<5I',rec,56,0,2 if version==1 else 4,1,2 if version>=2 else 0,0);seal(rec)
     return header,bytes(d+rec+bytes(65536-8192))
 class Tests(unittest.TestCase):
+    def test_supported_board_soc_pairs(self):
+        for compatible in (
+            b'lenovo,elden\0qcom,sm8750\0',
+            b'lenovo,baldur\0qcom,sm8850\0',
+            b'lenovo,baldur\0qcom,kaanapali\0',
+            b'lenovo,baldur\0qcom,sm8850\0qcom,kaanapali\0',
+        ):
+            with self.subTest(compatible=compatible):
+                with patch.object(edl.Path,'read_bytes',side_effect=[compatible,b'']):
+                    with self.assertRaisesRegex(edl.Refuse,'Installed launcher does not support Linux EDL requests'):
+                        edl.device_context()
+    def test_mismatched_board_soc_pairs_rejected(self):
+        for compatible in (
+            b'qcom,kaanapali\0',
+            b'lenovo,elden\0qcom,kaanapali\0',
+            b'lenovo,baldur\0qcom,sm8750\0',
+            b'lenovo,elden\0lenovo,baldur\0qcom,sm8750\0qcom,kaanapali\0',
+        ):
+            with self.subTest(compatible=compatible):
+                with patch.object(edl.Path,'read_bytes',return_value=compatible):
+                    with self.assertRaisesRegex(edl.Refuse,'Unsupported board'):
+                        edl.device_context()
     def makefile(self,version=1):
         f=tempfile.NamedTemporaryFile(dir=os.environ['TMPDIR']);f.truncate(edl.SIZE)
         h,r=fixture(version);os.pwrite(f.fileno(),h,0);os.pwrite(f.fileno(),b'backup payload stays',65536);os.pwrite(f.fileno(),r,edl.REGION_OFFSET)

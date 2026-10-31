@@ -193,12 +193,15 @@ select the `.zip.001` file in the matching installer; it reads the continuous
 numbered volumes from that folder. The installer does not read `parts.json`.
 
 A package records its source as provenance: one exact nonzero lowercase
-40-character commit SHA, read without trimming or normalizing. Use an installer
-whose source reader accepts exactly that provenance form and whose model
-registration covers the models in the package. The released 0.6.5 binary has not
-been rebuilt with this reader change; a new installer built with the revised
-reader and model registration is required before distributing packages that
-depend on it.
+40-character commit SHA, read without trimming or normalizing. The
+[Windows installer](https://github.com/mydanyi/armadaos-freedom-installer)
+validates that provenance and selects the matching model before writing.
+
+The installer creates the tablet-specific 2 GiB `ARMADA_BACKUP` image from
+verified local recovery material. It is not part of the shared Linux payload.
+Version 0.7.4 creates recovery images with the v3 settings area in the final
+64 KiB; support for reading or saving settings remains model-specific. See the
+[recovery image contract](https://github.com/mydanyi/armadaos-freedom-installer/blob/main/docs/package-contract.md).
 
 The legacy SD card image and its manual installation flow remain available.
 

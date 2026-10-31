@@ -713,7 +713,7 @@
 	status = "okay";
 
 	novatek@0 {
-		compatible = "novatek,NVT-ts-spi";
+		compatible = "novatek,nvt36xxx-ts-spi";
 		reg = <0>;
 
 		spi-max-frequency = <9600000>;

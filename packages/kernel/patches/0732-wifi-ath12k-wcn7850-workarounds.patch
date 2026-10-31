@@ -17,9 +17,10 @@ ath12k_base is allocated):
 - hardware crypto: set the encrypt type of protected frames, which
   otherwise went out unencrypted.
 
-A read-only board_name module parameter forces the board-2.bin entry
-name, for the vendor board file; the regdb lookup falls back to the bus
-name as before.  The periodic CE/DP poller and the tuning knobs of the
+A read-only board_name module parameter can force the board-2.bin
+entry name (a debug override: the board-2.bin in the image carries the
+TB710FU entry under the name the driver builds by itself); the regdb
+lookup falls back to the bus name as before.  The periodic CE/DP poller and the tuning knobs of the
 original port are left out: they are off on the running device.
 ---
  drivers/net/wireless/ath/ath12k/core.c        | 17 +++++++
