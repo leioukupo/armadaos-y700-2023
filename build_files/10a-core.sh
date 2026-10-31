@@ -111,8 +111,3 @@ done
 # pulls a large soundfont payload that Armada does not need.
 rm -f /etc/yum.repos.d/negativo17-fedora-multimedia.repo
 
-# The image is committed per RUN, so anything still in the dnf download
-# cache becomes part of this layer and stays in the image forever.
-dnf5 -y clean all || true
-rm -rf /var/cache/dnf /var/cache/libdnf5 /var/cache/PackageKit /var/log/dnf.log*
-

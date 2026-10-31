@@ -52,8 +52,3 @@ if [[ ${flathub_ok} != 1 ]]; then
 fi
 grep -q "^Url=" "${flathub_repo}"
 
-# The image is committed per RUN, so anything still in the dnf download
-# cache becomes part of this layer and stays in the image forever.
-dnf5 -y clean all || true
-rm -rf /var/cache/dnf /var/cache/libdnf5 /var/cache/PackageKit /var/log/dnf.log*
-
