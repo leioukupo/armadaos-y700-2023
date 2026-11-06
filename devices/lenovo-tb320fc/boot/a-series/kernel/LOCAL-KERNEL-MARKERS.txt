@@ -1,0 +1,137 @@
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:13: *    register a console: kernel/printk/printk.c calls y700_ramlog_store() once
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:95:void y700_ramlog_store(const char *s, unsigned int count, u64 seq)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:155:			pr_emerg("Y700-RAMLOG %c phys=%pap memremap FAILED\n",
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:165:		pr_emerg("Y700-RAMLOG %c phys=%pap magic=%08x boot=%u head=%u\n",
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:182:		pr_emerg("Y700-RAMLOG: no ring carried a tail - DRAM does not survive this reset\n");
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:203:	pr_emerg("Y700-RAMLOG boot=%u mapped=%u prev=%c prevbytes=%zu\n",
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:214:void y700_ramlog_replay(int lines)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:263:unsigned int y700_ramlog_boot_nr(void)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:269:unsigned int y700_ramlog_this_bytes(void)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:274:bool y700_ramlog_have_prev(void)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:284: * battery.  y700_ramlog_replay() prints oldest-first, so what stays visible is
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:287:void y700_ramlog_park(void)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:292:		y700_ramlog_replay(14);
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:305:void y700_ramlog_freeze(void)
+/tmp/y700/kbuild/asphalt-linux/init/y700_ramlog.c:307:	pr_emerg("Y700-FREEZE: panel frozen, nothing more prints - photograph it, hold power to escape\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1422:void y700_ramlog_freeze(void);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1438:			printk(KERN_EMERG "Y700-HALT level=%d ran=%d - panel shows THIS boot\n",
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1440:			y700_ramlog_freeze();
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1447: * kept in the y700log DRAM ring by init/y700_ramlog.c. */
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1448:void y700_ramlog_replay(int lines);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1449:unsigned int y700_ramlog_boot_nr(void);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1450:bool y700_ramlog_have_prev(void);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1451:void y700_ramlog_park(void);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1452:unsigned int y700_ramlog_this_bytes(void);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1453:void y700_dump_devices(void);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1454:extern const char *y700_probe_inflight;
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1475:		printk(KERN_EMERG "Y700-LVL%d start\n", level);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1480:			printk(KERN_EMERG "Y700-RAMLOG status boot=%u thisboot=%u prev=%d\n",
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1481:			       y700_ramlog_boot_nr(), y700_ramlog_this_bytes(),
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1482:			       y700_ramlog_have_prev() ? 1 : 0);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1483:			y700_ramlog_replay(level ? 24 : 40);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1504:		printk(KERN_EMERG "Y700-LVL%d done\n", level);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1508:	printk(KERN_EMERG "Y700-INITCALLS-DONE\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1510:	y700_dump_devices();
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1511:	printk(KERN_EMERG "Y700-DUMP-DONE\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1517:	printk(KERN_EMERG "Y700-PHOTO 1/1 HOLD-1.5s TAKE-PHOTO\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1551: * and has /init set the y700_alive flag yet (au=1 means userspace is up).
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1553:static u32 y700_userspace_alive;
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1555:static int y700_khbfn(void *unused)
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1561:		printk(KERN_EMERG "Y700-HB %u au=%u in=%s\n", i,
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1562:			READ_ONCE(y700_userspace_alive),
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1563:			y700_probe_inflight ? y700_probe_inflight : "?");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1580:	printk(KERN_EMERG "Y700-MARK pre-execve\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1667:	kthread_run(y700_khbfn, NULL, "y700_khb");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1668:	printk(KERN_EMERG "Y700-MARK khb-early\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1671:	printk(KERN_EMERG "Y700-MARK freeable-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1674:	printk(KERN_EMERG "Y700-MARK async-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1683:	printk(KERN_EMERG "Y700-MARK markro-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1689:	debugfs_create_u32("y700_alive", 0600, NULL,
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1690:		&y700_userspace_alive);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1691:	printk(KERN_EMERG "Y700-MARK alive-flag\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1698:	printk(KERN_EMERG "Y700-MARK pti-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1702:	printk(KERN_EMERG "Y700-MARK numa-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1705:	printk(KERN_EMERG "Y700-MARK rcu-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1708:	printk(KERN_EMERG "Y700-MARK sysctl-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1711:		printk(KERN_EMERG "Y700-MARK run-init %s\n", ramdisk_execute_command);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1713:		printk(KERN_EMERG "Y700-MARK initret=%d\n", ret);
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1798:	printk(KERN_EMERG "Y700-MARK basic-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1803:	printk(KERN_EMERG "Y700-MARK initramfs-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1805:	printk(KERN_EMERG "Y700-MARK conroot-done\n");
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1813:	printk(KERN_EMERG "Y700-MARK rdinit=%s acc=%d\n",
+/tmp/y700/kbuild/asphalt-linux/init/main.c:1834:	printk(KERN_EMERG "Y700-MARK freeable-leave\n");
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:85:void y700_fault_note(const char *msg, unsigned long addr, unsigned long esr);
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:86:void y700_die_note(unsigned long pc, unsigned long lr, unsigned long sp,
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:88:void y700_rcg_note(const char *name, unsigned long cmd_rcgr);
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:89:void y700_diag_dump(void);
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:725:	y700_diag_dump();
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:797:void y700_fault_note(const char *msg, unsigned long addr, unsigned long esr);
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:798:void y700_die_note(unsigned long pc, unsigned long lr, unsigned long sp,
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:800:void y700_rcg_note(const char *name, unsigned long cmd_rcgr);
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:801:void y700_diag_dump(void);
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:803:static const char *y700_diag_fault;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:804:static unsigned long y700_diag_addr, y700_diag_esr;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:805:static unsigned long y700_diag_pc, y700_diag_lr, y700_diag_sp;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:806:static unsigned long y700_diag_esr_live, y700_diag_far_live;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:807:static const char *y700_diag_rcg;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:808:static unsigned long y700_diag_rcg_cmd;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:810:void y700_fault_note(const char *msg, unsigned long addr, unsigned long esr)
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:812:	y700_diag_fault = msg;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:813:	y700_diag_addr = addr;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:814:	y700_diag_esr = esr;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:817:void y700_die_note(unsigned long pc, unsigned long lr, unsigned long sp,
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:820:	y700_diag_pc = pc;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:821:	y700_diag_lr = lr;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:822:	y700_diag_sp = sp;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:823:	y700_diag_esr_live = esr;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:824:	y700_diag_far_live = far;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:827:void y700_rcg_note(const char *name, unsigned long cmd_rcgr)
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:829:	y700_diag_rcg = name;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:830:	y700_diag_rcg_cmd = cmd_rcgr;
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:833:void y700_diag_dump(void)
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:839:			 y700_diag_esr, y700_diag_addr,
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:840:			 y700_diag_rcg ? y700_diag_rcg : "-", y700_diag_rcg_cmd,
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:841:			 (void *)y700_diag_pc, (void *)y700_diag_lr,
+/tmp/y700/kbuild/asphalt-linux/kernel/panic.c:842:			 y700_diag_esr_live, y700_diag_far_live);
+/tmp/y700/kbuild/asphalt-linux/kernel/printk/printk.c:3111:/* Y700 bring-up hack (init/y700_ramlog.c): mirror every record into the
+/tmp/y700/kbuild/asphalt-linux/kernel/printk/printk.c:3113:void y700_ramlog_store(const char *s, unsigned int count, u64 seq);
+/tmp/y700/kbuild/asphalt-linux/kernel/printk/printk.c:3162:	y700_ramlog_store(outbuf, pmsg.outbuf_len, pmsg.seq);
+/tmp/y700/kbuild/asphalt-linux/drivers/mmc/host/sdhci-msm.c:2663:	/* Y700-A34: no SMMU here, so DMA would fault - run the slot in PIO. */
+/tmp/y700/kbuild/asphalt-linux/drivers/mmc/host/sdhci-msm.c:2665:	dev_err(&pdev->dev, "Y700-A34: SD DMA disabled, PIO mode\n");
+/tmp/y700/kbuild/asphalt-linux/drivers/interconnect/qcom/bcm-voter.c:276:static int y700_votes_logged;
+/tmp/y700/kbuild/asphalt-linux/drivers/interconnect/qcom/bcm-voter.c:295:	if (!y700_votes_logged++)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:635:static const char *y700_probe_seen[Y700_PROBE_SEEN];
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:636:static unsigned int y700_probe_seen_nr;
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:643:const char *y700_probe_inflight = "none";
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:645:static bool y700_watch_name(const char *name)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:660:static void y700_probe_note(struct device *dev, const struct device_driver *drv)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:664:	for (i = 0; i < y700_probe_seen_nr; i++)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:665:		if (y700_probe_seen[i] == dev_name(dev))
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:667:	if (y700_probe_seen_nr < Y700_PROBE_SEEN)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:668:		y700_probe_seen[y700_probe_seen_nr++] = dev_name(dev);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:669:	printk(KERN_INFO "Y700-PROBE %s %s\n", dev_name(dev), drv->name);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:676:	y700_probe_note(dev, drv);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:702:	if (y700_watch_name(dev_name(dev)))
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:703:		printk(KERN_EMERG "Y700-PROBE-R %s %s ret=%d\n",
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:719:	if (y700_watch_name(dev_name(dev)))
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:720:		printk(KERN_EMERG "Y700-PSW %s %s\n", dev_name(dev), drv->name);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:722:		printk(KERN_EMERG "Y700-PS %s\n", dev_name(dev));
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:726:	 * its Y700-PS line has already scrolled away.
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:728:	y700_probe_inflight = dev_name(dev);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:864:	printk(KERN_DEBUG "Y700-PROBE %s %s\n", dev_name(dev), drv->name);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1522:void y700_dump_devices(void);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1528: * Y700-KHB 10), and do_initcalls() then holds the screen for four 12 s windows
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1532:struct y700_bind {
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1538:static int y700_bind_walk(struct device *dev, void *data)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1540:	struct y700_bind *b = data;
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1547:	if (y700_watch_name(dev_name(dev)))
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1548:		printk(KERN_EMERG "Y700-BND %s %s -> %s\n", dev_name(dev),
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1554:void y700_dump_devices(void)
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1557:	struct y700_bind b = { 0, 0, 0 };
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1560:	printk(KERN_EMERG "Y700-BIND-DUMP begin\n");
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1561:	bus_for_each_dev(&platform_bus_type, NULL, &b, y700_bind_walk);
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1562:	printk(KERN_EMERG "Y700-BIND tot=%d bnd=%d unb=%d\n", b.total, b.bound,
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1569:	printk(KERN_EMERG "Y700-DRV sdhci_msm %s\n",
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1575:	printk(KERN_EMERG "Y700-DEF tot=%d tmo=%d\n", n,
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1584:			printk(KERN_EMERG "Y700-DEF%d %s %s\n", n,
+/tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1591:	printk(KERN_EMERG "Y700-BIND-DUMP end\n");

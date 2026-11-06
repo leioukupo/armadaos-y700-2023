@@ -1,0 +1,373 @@
+#!/bin/sh
+# A1s.  New this round: the aggre2-noc provider (interconnect@1700000) is pinned
+# off in the DT and all 38 consumer references to its phandle are deleted - A1r
+# died ~10 ms into probing exactly that device (screen went black, then the ABL
+# watchdog reset).  Nothing in that probe touches MMIO (sm8450 descs carry no
+# regmap config), so what hurts is the RPMh bandwidth-vote machinery behind it;
+# with the provider gone no consumer can vote through aggre2 at all.  Deleting
+# the references, not just disabling the provider, is required: sdhci-msm calls
+# dev_pm_opp_of_find_icc_paths() (which returns 0 when the property is absent) and
+# qcom_scm/ufs-qcom would otherwise sit in -EPROBE_DEFER forever.  qcom_scm is
+# patched locally to treat a missing path as "no votes" instead of failing probe.
+#
+# Carried over from A1r:
+#
+# 1) The boot DTB now pins the PDC (interrupt-controller@b220000) off AND deletes
+#    TLMM's wakeup-parent property, so pinctrl@f100000 can bind without ever
+#    touching the PDC.  With TLMM bound, the 64 pinctrl-0 consumers of this board
+#    get to probe as well - above all sdc2 (mmc@8804000, the SD card slot).
+#    A1q proved the other way round: enabling the PDC hard-resetted the board
+#    ~10 ms after TLMM started probing (drivers/irqchip/qcom-pdc.c pokes
+#    0x0b220000, an interconnect window ABL left down).
+# 2) The DTB also reserves a ramoops region and CONFIG_PSTORE_RAM/PSTORE_CONSOLE
+#    are built in, so the console log of a boot that dies mid-probe survives the
+#    ABL watchdog reset.  /init therefore replays the TAIL of the previous boot,
+#    6 lines per cycle, oldest-window-last, so the photo of the held screen shows
+#    the exact lines a hard reset cut the board off on - never photographable
+#    while 200 pages scrolled by.  On the first round the region is empty (A1q
+#    had no ramoops node), which is expected: it pays off from the next boot on.
+PATH=/bin
+export PATH
+
+mkdir -p /dev /proc /sys /tmp 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+echo "Y700-STEP devtmpfs=$?"
+mount -t proc proc /proc 2>/dev/null
+echo "Y700-STEP proc=$?"
+mount -t sysfs sys /sys 2>/dev/null
+echo "Y700-STEP sysfs=$?"
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+echo "Y700-STEP debugfs=$?"
+mkdir -p /sys/fs/pstore 2>/dev/null
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null
+echo "Y700-STEP pstore=$?"
+if [ ! -e /dev/kmsg ]; then
+	mknod /dev/kmsg c 1 11
+fi
+exec >/dev/kmsg 2>&1
+
+P() {
+	echo "<0>$*"
+}
+
+banner() {
+	_i=0
+	while [ $_i -lt 3 ]; do
+		_i=$((_i + 1))
+		P "$1"
+	done
+}
+
+banner "Y700-INIT-REACHED-A35-USERSPACE-RUNNING"
+P "Q ver $(cut -d ' ' -f 3 /proc/version)"
+P "Q up0=$(cut -d ' ' -f 1 /proc/uptime) $(grep -o 'y700_pause=[0-9]*' /proc/cmdline)"
+
+ERRKEY='error|fail|unable|cannot|denied|refused|timeout|no such|not found|invalid|bug|warning|oops|panic|lockup|trace|deferred'
+
+# ---- post-mortem of the boot that died (empty on the first ramoops round) ----
+PS=/tmp/pst
+ls /sys/fs/pstore > /tmp/pstfiles 2>/dev/null
+cat /sys/fs/pstore/console-ramoops-0 > $PS 2>/dev/null
+N=$(wc -l < $PS 2>/dev/null)
+[ -n "$N" ] || N=0
+P "Q pst files=$(head -2 /tmp/pstfiles | cut -c1-24) bytes=$(wc -c < $PS 2>/dev/null)"
+P "Q pst lines=$N err=$(grep -ciE "$ERRKEY" $PS 2>/dev/null)"
+grep -iE "$ERRKEY" $PS 2>/dev/null | tail -4 | cut -c16-45
+
+DEF=/sys/kernel/debug/devices_deferred
+DTB=/sys/firmware/devicetree/base/soc@0
+echo 1 > /proc/sys/kernel/printk 2>/dev/null
+
+digest() {
+	P "Q up=$(cut -d ' ' -f 1 /proc/uptime) defer=$(wc -l < $DEF 2>/dev/null) errkey=$(grep -ciE 'ufs|mmc|phy|pinctrl|geni' $DEF 2>/dev/null)"
+	P "Q pdc=$(ls -d $DTB/interrupt-controller@b220000 2>/dev/null | wc -l) tlmm=$(ls -d /sys/bus/platform/devices/f100000.pinctrl 2>/dev/null | wc -l) wp=$(grep -ac wakeup-parent /sys/firmware/fdt 2>/dev/null)"
+	P "Q drv pin=$(ls /sys/bus/platform/drivers 2>/dev/null | grep -ci pinctrl) ufs=$(ls /sys/bus/platform/drivers 2>/dev/null | grep -ci ufshcd) phy=$(ls /sys/bus/platform/drivers 2>/dev/null | grep -ci qmp) mmc=$(ls /sys/bus/platform/drivers 2>/dev/null | grep -ci sdhci)"
+	P "Q dev ufs=$(ls /sys/bus/platform/devices 2>/dev/null | grep -ci ufshc) phy=$(ls /sys/bus/platform/devices 2>/dev/null | grep -c 1d80000) mmc=$(ls /sys/bus/platform/devices 2>/dev/null | grep -c 8804000)"
+	P "Q icc prov=$(ls /sys/bus/platform/devices 2>/dev/null | grep -c interconnect) defscm=$(grep -ci scm $DEF 2>/dev/null)"
+	P "Q blk $(ls /sys/block 2>/dev/null | grep -v loop | cut -c1-20) size=$(cat /sys/block/sd*/size /sys/block/mmcblk*/size 2>/dev/null)"
+	P "Q mmc_host $(ls /sys/class/mmc_host 2>/dev/null | cut -c1-20) node $(ls /dev/mmcblk* /dev/sd* 2>/dev/null | cut -c1-20)"
+	grep -iE 'ufs|mmc|phy|pinctrl|geni' $DEF 2>/dev/null | cut -c1-26
+	P "Q ufs2:"
+	dmesg | grep -iE 'ufshcd|ufs-qcom|ufshc' | tail -2 | cut -d ']' -f 2- | cut -c1-26
+	P "Q mmc2:"
+	dmesg | grep -iE 'sdhci|mmc_host|sdc' | tail -2 | cut -d ']' -f 2- | cut -c1-26
+}
+
+mining() {
+	P "Q late:"
+	dmesg | grep -iE 'regulat|rpmh|ldo|vmmc|vqmmc' | tail -4 | cut -d ']' -f 2- | cut -c1-26
+	P "Q reg=$(ls /sys/class/regulator 2>/dev/null | wc -l) glink=$(ls /sys/bus/platform/devices 2>/dev/null | grep -c glink)"
+	P "Q blk=$(ls /sys/block 2>/dev/null | grep -vc loop) mmc=$(ls /sys/class/mmc_host 2>/dev/null | wc -l) fb=$(cat /proc/fb 2>/dev/null | wc -l)"
+	P "Q err=$(dmesg | grep -ciE 'error|fail|unable|cannot|timeout|denied') d517=$(dmesg | grep -c 'returned 517') lockup=$(dmesg | grep -ciE 'lockup|watchdog|hung task')"
+	P "Q last8:"
+	dmesg | tail -8 | cut -d ']' -f 2- | cut -c1-26
+}
+
+pstwin() {
+	_e=$((N - 6 * (_k - 1)))
+	if [ $_e -lt 1 ]; then
+		P "Q pst: end of saved log (all $N lines shown)"
+		return
+	fi
+	P "Q pst tail lines $((_e - 5))-$_e of $N:"
+	head -n $_e $PS 2>/dev/null | tail -6 | cut -c16-45
+}
+
+_n=0
+while [ $_n -lt 1 ]; do
+	_n=$((_n + 1))
+	_k=$_n
+	sleep 1
+	P "Q===== digest $_n ====="
+	digest
+	pstwin
+done
+
+echo 7 > /proc/sys/kernel/printk 2>/dev/null
+banner "Y700-Q-HOLD-PHOTO-THIS-SCREEN"
+mining
+
+# ---- A29: userspace says hello through two channels at once.
+# ----
+# ---- 1) it sets the y700_alive debugfs flag, which the kernel heartbeat thread
+# ----    prints every 3 s.  That is the userspace liveness proof, and it needs
+# ----    neither the panel nor the card.
+# ---- 2) it still writes the whole log to the SD card, and reads it back after
+# ----    unmounting so "the file is on the card" is verifiable.
+# ----
+# ---- A26 proved userspace lives (its ~55 s reset was /init writing sysrq-b).
+# ---- The previous round's card attempt failed only because of a quoting bug in
+# ---- this very section, which sent the log to /mnt inside the initramfs.
+# ---- Nothing here reboots the board: any reset is therefore external.
+# ---- A30: the SD card is the target.  A29 proved the uSD host binds now
+# ---- ("Y700-PROBE-R 8804000.mmc sdhci_msm ret=0"), so the card should be
+# ---- there before /init starts.  A29 wasted 48 s on console holds inside
+# ---- do_initcalls and started the heartbeat only afterwards, so /init had
+# ---- seconds left on the wall clock.  A30: fast scan, one explicit rescan,
+# ---- mount, write, and then a 4 s reprint loop so a photograph of the panel
+# ---- shows the SD state without needing the card to work at all.
+# ---- A35: the SD host binds (sdhci_msm ret=0) but A30 saw no mmcblk node,
+# ---- and A30's own sysfs probes were false negatives: this tree names the
+# ---- platform driver "sdhci_msm" with an underscore.  A35 prints the real
+# ---- mmc state (mmc_host, the driver's bind dir, debugfs ocr/cards, and the
+# ---- mmc lines out of the log buffer) on every round, and re-probes the host
+# ---- with unbind/bind so the slot is powered down and back up and mmc_rescan
+# ---- runs again from scratch - three times, with settling delays.
+echo 1 > /sys/kernel/debug/y700_alive 2>/dev/null
+P "A35 flag=$? up=$(cut -d . -f 1 /proc/uptime)"
+SDP=/sys/bus/platform/drivers/sdhci_msm
+DEVP=8804000.mmc
+mmclog() {
+    dmesg | grep -iE 'mmc|sdhci|8804000' | tail -n 4 | cut -d ']' -f 2- | cut -c 1-40
+}
+mmcinfo() {
+    P "A35 mh=$(ls /sys/class/mmc_host 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 drv=$(ls $SDP 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 blk=$(ls /sys/block 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 ocr=$(cat /sys/kernel/debug/mmc*/ocr 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 cards=$(cat /sys/kernel/debug/mmc*/cards 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 reg=$(cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null | grep -iE 'ldo6|ldo9' | cut -c 1-40)"
+    P "A35 mmclog:"
+    mmclog
+}
+rescan() {
+    for h in /sys/class/mmc_host/mmc* ; do
+        [ -e "$h/rescan" ] && echo 1 > "$h/rescan" 2>/dev/null
+    done
+    for c in /sys/bus/mmc/devices/*/rescan ; do
+        [ -e "$c" ] && echo 1 > "$c" 2>/dev/null
+    done
+    for b in /sys/block/mmcblk*/device/rescan ; do
+        [ -e "$b" ] && echo 1 > "$b" 2>/dev/null
+    done
+}
+mmcinfo
+rescan
+sleep 2
+P "A35 pass2 (after rescan)"
+mmcinfo
+_n=0
+while [ $_n -lt 3 ] && ! ls /dev/mmcblk*p[0-9] >/dev/null 2>&1 ; do
+    _n=$((_n + 1))
+    P "A35 rebind $_n via $SDP"
+    if [ -e "$SDP/unbind" ] ; then
+        echo $DEVP > $SDP/unbind 2>/dev/null
+        P "A35 unbind rc=$?"
+        sleep 2
+        echo $DEVP > $SDP/bind 2>/dev/null
+        P "A35 bind rc=$?"
+        sleep 3
+    else
+        P "A35 no-unbind-attr drv=$(ls -d /sys/bus/platform/drivers/*mmc* 2>/dev/null | busybox tr '\n' ' ')"
+        break
+    fi
+    mmcinfo
+done
+_n=0
+while [ $_n -lt 5 ] ; do
+    _n=$((_n + 1))
+    if ls /dev/mmcblk*p[0-9] >/dev/null 2>&1 ; then
+        P "A35 parts after ${_n}s"
+        break
+    fi
+    rescan
+    sleep 1
+done
+P "A35 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
+mkdir -p /mnt 2>/dev/null
+MNT=""
+MF=""
+for d in /dev/mmcblk*p[0-9] /dev/mmcblk* /dev/sd*[0-9] ; do
+    [ -b "$d" ] || continue
+    for f in vfat ext4 ext2 ; do
+        if mount -t $f -o rw "$d" /mnt 2>/dev/null ; then
+            MNT="$d"
+            MF="$f"
+            break
+        fi
+    done
+    if [ -n "$MNT" ] ; then
+        break
+    fi
+done
+P "A35 mount=$MNT fs=$MF"
+SDOK=0
+SZ=0
+LN=0
+if [ -n "$MNT" ] ; then
+    echo "A35 /init is alive up=$(cat /proc/uptime)" > /mnt/y700-alive.txt
+    busybox sync
+    P "A35 alive.txt written"
+	{
+		echo '===== Y700-A35 boot log ====='
+		echo '== uptime =='
+		cat /proc/uptime
+		echo '== cmdline =='
+		cat /proc/cmdline
+		echo '== version =='
+		cat /proc/version
+		echo '== y700_alive flag =='
+		cat /sys/kernel/debug/y700_alive 2>/dev/null
+		echo '== blocks =='
+		ls -l /sys/block
+		echo '== partitions =='
+		cat /proc/partitions
+		echo '== mmc_host =='
+		ls -l /sys/class/mmc_host
+		for h in /sys/class/mmc_host/mmc*; do
+			[ -d "$h" ] || continue
+			echo "-- $h"
+			ls -l "$h"
+			cat "$h"/state 2>/dev/null
+			for c in "$h"/mmc*; do
+				[ -d "$c" ] || continue
+				echo "--- $c"
+				cat "$c"/name "$c"/cid "$c"/fwrev "$c"/speed 2>/dev/null
+			done
+		done
+		echo '== mmc debugfs =='
+		for h in /sys/kernel/debug/mmc*; do
+			[ -d "$h" ] || continue
+			echo "-- $h"
+			cat "$h"/ocr 2>/dev/null
+			cat "$h"/ios 2>/dev/null
+			cat "$h"/capabilities 2>/dev/null
+			cat "$h"/cards 2>/dev/null
+		done
+		echo '== sdhci-msm bind =='
+		ls -l /sys/bus/platform/drivers/sdhci-msm 2>/dev/null
+		echo '== platform drivers =='
+		ls /sys/bus/platform/drivers
+		echo '== deferred =='
+		cat /sys/kernel/debug/devices_deferred 2>/dev/null
+		echo '== gpio =='
+		cat /sys/kernel/debug/gpio 2>/dev/null
+		echo '== regulator summary =='
+		cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null
+		echo '== interrupts =='
+		cat /proc/interrupts
+		echo '== pstore =='
+		cat /sys/fs/pstore/* 2>/dev/null
+		echo '== sd trace =='
+		dmesg | grep -iE 'sdhci|mmc|8804000' | busybox head -n 60
+		echo '== dmesg =='
+		dmesg
+	} > /mnt/y700-boot.txt
+
+    busybox sync
+    busybox sync
+    blockdev --flushbufs "$MNT" 2>/dev/null
+    busybox sync
+    umount /mnt 2>/dev/null
+    busybox sync
+    P "A35 boot.txt unmounted"
+    if mount -o ro -t "$MF" "$MNT" /mnt 2>/dev/null ; then
+        SZ=$(wc -c < /mnt/y700-boot.txt 2>/dev/null)
+        LN=$(wc -l < /mnt/y700-boot.txt 2>/dev/null)
+        umount /mnt 2>/dev/null
+        busybox sync
+        SDOK=1
+        P "A35 readback sz=$SZ ln=$LN"
+    else
+        P "A35 readback FAILED"
+    fi
+else
+    P "A35 NO-CARD-MOUNTED"
+fi
+# ---- A35: hand the system over to the ext4 root on the SD card.
+# ---- A34 proved the card itself reads in PIO mode, so the only thing left for
+# ---- the initramfs is to mount the real root and switch_root into it.  Two
+# ---- guards matter: (a) /init must exist and be executable in the new root,
+# ---- (b) a binary from the new root must actually run.  Run the second check
+# ---- through chroot() *before* switch_root, because switch_root deletes the
+# ---- initramfs as its first step - an ELF the kernel refuses to execute would
+# ---- leave PID 1 dead with no fallback and the board would just reboot.
+RDEV="$(busybox findfs LABEL=y700root 2>/dev/null)"
+P "A35 findfs rc=$? rdev=$RDEV"
+if [ -z "$RDEV" ] ; then
+    for d in /dev/mmcblk*p4 ; do
+        [ -b "$d" ] || continue
+        RDEV="$d"
+        break
+    done
+    P "A35 fallback rdev=$RDEV"
+fi
+mkdir -p /mnt/root 2>/dev/null
+if [ -n "$RDEV" ] && mount -t ext4 -o rw "$RDEV" /mnt/root 2>/dev/null ; then
+    P "A35 root mounted dev=$RDEV top=$(ls /mnt/root | busybox tr '\n' ' ')"
+    if [ -f /mnt/root/init ] && [ -x /mnt/root/init ] ; then
+        P "A35 init head=$(head -c 40 /mnt/root/init | busybox tr '\n' ' ')"
+        chroot /mnt/root /bin/busybox true 2>/dev/null
+        T=$?
+        P "A35 chroot-test rc=$T"
+        if [ "$T" = "0" ] ; then
+            busybox sync
+            busybox sync
+            P "A35 SWITCH_ROOT_TO $RDEV"
+            exec /bin/busybox switch_root /mnt/root /init
+            P "A35 SWITCH_ROOT_RETURNED rc=$?"
+        else
+            P "A35 CHROOT_TEST_FAILED - staying in initramfs"
+        fi
+    else
+        P "A35 NO-ROOT-INIT"
+    fi
+    umount /mnt/root 2>/dev/null
+    busybox sync
+else
+    P "A35 ROOT-MOUNT-FAILED dev=$RDEV"
+fi
+banner "Y700-A35-HOLD-NO-REBOOT"
+_i=0
+while true ; do
+    _i=$((_i + 1))
+    P "A35 R$_i ok=$SDOK sz=$SZ au=$(cat /sys/kernel/debug/y700_alive 2>/dev/null)"
+    P "A35 mh=$(ls /sys/class/mmc_host 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 cards=$(cat /sys/kernel/debug/mmc*/cards 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 ocr=$(cat /sys/kernel/debug/mmc*/ocr 2>/dev/null | busybox tr '\n' ' ')"
+    P "A35 log:"
+    mmclog
+    sleep 5
+done

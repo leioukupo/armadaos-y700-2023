@@ -1,0 +1,106 @@
+#!/bin/sh
+# A35 stage-2: this is /init inside the ext4 root on the SD card (label
+# y700root, mmcblk0p4).  It was switch_root-ed into by the initramfs, so
+# stdout/stderr are already /dev/kmsg only if we say so again - devtmpfs was
+# moved over by switch_root, so (re)mount it and re-point the fds.
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+mkdir -p /dev /proc /sys /run /tmp /mnt/card /mnt/root 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+DV=$?
+mount -t proc proc /proc 2>/dev/null
+PR=$?
+mount -t sysfs sys /sys 2>/dev/null
+SY=$?
+[ -e /dev/kmsg ] || mknod /dev/kmsg c 1 11
+exec >/dev/kmsg 2>&1
+
+R() {
+	echo "<0>$*"
+}
+
+R "Y700-ROOT-ENTERED up=$(cat /proc/uptime) dev=$DV proc=$PR sys=$SY"
+R "ROOT uname=$(uname -a)"
+R "ROOT alpine=$(cat /etc/alpine-release 2>/dev/null) busybox=$(busybox 2>&1 | head -n 1)"
+R "ROOT init1=$$ cmd=$(cat /proc/1/cmdline 2>/dev/null | busybox tr '\0' ' ')"
+
+CARD=""
+for d in /dev/mmcblk0p1 /dev/mmcblk1p1 /dev/mmcblk2p1 ; do
+	[ -b "$d" ] || continue
+	if mount -t vfat -o rw "$d" /mnt/card 2>/dev/null ; then
+		CARD="$d"
+		break
+	fi
+done
+R "ROOT card=$CARD"
+
+if [ -n "$CARD" ] ; then
+	{
+		echo '===== Y700-A35 root report (Alpine on SD p4) ====='
+		echo '== uptime =='
+		cat /proc/uptime
+		echo '== uname =='
+		uname -a
+		echo '== alpine-release =='
+		cat /etc/alpine-release
+		echo '== os-release =='
+		cat /etc/os-release
+		echo '== cmdline =='
+		cat /proc/cmdline
+		echo '== mounts =='
+		cat /proc/mounts
+		echo '== blocks =='
+		ls -l /sys/block
+		echo '== partitions =='
+		cat /proc/partitions
+		echo '== /dev =='
+		ls /dev
+		echo '== root top =='
+		ls -l /
+		echo '== init script =='
+		ls -l /init
+		echo '== cpu =='
+		head -n 30 /proc/cpuinfo
+		echo '== meminfo =='
+		head -n 8 /proc/meminfo
+		echo '== busybox =='
+		busybox 2>&1 | head -n 2
+		echo '== musl =='
+		ls -l /lib/ld-musl*
+		echo '== net =='
+		ls /sys/class/net
+		echo '== mmc ios =='
+		for h in /sys/class/mmc_host/mmc*; do
+			[ -d "$h" ] || continue
+			echo "-- $h"
+			cat "$h"/state 2>/dev/null
+		done
+		echo '== interrupts head =='
+		head -n 25 /proc/interrupts
+		echo '== ufs? =='
+		ls /sys/bus/platform/drivers | grep -i ufs
+		echo '== dmesg tail =='
+		dmesg | tail -n 40
+	} > /mnt/card/y700-root.txt
+	sync
+	sync
+	R "ROOT report written sz=$(wc -c < /mnt/card/y700-root.txt)"
+fi
+
+N=0
+while [ "$N" -lt 40 ] ; do
+	N=$((N + 1))
+	if [ -n "$CARD" ] ; then
+		echo "A35 root alive up=$(cat /proc/uptime) n=$N" > /mnt/card/y700-root-alive.txt
+		sync
+	fi
+	R "ROOT hb $N up=$(cat /proc/uptime) procs=$(ls /proc | grep -c '^[0-9]')"
+	sleep 5
+done
+R "Y700-A35-ROOT-HEARTBEAT-DONE"
+banner_done=1
+while true ; do
+	R "ROOT HOLD up=$(cat /proc/uptime)"
+	sleep 10
+done

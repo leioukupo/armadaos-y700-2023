@@ -31,3 +31,13 @@ __pycache__/
 # atheros-firmware rpm, and these older copies would shadow its board-2.bin.
 /system_files/usr/lib/firmware/ath11k/
 /probe_last.txt
+
+# bring-up rounds: generated images and one-off scratch stay out of the tree
+*.img
+/_*.txt
+/_*.c
+/_*.html
+/packtest/
+/build_files/vendor/*.img
+/devices/lenovo-tb323fu/boot/kshim-success-source/_diag_block.txt
+/devices/lenovo-tb323fu/boot/kshim-success-source/_paintbase.py
