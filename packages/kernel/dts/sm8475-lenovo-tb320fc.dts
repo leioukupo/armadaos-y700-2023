@@ -791,6 +791,29 @@
 	vdda-phy-supply = <&pm8350b_l5>;
 	vdda-pll-supply = <&pm8350c_l10>;
 };
+/*
+ * microSD slot.  The controller is sdhc_2 (reg 0x08804000); the vendor base
+ * DTB aliases it mmc1 and keeps it disabled, and every one of the 72 stock
+ * dtbo entries enables it with sdc2_on/sdc2_off plus cd-gpios on tlmm 92.
+ *
+ * The vendor enable also names pm8350c L9C/L6C as vdd/vdd-io, but this board's
+ * DTB has those two rails wired to the DSI0 PHY (vdda/vdds), so the copy is
+ * QRD leftovers and reusing them would back-feed the panel rails.  Leave the
+ * supplies out: the mmc core then skips card power control and drives the slot
+ * from whatever always-on rail the board uses.
+ */
+&sdhc_2 {
+	cd-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&sdc2_on>;
+	pinctrl-1 = <&sdc2_off>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	disable-wp;
+	no-sdio;
+	no-mmc;
+	status = "okay";
+};
 
 &pon_pwrkey {
 	linux,code = <KEY_POWER>;
@@ -804,6 +827,59 @@
 
 &apps_smmu {
 	qcom,preserve-boot-mappings;
+
+	/* microSD pin states, byte-for-byte from the vendor pinctrl (sdc2_on /
+	 * sdc2_off), including the card-detect pin. */
+	sdc2_on: sdc2-on-state {
+		clk-pins {
+			pins = "sdc2_clk";
+			bias-disable;
+			drive-strength = <16>;
+		};
+
+		cmd-pins {
+			pins = "sdc2_cmd";
+			bias-pull-up;
+			drive-strength = <10>;
+		};
+
+		data-pins {
+			pins = "sdc2_data";
+			bias-pull-up;
+			drive-strength = <10>;
+		};
+
+		cd-pins {
+			pins = "gpio92";
+			bias-pull-up;
+			drive-strength = <2>;
+		};
+	};
+
+	sdc2_off: sdc2-off-state {
+		clk-pins {
+			pins = "sdc2_clk";
+			bias-disable;
+			drive-strength = <2>;
+		};
+
+		cmd-pins {
+			pins = "sdc2_cmd";
+			bias-pull-up;
+			drive-strength = <2>;
+		};
+
+		data-pins {
+			pins = "sdc2_data";
+			bias-pull-up;
+			drive-strength = <2>;
+		};
+
+		cd-pins {
+			pins = "gpio92";
+			drive-strength = <2>;
+		};
+	};
 };
 
 &tlmm {
