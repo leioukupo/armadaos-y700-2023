@@ -1944,8 +1944,17 @@ static int platform_select(uint64_t fdt, const char *const *names,
     /* Approved minimal gate: the initial GUI never started on TB322FC and the
      * caller's original initial row is the Android payload. Cleanup above has
      * already succeeded, so resolve the caller's original index directly and
-     * skip serial_select and its extra build_keys/poll for this case only. */
-    if (!gui_entered && info && info->board == DEVICE_BOARD_TB322FC &&
+     * skip serial_select and its extra build_keys/poll for this case only.
+     *
+     * The same reasoning holds for TB320FC (Gen 2, SM8475 "CapeP"): its
+     * display-engine tree has no measured splash profile, so kshim_dt_splash()
+     * rejects and no GUI can start, while this build has no console to fall
+     * back to. Leaving the loop there would wait forever at the Android
+     * splash, so a manifest whose default row is the Android base resolves to
+     * that row instead. The role test is what makes it payload-safe: it is the
+     * caller's own Android entry, never a Linux image. */
+    if (!gui_entered && info &&
+        (info->board == DEVICE_BOARD_TB322FC || info->soc == DEVICE_SOC_SM8475) &&
         roles && menu.initial_caller < count &&
         roles[menu.initial_caller] == KSHIM_MENU_ROLE_ANDROID) {
         *selected = menu.initial_caller;

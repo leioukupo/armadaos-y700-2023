@@ -426,6 +426,18 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
      * 10 mixer slots (6 real + 0xf0f dummies) in its downstream SDE node. */
     bool pineapple = root_compatible_count > 0 &&
         fdt_stringlist_search(f, 0, "compatible", "qcom,pineapple") >= 0;
+    /* TB320FC / SM8475 ("CapeP"): its downstream SDE node lists 8 SSPPs
+     * (4 VIG + 4 DMA), 6 CTLs and 6 real mixers padded with two 0xf0f dummy
+     * slots; mdp_phys is 0xae00000+0x84000 with sspp-off up to 0x2b000 and
+     * mixer-off up to 0x4a000, all inside the legacy CrSplashRead bounds, and
+     * qcom,sde-hw-version is absent so no Sun/Canoe classification applies.
+     * That is the legacy CTL-layer routing shape CrDK reads directly: no LM
+     * source-select and no blend-stage table needed.  The only DT-side
+     * difference from the plain capacity-6 reader is the padded mixer list. */
+    bool capep = root_compatible_count > 0 &&
+        (fdt_stringlist_search(f, 0, "compatible", "qcom,capep") >= 0 ||
+         fdt_stringlist_search(f, 0, "compatible", "qcom,cape") >= 0 ||
+         fdt_stringlist_search(f, 0, "compatible", "qcom,sm8475") >= 0);
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     g_kshim_splash_trace.root_compatible_count = root_compatible_count;
     g_kshim_splash_trace.root_has_sunp = root_has_sunp;
@@ -511,8 +523,10 @@ int kshim_dt_splash(const void *f, const struct CrIo *io,
             ++count;
         }
         if (count < 1) return -1;
-    } else if (pineapple) {
-        /* Keep only the leading real LMs (CTL layer index == LM index). */
+    } else if (pineapple || capep) {
+        /* Keep only the leading real LMs (CTL layer index == LM index).  Both
+         * TB710FU and TB320FC pad the slot list with 0xf0f dummies, which the
+         * plain 6-slot reader would reject as an over-long list. */
         raw_n = offsets(f, sde, "qcom,sde-mixer-off", raw, 12);
         count = 0;
         for (int i = 0; i < raw_n; ++i) {

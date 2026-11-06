@@ -380,6 +380,759 @@ static void prepare_boot(void)
     }
 }
 
+/* SDE scan-out discovery and three-channel telemetry for TB320FC (diagnostic
+ * builds only).  What E9q/E9r proved: this board's runtime DT has no
+ * cont_splash_region (the live tree in Android shows splash_region,
+ * non_secure_display_region and user_contig_region, i.e. ABL dynamic pools
+ * without a reg cell), so the reservation lookup failed, nothing was ever
+ * painted, and the report never reached the kernel because the merged firmware
+ * blob does not fit the private scratch.  Everything a flash cycle can answer
+ * is now collected at once, through channels that cannot be blocked:
+ *   1. memory banks and /reserved-memory children are enumerated, and the
+ *      DT-named SDE register windows (CTL, SSPP, the SSPP REC sub-block, LM
+ *      and the SDE top block) are read once.  Every dword whose value points
+ *      inside a DRAM bank is a pixel-source candidate whatever this DPU
+ *      generation calls the register; each candidate is then sampled, because
+ *      a live splash is mostly zero pixels while heap data is not, and the
+ *      zero count rides back with the report;
+ *   2. candidates that look like a splash get 512 KiB of their start painted,
+ *      in a colour unique to their index, and DT-named display reservations
+ *      get the same treatment.  Four 512 KiB code bands at the start of the
+ *      first painted area carry the diagnosis in colour, so even a build
+ *      whose DT channel fails still answers the question on the panel;
+ *   3. the report also travels inside the DT handed to the kernel, as root
+ *      node names ks0..ksN carrying 24 characters each (the shell cannot read
+ *      /proc/device-tree values under SELinux but it reads every name) and,
+ *      as a second copy, on /chosen:bootargs.  The copy lives in .bss, or in
+ *      the tail of a display reservation, or - when the tree is bigger than
+ *      both - the firmware tree is edited in place after dropping __symbols__,
+ *      the largest dead weight in a merged tree and something Linux never
+ *      reads.
+ * Nothing is written outside the ranges described above, a hang in the
+ * register read still leaves the earlier panel answer behind, and a failed
+ * report never changes the handoff. */
+#if defined(KSHIM_DIAG_PAINT_BASE) && KSHIM_DIAG_PAINT_BASE
+#define DIAG_SCRATCH_BYTES 0x80000u    /* private DT scratch: 512 KiB          */
+#define DIAG_CMDLINE_BYTES 4096u
+#define DIAG_NAME_BYTES    32u         /* node name budget, NUL included       */
+#define DIAG_CHUNK_CHARS   24u         /* report characters per node name      */
+#define DIAG_MAX_NODES     24u
+#define DIAG_REPORT_BYTES  (DIAG_MAX_NODES * DIAG_CHUNK_CHARS)
+#define DIAG_REPORT_SEG    88u         /* report characters per bootarg token  */
+#define DIAG_RES_DISPLAY   8u          /* display-ish reservations kept        */
+#define DIAG_RES_ALL       64u         /* every reservation with a reg cell    */
+#define DIAG_MEM_BANKS     8u
+#define DIAG_MAX_CAND      16u
+#define DIAG_MAX_PAINT_RES 3u
+#define DIAG_MAX_PAINT_FB  2u
+#define DIAG_FB_LOOK       16u         /* dwords sampled per candidate         */
+#define DIAG_FB_LOOK_STEP  0x10000u    /* sampled 64 KiB apart                 */
+#define DIAG_FB_PAINT_BYTES 0x80000u   /* 512 KiB painted per framebuffer      */
+#define DIAG_CODE_BAND     0x80000u    /* 512 KiB per colour code band         */
+#define DIAG_WINDOWS       40u
+#define DIAG_WINDOW_CTL    0x134u
+#define DIAG_WINDOW_SSPP   0x174u
+#define DIAG_REC_BASE      0x1000u
+#define DIAG_WINDOW_REC    0x78u
+#define DIAG_WINDOW_LM     0x130u
+#define DIAG_BLOCK_BYTES   0x200000u   /* 2 MiB, the largest block we map      */
+#define DIAG_COLOUR_BYTES  0x100000u   /* 1 MiB colour block on the panel      */
+#define DIAG_PAINT_BYTES   0x1800000u  /* 24 MiB of any single reservation     */
+#define DIAG_HOLD_MS       3000u       /* keep the paint on the panel          */
+
+static const uint32_t DiagPalette[6] = {
+    0x00ff0000u, 0x0000ff00u, 0x000000ffu, 0x00ffffffu, 0x00ffff00u,
+    0x0000ffffu };
+
+static uint64_t DiagDtb[DIAG_SCRATCH_BYTES / sizeof(uint64_t)];
+
+struct diag_window { uint32_t off; uint32_t len; };
+struct diag_cand { uint32_t off; uint32_t val; unsigned look; };
+/* kind: 0 splash_region, 1 non_secure_display_region, 2 cont_splash_region,
+ * 3 user_contig_region, 4 any other name mentioning splash or display. */
+struct diag_res { uint64_t base; uint64_t size; unsigned kind; };
+
+struct diag_state {
+    /* Replacement DT for the handoff; zero keeps the firmware one. */
+    uint64_t fdt_out;
+    uint64_t scratch;
+    uint32_t scratch_bytes, fdt_size, fdt_out_size;
+    unsigned candidates, stored, res_count, mem_count, nodes, painted;
+    /* free_in: unused bytes at the tail of the firmware blob, rename_rc: the
+     * in-place rename probe, which answers whether the kernel really gets the
+     * tree we touch even when there is no room left to add anything. */
+    uint32_t free_in;
+    int rename_rc;
+    /* scratch_kind: 0 = .bss, 1 = reservation tail, 2 = the firmware tree. */
+    int dt_rc, mmu_enabled, mmu_regs, mmu_paint, bootargs_rc, scratch_kind;
+    /* sample: first painted dword before the paint, then the read-back at the
+     * base and one block further in of the last painted area. */
+    uint32_t sample[3];
+    struct dt_range avoid[3];          /* payload, this shim, firmware DT     */
+    struct dt_range mem[DIAG_MEM_BANKS];
+    struct diag_cand cand[DIAG_MAX_CAND];
+    struct diag_res res[DIAG_RES_DISPLAY];
+};
+
+static uint32_t diag_read32(uintptr_t address)
+{
+    return *(volatile uint32_t *)(uintptr_t)address;
+}
+
+static void diag_write32(uintptr_t address, uint32_t value)
+{
+    *(volatile uint32_t *)(uintptr_t)address = value;
+}
+
+/* Clean to the Point of Coherence: if an area ends up write-back rather than
+ * non-cacheable, the display keeps fetching the old DRAM and the panel
+ * experiment reads back as a false negative. */
+static void diag_clean_to_poc(uint64_t base, uint64_t size)
+{
+#if defined(__aarch64__)
+    uint64_t end = base + size;
+    uint64_t address = base & ~(uint64_t)63u;
+    for (; address < end; address += 64u)
+        __asm__ volatile("dc cvac, %0" :: "r"(address) : "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
+#endif
+}
+
+static int diag_prop_array(const void *fdt, int node, const char *name,
+                           uint32_t *out, unsigned capacity)
+{
+    int len;
+    const fdt32_t *prop = fdt_getprop(fdt, node, name, &len);
+    if (!prop || len <= 0 || (unsigned)len % 4u || (unsigned)len / 4u > capacity)
+        return 0;
+    for (int i = 0; i < len/4; ++i) out[i] = fdt32_to_cpu(prop[i]);
+    return len/4;
+}
+
+static bool diag_overlaps(const struct dt_range *list, unsigned count,
+                          uint64_t base, uint64_t size)
+{
+    for (unsigned i = 0u; i < count; ++i)
+        if (list[i].size != 0u && base < list[i].base + list[i].size &&
+            list[i].base < base + size)
+            return true;
+    return false;
+}
+
+static bool diag_in_mem(const struct diag_state *state, uint64_t value)
+{
+    for (unsigned i = 0u; i < state->mem_count; ++i)
+        if (value >= state->mem[i].base && value < state->mem[i].base + state->mem[i].size)
+            return true;
+    return false;
+}
+
+static int diag_res_kind(const char *name)
+{
+    static const struct { const char *text; int kind; } table[] = {
+        { "cont_splash_region", 2 }, { "non_secure_display_region", 1 },
+        { "splash_region", 0 }, { "user_contig_region", 3 } };
+    if (!name) return -1;
+    for (unsigned i = 0u; i < sizeof(table)/sizeof(table[0]); ++i)
+        if (strncmp(name, table[i].text, strlen(table[i].text)) == 0)
+            return table[i].kind;
+    if (strstr(name, "splash") != NULL || strstr(name, "display") != NULL) return 4;
+    return -1;
+}
+
+/* One pass over /reserved-memory fills the display subset (paintable and
+ * reported) and the full list; /memory banks give the DRAM bounds that a
+ * pixel-source candidate has to fall inside. */
+static void diag_collect(const void *fdt, struct diag_state *state,
+                         struct dt_range *all, unsigned *n_all)
+{
+    int parent = fdt_path_offset(fdt, "/reserved-memory");
+    for (int node = fdt_first_subnode(fdt, 0); node >= 0;
+         node = fdt_next_subnode(fdt, node)) {
+        const char *name = fdt_get_name(fdt, node, NULL);
+        struct dt_range range;
+        if (!name || strncmp(name, "memory", 6) != 0) continue;
+        if (name[6] != '\0' && name[6] != '@') continue;
+        if (!dt_available(fdt, node) || dt_reg(fdt, node, 0u, &range) ||
+            range.size == 0u || state->mem_count >= DIAG_MEM_BANKS)
+            continue;
+        state->mem[state->mem_count++] = range;
+    }
+    if (parent < 0 || !dt_available(fdt, parent)) return;
+    for (int node = fdt_first_subnode(fdt, parent); node >= 0;
+         node = fdt_next_subnode(fdt, node)) {
+        struct dt_range range;
+        int kind;
+        if (!dt_available(fdt, node) || dt_reg(fdt, node, 0u, &range) ||
+            range.size == 0u || range.base == 0u)
+            continue;
+        if (*n_all < DIAG_RES_ALL) { all[*n_all] = range; ++*n_all; }
+        kind = diag_res_kind(fdt_get_name(fdt, node, NULL));
+        if (kind < 0 || state->res_count >= DIAG_RES_DISPLAY) continue;
+        state->res[state->res_count].base = range.base;
+        state->res[state->res_count].size = range.size;
+        state->res[state->res_count].kind = (unsigned)kind;
+        ++state->res_count;
+    }
+}
+
+/* .bss first, then the tail of the largest display reservation.  The in-place
+ * path is chosen by the emitter, which knows whether the firmware tree can
+ * make room for the nodes. */
+static void diag_pick_scratch(struct diag_state *state)
+{
+    uint64_t need = ((uint64_t)state->fdt_size + 65536u + DIAG_BLOCK_BYTES - 1u) /
+                    DIAG_BLOCK_BYTES * DIAG_BLOCK_BYTES;
+    unsigned best = 0u;
+    uint64_t best_size = 0u;
+
+    if ((uint64_t)state->fdt_size + 8192u <= DIAG_SCRATCH_BYTES) {
+        state->scratch = (uint64_t)(uintptr_t)DiagDtb;
+        state->scratch_bytes = DIAG_SCRATCH_BYTES;
+        state->scratch_kind = 0;
+        return;
+    }
+    for (unsigned i = 0u; i < state->res_count; ++i) {
+        /* Keep at least one block of pixels to paint so the panel answer
+         * survives a scratch that lives in the same reservation. */
+        if (state->res[i].size < need + DIAG_BLOCK_BYTES) continue;
+        if (state->res[i].size > best_size) {
+            best_size = state->res[i].size;
+            best = i + 1u;
+        }
+    }
+    if (best == 0u) { state->scratch_kind = 2; return; }
+    {
+        const struct diag_res *r = &state->res[best - 1u];
+        uint64_t base = r->base + r->size - need;
+        if (diag_overlaps(state->avoid, 3u, base, need) ||
+            (state->mmu_enabled != 0 &&
+             kshim_mmu_add_region(base, need, KSHIM_MMU_NORMAL_NC,
+                                  KSHIM_MMU_READ | KSHIM_MMU_WRITE) != 0)) {
+            state->scratch_kind = 2;
+            return;
+        }
+        state->scratch = base;
+        state->scratch_bytes = (uint32_t)need;
+        state->scratch_kind = 1;
+    }
+}
+
+static void diag_hold(unsigned ms)
+{
+    uint64_t start = get_current_time();
+    while (get_current_time() - start < ms)
+        __asm__ volatile("yield" ::: "memory");
+}
+
+/* Four code bands, then the colour of the area itself, then black between
+ * every remaining 1 MiB block: the bands answer with a colour even when the DT
+ * channels fail, the colour of the rest says which area this was. */
+static void diag_paint_area(struct diag_state *state, uint64_t base, uint64_t size,
+                            unsigned colour, const int codes[4], bool *first)
+{
+    uint64_t bytes = size / 4096u * 4096u;
+    if (bytes == 0u) return;
+    if (diag_overlaps(state->avoid, 3u, base, bytes)) return;
+    if (state->scratch != 0u && base <= state->scratch &&
+        state->scratch < base + bytes)
+        bytes = (state->scratch - base) / 4096u * 4096u;
+    if (bytes == 0u) return;
+    if (state->mmu_enabled != 0) {
+        for (uint64_t off = 0u; off < bytes; ) {
+            uint64_t chunk = bytes - off > DIAG_BLOCK_BYTES ? DIAG_BLOCK_BYTES : bytes - off;
+            if (kshim_mmu_add_region(base + off, chunk, KSHIM_MMU_NORMAL_NC,
+                                     KSHIM_MMU_READ | KSHIM_MMU_WRITE) == 0) {
+                off += chunk;
+                continue;
+            }
+            state->mmu_paint = -30;
+            break;
+        }
+    }
+    if (state->mmu_paint != 0) return;
+    if (!*first) {
+        *first = true;
+        state->sample[0] = diag_read32((uintptr_t)base);
+    }
+    for (uint64_t off = 0u; off < bytes; off += 4u) {
+        uint32_t value;
+        if (off < 4u*DIAG_CODE_BAND)
+            value = DiagPalette[codes[(unsigned)(off/DIAG_CODE_BAND)] % 6u];
+        else if (off < 4u*DIAG_CODE_BAND + DIAG_COLOUR_BYTES)
+            value = DiagPalette[colour % 6u];
+        else
+            value = ((off / DIAG_COLOUR_BYTES) & 1u) ? 0x00000000u :
+                    DiagPalette[colour % 6u];
+        diag_write32((uintptr_t)(base + off), value);
+    }
+    diag_clean_to_poc(base, bytes);
+    state->sample[1] = diag_read32((uintptr_t)base);
+    state->sample[2] = diag_read32((uintptr_t)(base + DIAG_CODE_BAND));
+    ++state->painted;
+}
+
+static void diag_paint(struct diag_state *state)
+{
+    int codes[4];
+    bool first = false;
+
+    codes[0] = state->dt_rc;
+    codes[1] = state->scratch_kind;
+    codes[2] = (int)state->candidates;
+    codes[3] = (int)state->res_count;
+    for (int i = 0; i < 4; ++i)
+        if (codes[i] < 0) codes[i] = 0;
+    for (unsigned i = 0u; i < state->res_count && state->painted < DIAG_MAX_PAINT_RES;
+         ++i)
+        diag_paint_area(state, state->res[i].base,
+                        state->res[i].size > DIAG_PAINT_BYTES ? DIAG_PAINT_BYTES :
+                        state->res[i].size, state->res[i].kind, codes, &first);
+#if defined(KSHIM_DIAG_PAINT_CANDIDATES) && KSHIM_DIAG_PAINT_CANDIDATES
+    for (unsigned i = 0u; i < state->stored && state->painted < DIAG_MAX_PAINT_RES +
+                                                    DIAG_MAX_PAINT_FB; ++i) {
+        /* Only a candidate that looks like a splash (mostly empty pixels) is
+         * worth writing to; heap data is never that flat. */
+        if (state->cand[i].look + 2u < DIAG_FB_LOOK) continue;
+        diag_paint_area(state, (uint64_t)state->cand[i].val, DIAG_FB_PAINT_BYTES,
+                        4u + i, codes, &first);
+    }
+#endif
+    if (state->painted != 0u) diag_hold(DIAG_HOLD_MS);
+}
+
+static unsigned diag_scan_windows(const struct dt_range *regs,
+                                  const struct diag_window *windows, unsigned count,
+                                  struct diag_state *state)
+{
+    unsigned total = 0u;
+    for (unsigned i = 0u; i < count; ++i) {
+        uint64_t start = regs->base + windows[i].off;
+        if (start < regs->base || windows[i].len > regs->size ||
+            start + windows[i].len > regs->base + regs->size)
+            continue;
+        for (uint32_t off = 0u; off < windows[i].len; off += 4u) {
+            uint32_t value = diag_read32((uintptr_t)(start + (uint64_t)off));
+            if (!diag_in_mem(state, (uint64_t)value)) continue;
+            if (total < DIAG_MAX_CAND) {
+                unsigned zeros = 0u;
+                state->cand[total].off = windows[i].off + off;
+                state->cand[total].val = value;
+                for (unsigned s = 0u; s < DIAG_FB_LOOK; ++s) {
+                    uint64_t at = (uint64_t)value + (uint64_t)s*DIAG_FB_LOOK_STEP;
+                    if (!diag_in_mem(state, at)) break;
+                    if (diag_read32((uintptr_t)at) == 0u) ++zeros;
+                }
+                state->cand[total].look = zeros;
+            }
+            ++total;
+        }
+    }
+    return total;
+}
+
+/* Character-level output only: the report has to survive a DT node name and a
+ * command-line token, so it stays inside [a-z0-9._-] plus '_' between the
+ * halves of a pair. */
+static char *diag_put(char *write, const char *limit, const char *text)
+{
+    while (*text != '\0' && write < limit) *write++ = *text++;
+    return write;
+}
+
+static char *diag_put_hex(char *write, const char *limit, uint32_t value)
+{
+    static const char digits[] = "0123456789abcdef";
+    int started = 0;
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        uint32_t digit = (value >> shift) & 0xfu;
+        if (digit != 0u || started || shift == 0) {
+            started = 1;
+            if (write < limit) *write++ = digits[digit];
+        }
+    }
+    return write;
+}
+
+static char *diag_put_int(char *write, const char *limit, int value)
+{
+    char digits[12];
+    unsigned magnitude;
+    int count = 0;
+    if (value < 0) {
+        if (write < limit) *write++ = '-';
+        magnitude = (unsigned)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned)value;
+    }
+    do {
+        digits[count++] = (char)('0' + (int)(magnitude % 10u));
+        magnitude /= 10u;
+    } while (magnitude != 0u);
+    while (count-- > 0 && write < limit) *write++ = digits[count];
+    return write;
+}
+
+static char *diag_put_seg(char *write, const char *limit, const char *text,
+                          unsigned start, unsigned count)
+{
+    for (unsigned i = 0u; i < count && text[start + i] != '\0'; ++i)
+        if (write < limit) *write++ = text[start + i];
+    return write;
+}
+
+static void diag_build_report(const struct diag_state *state, char *report)
+{
+    static const char digits[] = "0123456789abcdef";
+    char *write = report;
+    const char *limit = report + DIAG_REPORT_BYTES;
+    write = diag_put(write, limit, "r26.d");
+    write = diag_put_int(write, limit, state->dt_rc);
+    write = diag_put(write, limit, ".m");
+    write = diag_put_int(write, limit, state->mmu_enabled);
+    write = diag_put(write, limit, ".a");
+    write = diag_put_int(write, limit, state->mmu_regs);
+    write = diag_put(write, limit, ".p");
+    write = diag_put_int(write, limit, state->mmu_paint);
+    write = diag_put(write, limit, ".b");
+    write = diag_put_int(write, limit, state->bootargs_rc);
+    write = diag_put(write, limit, ".u");
+    write = diag_put_int(write, limit, state->scratch_kind);
+    write = diag_put(write, limit, ".t");
+    write = diag_put_hex(write, limit, state->fdt_size);
+    write = diag_put(write, limit, ".z");
+    write = diag_put_hex(write, limit, state->fdt_out_size);
+    write = diag_put(write, limit, ".h");
+    write = diag_put_int(write, limit, (int)state->nodes);
+    write = diag_put(write, limit, ".j");
+    write = diag_put_int(write, limit, state->rename_rc);
+    write = diag_put(write, limit, ".g");
+    write = diag_put_int(write, limit, (int)state->painted);
+    write = diag_put(write, limit, ".s");
+    write = diag_put_int(write, limit, (int)state->res_count);
+    write = diag_put(write, limit, ".e");
+    write = diag_put_int(write, limit, (int)state->mem_count);
+    write = diag_put(write, limit, ".k");
+    write = diag_put_int(write, limit, (int)state->candidates);
+    write = diag_put(write, limit, ".f");
+    write = diag_put_hex(write, limit, state->free_in);
+    write = diag_put(write, limit, ".c");
+    write = diag_put_hex(write, limit, (uint32_t)state->scratch);
+    write = diag_put(write, limit, ".v");
+    write = diag_put_hex(write, limit, state->sample[0]);
+    write = diag_put(write, limit, "_");
+    write = diag_put_hex(write, limit, state->sample[1]);
+    write = diag_put(write, limit, "_");
+    write = diag_put_hex(write, limit, state->sample[2]);
+    for (unsigned i = 0u; i < state->mem_count; ++i) {
+        write = diag_put(write, limit, ".w");
+        write = diag_put_hex(write, limit, (uint32_t)state->mem[i].base);
+        write = diag_put(write, limit, "_");
+        write = diag_put_hex(write, limit, (uint32_t)state->mem[i].size);
+    }
+    for (unsigned i = 0u; i < state->res_count; ++i) {
+        write = diag_put(write, limit, ".q");
+        write = diag_put_int(write, limit, (int)state->res[i].kind);
+        write = diag_put(write, limit, "_");
+        write = diag_put_hex(write, limit, (uint32_t)state->res[i].base);
+        write = diag_put(write, limit, "_");
+        write = diag_put_hex(write, limit, (uint32_t)state->res[i].size);
+    }
+    write = diag_put(write, limit, ".y");
+    for (unsigned i = 0u; i < state->stored; ++i)
+        if (write < limit) *write++ = digits[state->cand[i].look & 0xfu];
+    for (unsigned i = 0u; i < state->stored; ++i) {
+        write = diag_put(write, limit, ".x");
+        write = diag_put_hex(write, limit, state->cand[i].off);
+        write = diag_put(write, limit, "_");
+        write = diag_put_hex(write, limit, state->cand[i].val);
+    }
+    if (write > (char *)limit) write = (char *)limit;
+    *write = '\0';
+}
+
+/* Root node names are the channel that cannot be rewritten on the way to the
+ * kernel: the shell cannot read a property value under /proc/device-tree, but
+ * it reads every name, so each name carries 24 report characters. */
+static unsigned diag_add_nodes(void *blob, const char *report)
+{
+    static const char labels[] = "0123456789abcdefghijklmnopqrstuv";
+    unsigned nodes = 0u;
+    for (unsigned index = 0u; index < DIAG_MAX_NODES; ++index) {
+        char name[DIAG_NAME_BYTES];
+        char *write = name;
+        const char *from = report + (index * DIAG_CHUNK_CHARS);
+        if (*from == '\0') break;
+        *write++ = 'k';
+        *write++ = 's';
+        *write++ = labels[index % (sizeof(labels) - 1u)];
+        for (unsigned i = 0u; i < DIAG_CHUNK_CHARS && *from != '\0'; ++i, ++from) {
+            char c = *from;
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                  c == '.' || c == '-' || c == '_'))
+                c = '_';
+            *write++ = c;
+        }
+        *write = '\0';
+        if (fdt_add_subnode(blob, 0, name) < 0) break;
+        ++nodes;
+    }
+    return nodes;
+}
+
+/* Second channel, and the longer one: three androidboot.kshim_probeN tokens
+ * on /chosen:bootargs become ro.boot.kshim_probeN in Android.  Kept separate
+ * from the node names so a failure here cannot take the names with it. */
+static int diag_patch_bootargs(void *blob, const char *report)
+{
+    static const char *const tokens[3] = {
+        " androidboot.kshim_probe1=", " androidboot.kshim_probe2=",
+        " androidboot.kshim_probe3=" };
+    static char args[DIAG_CMDLINE_BYTES];
+    char *write = args;
+    const char *limit = args + sizeof(args);
+    const char *old;
+    int chosen, len;
+
+    chosen = fdt_path_offset(blob, "/chosen");
+    if (chosen < 0) return -13;
+    old = fdt_getprop(blob, chosen, "bootargs", &len);
+    if (!old || len <= 0 || old[len - 1] != '\0') return -14;
+    if ((size_t)len + 3u*(24u + DIAG_REPORT_SEG) + 1u > sizeof(args)) return -15;
+    write = diag_put(write, limit, old);
+    for (unsigned i = 0u; i < 3u; ++i) {
+        write = diag_put(write, limit, tokens[i]);
+        write = diag_put_seg(write, limit, report, i*DIAG_REPORT_SEG, DIAG_REPORT_SEG);
+    }
+    *write = '\0';
+    if (fdt_setprop(blob, chosen, "bootargs", args, (size_t)(write + 1 - args)) != 0)
+        return -16;
+    return 0;
+}
+
+/* No scratch is big enough for the merged tree: edit the firmware tree where
+ * it lies.  __symbols__ is the dead weight that pays for the report - it is a
+ * DTBO merge artifact that Linux never reads, and it is properties only, so a
+ * single fdt_del_node releases tens of kilobytes. */
+static int diag_drop_symbols(void *blob)
+{
+    int node = fdt_path_offset(blob, "/__symbols__");
+    if (node < 0) return 0;
+    return fdt_del_node(blob, node) == 0 ? 1 : -23;
+}
+
+/* Bytes the blob can still take without being moved or reallocated. */
+static uint32_t diag_free_space(const void *blob)
+{
+    uint32_t total = (uint32_t)fdt_totalsize(blob);
+    uint32_t end1 = fdt_off_dt_struct(blob) + fdt_size_dt_struct(blob);
+    uint32_t end2 = fdt_off_dt_strings(blob) + fdt_size_dt_strings(blob);
+    uint32_t end = end1 > end2 ? end1 : end2;
+    return total > end ? total - end : 0u;
+}
+
+/* A throwaway node is renamed instead of a new one added: with a shorter name
+ * fdt_set_name() needs no room at all, so this answers the pass-through
+ * question on its own.  sram@... is referenced only by phandle, never by path,
+ * and Linux has no driver for it on this board. */
+static int diag_rename_probe(void *blob)
+{
+    for (int node = fdt_first_subnode(blob, 0); node >= 0;
+         node = fdt_next_subnode(blob, node)) {
+        const char *name = fdt_get_name(blob, node, NULL);
+        const char *at = NULL;
+        char target[32];
+        char *write = target;
+        if (!name || strncmp(name, "sram", 4) != 0) continue;
+        for (const char *p = name; *p != '\0'; ++p)
+            if (*p == '@') { at = p; break; }
+        if (!at || (strlen(at) + 3u) >= sizeof(target)) continue;
+        *write++ = 'k';
+        *write++ = 's';
+        while (*at != '\0' && write < target + sizeof(target) - 1) *write++ = *at++;
+        *write = '\0';
+        if (fdt_set_name(blob, node, target) != 0) return -27;
+        return 1;
+    }
+    return 0;
+}
+
+static uint64_t diag_emit_dt(const void *fdt, struct diag_state *state,
+                             const char *report)
+{
+    void *blob = NULL;
+    int dropped;
+
+    if (state->scratch != 0u && state->scratch_bytes > state->fdt_size + 1024u) {
+        blob = (void *)(uintptr_t)state->scratch;
+        memcpy(blob, fdt, state->fdt_size);
+        if (fdt_open_into(blob, blob, (int)state->scratch_bytes) != 0) {
+            state->dt_rc = -12;
+            state->scratch = 0u;
+            state->scratch_kind = 2;
+        }
+    } else
+        state->scratch_kind = 2;
+    if (state->scratch == 0u) {
+        blob = (void *)(uintptr_t)fdt;
+        if (fdt_open_into(blob, blob, fdt_totalsize(fdt)) != 0) {
+            state->dt_rc = -24;
+            return 0u;
+        }
+        dropped = diag_drop_symbols(blob);
+        if (dropped < 0) { state->dt_rc = dropped; return 0u; }
+    }
+    if (blob == NULL) { state->dt_rc = -26; return 0u; }
+    state->nodes = diag_add_nodes(blob, report);
+    state->rename_rc = diag_rename_probe(blob);
+    if (state->nodes == 0u && state->rename_rc <= 0 && state->dt_rc == 0)
+        state->dt_rc = -22;
+    state->bootargs_rc = diag_patch_bootargs(blob, report);
+    if (fdt_pack(blob) != 0) { state->dt_rc = -17; return 0u; }
+    state->fdt_out_size = (uint32_t)fdt_totalsize(blob);
+    if (dt_validate(blob, state->scratch_kind == 2 ? (size_t)state->fdt_out_size :
+                    (size_t)state->scratch_bytes) != 0) {
+        state->dt_rc = -18;
+        return 0u;
+    }
+    diag_clean_to_poc((uint64_t)(uintptr_t)blob, state->fdt_out_size);
+    return (uint64_t)(uintptr_t)blob;
+}
+
+static void kshim_diag_sde_probe(const void *fdt, struct diag_state *state,
+                                 uint64_t payload_base, uint64_t payload_size)
+{
+    struct diag_window windows[DIAG_WINDOWS];
+    struct dt_range all[DIAG_RES_ALL];
+    struct dt_range regs = {0};
+    uint32_t ctl[8], sspp[10], lm[12], top = 0u, top_len = 0u;
+    char report[DIAG_REPORT_BYTES + 1];
+    unsigned wcount = 0u, n_all = 0u;
+    int node, sde = -1, sde_count = 0;
+    int n_ctl, n_sspp, n_lm;
+
+    state->mmu_enabled = kshim_mmu_is_enabled();
+    state->avoid[0].base = payload_base;
+    state->avoid[0].size = payload_size;
+    state->avoid[1].base = kshim_mmu_image_base();
+    state->avoid[1].size = 0x400000u;
+    if (!fdt) {
+        state->dt_rc = -1;
+    } else {
+        state->avoid[2].base = (uint64_t)(uintptr_t)fdt;
+        state->avoid[2].size = (uint64_t)fdt_totalsize(fdt) + 0x1000u;
+        if (fdt_check_header(fdt) != 0) state->dt_rc = -3;
+        else state->fdt_size = (uint32_t)fdt_totalsize(fdt);
+    }
+    if (state->fdt_size >= 512u) {
+        diag_collect(fdt, state, all, &n_all);
+        if (state->mem_count == 0u && state->dt_rc == 0) state->dt_rc = -25;
+        diag_pick_scratch(state);
+        for (node = fdt_node_offset_by_compatible(fdt, -1, "qcom,sde-kms"); node >= 0;
+             node = fdt_node_offset_by_compatible(fdt, node, "qcom,sde-kms")) {
+            if (!dt_available(fdt, node)) continue;
+            ++sde_count;
+            if (sde_count == 1) sde = node;
+        }
+        if (sde_count != 1) {
+            if (state->dt_rc == 0) state->dt_rc = -4;
+        } else if (dt_reg_named(fdt, sde, "mdp_phys", &regs) || regs.size == 0u) {
+            if (state->dt_rc == 0) state->dt_rc = -5;
+        } else if (state->mmu_enabled != 0 &&
+                   (state->mmu_regs = kshim_mmu_add_region(regs.base, regs.size,
+                        KSHIM_MMU_DEVICE, KSHIM_MMU_READ)) != 0) {
+            if (state->dt_rc == 0) state->dt_rc = -6;
+        } else {
+            n_ctl = diag_prop_array(fdt, sde, "qcom,sde-ctl-off", ctl, 8u);
+            n_sspp = diag_prop_array(fdt, sde, "qcom,sde-sspp-off", sspp, 10u);
+            n_lm = diag_prop_array(fdt, sde, "qcom,sde-mixer-off", lm, 12u);
+            for (int i = 0; i < n_ctl && wcount < DIAG_WINDOWS; ++i) {
+                windows[wcount].off = ctl[i];
+                windows[wcount].len = DIAG_WINDOW_CTL;
+                ++wcount;
+            }
+            for (int i = 0; i < n_sspp && wcount + 1u < DIAG_WINDOWS; ++i) {
+                windows[wcount].off = sspp[i];
+                windows[wcount].len = DIAG_WINDOW_SSPP;
+                ++wcount;
+                windows[wcount].off = sspp[i] + DIAG_REC_BASE;
+                windows[wcount].len = DIAG_WINDOW_REC;
+                ++wcount;
+            }
+            for (int i = 0; i < n_lm && wcount < DIAG_WINDOWS; ++i) {
+                if (lm[i] == 0u || lm[i] == 0xf0fu) continue;
+                windows[wcount].off = lm[i];
+                windows[wcount].len = DIAG_WINDOW_LM;
+                ++wcount;
+            }
+            if (diag_prop_array(fdt, sde, "qcom,sde-off", &top, 1u) == 1 &&
+                diag_prop_array(fdt, sde, "qcom,sde-len", &top_len, 1u) == 1 &&
+                top_len != 0u && wcount < DIAG_WINDOWS) {
+                windows[wcount].off = top;
+                windows[wcount].len = top_len;
+                ++wcount;
+            }
+            state->candidates = diag_scan_windows(&regs, windows, wcount, state);
+            state->stored = state->candidates < DIAG_MAX_CAND ?
+                state->candidates : DIAG_MAX_CAND;
+        }
+        state->free_in = diag_free_space(fdt);
+        /* The DT channels are prepared before anything is written to the
+         * panel, so a bad write can no longer take the report with it. */
+        diag_build_report(state, report);
+        state->fdt_out = diag_emit_dt(fdt, state, report);
+        diag_paint(state);
+    } else if (state->dt_rc == 0)
+        state->dt_rc = -21;
+    else
+        diag_paint(state);
+}
+#endif
+
+/* The Gen2 repacker patches the base image entry prologue itself: the first
+ * 64-bit word becomes the BL into the attached shim and the next four words
+ * carry the packed-image pointers.  Only the manifest header keeps the
+ * original five words, so they are written back here immediately before the
+ * base image is entered and the entry point becomes offset zero instead of
+ * the Gen4 convention of offset four.  With the option off, or without a
+ * valid manifest header, the previous offset-four behaviour is unchanged. */
+static uint64_t kshim_base_entry_offset(uint64_t linux_base,
+                                        uint64_t manifest_address)
+{
+#if defined(CONFIG_KSHIM_GEN2_ENTRY_RESTORE) && CONFIG_KSHIM_GEN2_ENTRY_RESTORE
+    const MANIFEST_HEADER *header;
+    volatile uint8_t *site;
+
+    if (linux_base != 0 && manifest_address != 0) {
+        header = (const MANIFEST_HEADER *)(uintptr_t)manifest_address;
+        if (header->magic == MANIFEST_MAGIC &&
+            header->version.major == MANIFEST_VERSION_MAJOR &&
+            header->version.minor == MANIFEST_VERSION_MINOR) {
+            /* The patched slots are not consecutive: the repacker uses
+             * offsets 0x00, 0x10, 0x20, 0x28 and 0x30, so 0x08 and 0x18
+             * hold original instructions that were never touched and must
+             * not be overwritten. */
+            site = (volatile uint8_t *)(uintptr_t)linux_base;
+            *(volatile uint64_t *)(site + 0x00) = header->base_image.instructions;
+            *(volatile uint64_t *)(site + 0x10) = header->base_image.image_size;
+            *(volatile uint64_t *)(site + 0x20) = header->base_image.manifest_offset;
+            *(volatile uint64_t *)(site + 0x28) = header->base_image.manifest_size;
+            *(volatile uint64_t *)(site + 0x30) = header->base_image.shim_offset;
+            /* The entry prologue is self-modified code: an ARMv8 I-cache is
+             * not coherent with the D-cache, so without cleaning the writes
+             * to the Point of Coherence and invalidating the Instruction
+             * cache to the Point of Unification the fetch at offset zero can
+             * still see the old BL into this shim, which re-enters it
+             * forever at the Android splash.  Gen4 images are entered at
+             * offset four and never modify code, so they never hit this. */
+            sync_image_cache(linux_base, 0x40);
+            return 0;
+        }
+    }
+#endif
+    return 4;
+}
+
 #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
 static void remember_selected_boot(uint32_t target,uint64_t selected_fdt)
 {
@@ -436,16 +1189,72 @@ int kshim_main(
     const uint64_t resources_only_device_tree = device_tree_address;
     const uint64_t resources_only_entry_time = get_current_time();
 #endif
+#if defined(KSHIM_DIAGNOSTIC_BASE_ONLY) && KSHIM_DIAGNOSTIC_BASE_ONLY
+#if !defined(KSHIM_DIAG_PAINT_SPLASH)
+#define KSHIM_DIAG_PAINT_SPLASH 0
+#endif
+#endif
+#if KSHIM_DIAGNOSTIC_BASE_ONLY && KSHIM_DIAG_PAINT_SPLASH
+    /* Proof of life: the TB320FC runtime DT reserves 0xb8000000..0x2b00000
+     * for the live SDE splash, which is what ABL is scanning out when the
+     * Lenovo logo is visible.  Filling it with alternating white and black
+     * 8-byte bars is visible on the panel whatever the pixel format is, so
+     * a striped screen proves the attached shim was entered and reached this
+     * point; an unchanged logo means it did not. */
+    {
+        volatile uint64_t *scanout =
+            (volatile uint64_t *)(uintptr_t)KSHIM_DIAG_SPLASH_BASE;
+        const uint64_t span = KSHIM_DIAG_SPLASH_BYTES;
+        for (uint64_t word = 0; word < span / 8; word += 2) {
+            scanout[word] = ~(uint64_t)0;
+            scanout[word + 1] = 0;
+        }
+        /* The handover runs with the MMU off; if the loader left the caches
+         * on, the panel would keep fetching the old DRAM without this. */
+        for (uint64_t off = 0; off < span; off += 64)
+            __asm__ volatile("dc cvac, %0" :: "r"(
+                (uint64_t)KSHIM_DIAG_SPLASH_BASE + off) : "memory");
+        __asm__ volatile("dsb sy" ::: "memory");
+        for (volatile unsigned spin = 0u; spin < 150000000u; ++spin)
+            __asm__ volatile("");
+    }
+#endif
 #if KSHIM_DIAGNOSTIC_BASE_ONLY
     /* Diagnostic only: hand off to the packed Linux base image immediately,
      * before any DT, console, or peripheral work.  No menu is shown and no
      * peripherals are probed.  arm64_boot_image is declared noreturn and
      * performs the existing handoff (DAIF/timer masks). */
-    if (linux_base)
-        arm64_boot_image(linux_base + 4, device_tree_address,
-                         kernel_arg1, kernel_arg2, kernel_arg3);
+    uint64_t handoff_fdt = device_tree_address;
+#if defined(KSHIM_DIAG_PAINT_BASE) && KSHIM_DIAG_PAINT_BASE
+    /* Diagnostic report channel: probe the display before leaving, then hand
+     * the kernel the DT that carries the report inside its bootargs. */
+    {
+        struct diag_state diag;
+        memset(&diag, 0, sizeof diag);
+        (void)kshim_diag_sde_probe((const void *)(uintptr_t)device_tree_address, &diag,
+            linux_base,
+            (manifest_address != 0 && manifest_size != 0 &&
+             manifest_address + manifest_size > linux_base) ?
+                manifest_address + manifest_size - linux_base : 0);
+        if (diag.fdt_out != 0)
+            handoff_fdt = diag.fdt_out;
+    }
+#endif
+#if defined(KSHIM_DIAG_HALT_BEFORE_HANDOFF) && KSHIM_DIAG_HALT_BEFORE_HANDOFF
+    /* Diagnostic proof of life: never reach the base image.  A device that
+     * stays on the boot splash, with whatever the probe painted on top of it,
+     * proves the attached shim was entered and got this far; a device that
+     * boots Android proves it never was. */
     for (;;)
         asm volatile("wfe");
+#else
+    if (linux_base)
+        arm64_boot_image(
+            linux_base + kshim_base_entry_offset(linux_base, manifest_address),
+            handoff_fdt, kernel_arg1, kernel_arg2, kernel_arg3);
+    for (;;)
+        asm volatile("wfe");
+#endif
 #endif
     const void *runtime_fdt = (const void *)(uintptr_t)device_tree_address;
     if (!runtime_fdt || dt_validate(runtime_fdt, fdt_totalsize(runtime_fdt))) {
@@ -779,7 +1588,8 @@ int kshim_main(
             dt_probe_report((void *)runtime_fdt, "m14:manifest=bad");
             printf("Manifest not found, booting base image\n");
             prepare_boot();
-            arm64_boot_linux(linux_base, device_tree_address, 4);
+            arm64_boot_linux(linux_base, device_tree_address,
+                             4); /* untrusted manifest keeps offset four */
         }
 
 #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
@@ -1332,7 +2142,8 @@ int kshim_main(
 
                     printf("Memory checkpoint m30:reject=report\n");
                     prepare_boot();
-                    arm64_boot_linux(linux_base, device_tree_address, 4);
+                    arm64_boot_linux(linux_base, device_tree_address,
+                                 kshim_base_entry_offset(linux_base, manifest_address));
                 } else {
                     if (rn > 0 && rn < (int)sizeof(report)) {
                         printf("Memory checkpoint %s\n", report);
@@ -1340,7 +2151,8 @@ int kshim_main(
                     }
 
                     prepare_boot();
-                    arm64_boot_linux(linux_base, device_tree_address, 4);
+                    arm64_boot_linux(linux_base, device_tree_address,
+                                 kshim_base_entry_offset(linux_base, manifest_address));
                 }
             }
 #endif
@@ -1358,7 +2170,8 @@ int kshim_main(
                 remember_selected_boot(1,0);
 #endif
                 prepare_boot();
-                arm64_boot_linux(linux_base, device_tree_address, 4);
+                arm64_boot_linux(linux_base, device_tree_address,
+                                 kshim_base_entry_offset(linux_base, manifest_address));
             }
         }
 #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
@@ -1385,7 +2198,8 @@ int kshim_main(
 
         if (entry->type == MF_ENTRY_TYPE_LINUX) {
             uint64_t entry_offset = entry->flags & MF_ENTRY_FLAG_BASE_IMAGE
-                ? 4 : entry->entry_offset;
+                ? kshim_base_entry_offset(linux_base, manifest_address)
+                : entry->entry_offset;
             printf("Booting ");
             print_entry_name(entry);
             printf(" at 0x%lx with DTB at 0x%lx\n",

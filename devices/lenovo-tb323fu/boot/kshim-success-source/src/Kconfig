@@ -96,6 +96,17 @@ config KSHIM_BOOT_TIMING
     bool "Record boot stages in the selected Linux device tree"
     default n
 
+config KSHIM_GEN2_ENTRY_RESTORE
+    bool "Restore the Gen2 base image entry prologue before handoff"
+    default n
+    help
+        Gen2 base images are entered through a BL patched into the first
+        64-bit word of the kernel entry prologue, with the packed-image
+        pointers in the following four words.  The manifest header keeps the
+        original five words; this option writes them back and enters the base
+        image at offset zero.  Gen4 images keep the offset-four entry and are
+        unchanged while this option is off.
+
 config KSHIM_QCOM_REBOOT
     bool "DT-selected Qualcomm recovery, bootloader and EDL targets"
     depends on QCOM_SPMI

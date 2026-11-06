@@ -54,6 +54,12 @@ option(KSHIM_STANDALONE "Boot directly as an ARM64 Image instead of an attached 
 option(KSHIM_DIAGNOSTIC_BASE_ONLY "Diagnostic only: hand off to the packed Linux base image before any DT/console/peripheral work; no menu and no peripheral probes; incompatible with KSHIM_STANDALONE" OFF)
 option(KSHIM_DIAGNOSTIC_RESOURCES_ONLY "Diagnostic only: probe DT/console/resources, then hand off to the packed Linux base image after quiescing the console; no menu and no post-checkpoint peripheral probes; incompatible with KSHIM_STANDALONE and KSHIM_DIAGNOSTIC_BASE_ONLY" OFF)
 option(KSHIM_RAMOOPS_RECOVERY_ONLY "Recovery only: read-only ramoops recovery entry after runtime DT validation; no console/resources/UI/Linux; incompatible with KSHIM_STANDALONE and the diagnostic handoff switches" OFF)
+option(KSHIM_DIAG_PAINT_BASE "Diagnostic only: paint a banded test pattern over the TB320FC splash reservation immediately before every base-image handoff" OFF)
+option(KSHIM_DIAG_PAINT_SPLASH "Diagnostic only: fill the TB320FC splash reservation with black/white bars immediately before the base-image handoff, so the panel itself proves the attached shim was entered" OFF)
+set(KSHIM_DIAG_SPLASH_BASE "0xb8000000" CACHE STRING "Splash scanout base used by KSHIM_DIAG_PAINT_SPLASH")
+set(KSHIM_DIAG_SPLASH_BYTES "0x2b00000" CACHE STRING "Splash bytes painted by KSHIM_DIAG_PAINT_SPLASH")
+option(KSHIM_DIAG_PAINT_CANDIDATES "Diagnostic only: with KSHIM_DIAG_PAINT_BASE, also paint over SDE register values that look like a splash framebuffer; once the shim really runs those pointers can be ordinary kernel DRAM, so this stays off unless explicitly wanted" OFF)
+option(KSHIM_DIAG_HALT_BEFORE_HANDOFF "Diagnostic only: after the TB320FC diagnostic probe, stop instead of handing off to the packed Linux base image, so a device that never leaves the boot splash proves the attached shim was entered; requires KSHIM_DIAGNOSTIC_BASE_ONLY" OFF)
 option(KSHIM_DIAGNOSTIC_DT_ONLY "Diagnostic only: pure DT parsing (validation, device info, layout-only ramoops capture, memory snapshot) then an immediate handoff to the packed Linux base image; no console, resources, peripherals, MMU or UI; incompatible with KSHIM_STANDALONE and the other diagnostic/recovery switches" OFF)
 if(KSHIM_DIAGNOSTIC_BASE_ONLY AND KSHIM_STANDALONE)
     message(FATAL_ERROR "KSHIM_DIAGNOSTIC_BASE_ONLY is forbidden together with KSHIM_STANDALONE")
@@ -76,6 +82,12 @@ endif()
 if(KSHIM_DIAGNOSTIC_DT_ONLY AND (KSHIM_STANDALONE OR KSHIM_DIAGNOSTIC_BASE_ONLY OR KSHIM_DIAGNOSTIC_RESOURCES_ONLY OR KSHIM_RAMOOPS_RECOVERY_ONLY))
     message(FATAL_ERROR "KSHIM_DIAGNOSTIC_DT_ONLY is forbidden together with KSHIM_STANDALONE, KSHIM_DIAGNOSTIC_BASE_ONLY, KSHIM_DIAGNOSTIC_RESOURCES_ONLY or KSHIM_RAMOOPS_RECOVERY_ONLY")
 endif()
+if(KSHIM_DIAG_PAINT_CANDIDATES AND NOT KSHIM_DIAG_PAINT_BASE)
+    message(FATAL_ERROR "KSHIM_DIAG_PAINT_CANDIDATES requires KSHIM_DIAG_PAINT_BASE")
+endif()
+if(KSHIM_DIAG_HALT_BEFORE_HANDOFF AND NOT KSHIM_DIAGNOSTIC_BASE_ONLY)
+    message(FATAL_ERROR "KSHIM_DIAG_HALT_BEFORE_HANDOFF requires KSHIM_DIAGNOSTIC_BASE_ONLY")
+endif()
 set(KSHIM_LINK_ADDRESS "0x40200000" CACHE STRING "Runtime link address")
 set(KSHIM_RUNTIME_SLOT_SIZE "0x400000" CACHE STRING "Reserved runtime bytes (4 MiB for manifest protocol)")
 set(KSHIM_UEFI_PAYLOAD "" CACHE FILEPATH "Optional raw UEFI FD for standalone test menu")
@@ -83,6 +95,12 @@ add_compile_definitions(KSHIM_STANDALONE=$<BOOL:${KSHIM_STANDALONE}>
     KSHIM_DIAGNOSTIC_BASE_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_BASE_ONLY}>
     KSHIM_DIAGNOSTIC_RESOURCES_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_RESOURCES_ONLY}>
     KSHIM_DIAGNOSTIC_DT_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_DT_ONLY}>
+    KSHIM_DIAG_PAINT_BASE=$<BOOL:${KSHIM_DIAG_PAINT_BASE}>
+    KSHIM_DIAG_PAINT_SPLASH=$<BOOL:${KSHIM_DIAG_PAINT_SPLASH}>
+    KSHIM_DIAG_SPLASH_BASE=${KSHIM_DIAG_SPLASH_BASE}
+    KSHIM_DIAG_SPLASH_BYTES=${KSHIM_DIAG_SPLASH_BYTES}
+    KSHIM_DIAG_PAINT_CANDIDATES=$<BOOL:${KSHIM_DIAG_PAINT_CANDIDATES}>
+    KSHIM_DIAG_HALT_BEFORE_HANDOFF=$<BOOL:${KSHIM_DIAG_HALT_BEFORE_HANDOFF}>
     KSHIM_RAMOOPS_RECOVERY_ONLY=$<BOOL:${KSHIM_RAMOOPS_RECOVERY_ONLY}>
     KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=$<BOOL:${KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL}>
     KSHIM_LINK_ADDRESS=${KSHIM_LINK_ADDRESS} KSHIM_RUNTIME_SLOT_SIZE=${KSHIM_RUNTIME_SLOT_SIZE})

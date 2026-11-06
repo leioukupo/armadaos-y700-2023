@@ -155,7 +155,7 @@ void device_info_read(const void *validated_fdt, struct device_info *info)
     const char *model, *compatible;
     int compat_len, off, rc;
     size_t cap, used;
-    bool truncated, tb322, tb323, soc8750, soc8850;
+    bool truncated, tb320, tb322, tb323, soc8475, soc8750, soc8850;
     uint64_t ram = 0;
 
     if (!info)
@@ -200,6 +200,9 @@ void device_info_read(const void *validated_fdt, struct device_info *info)
         info->compatible_known = true;
         info->compatible_truncated = truncated;
 
+        soc8475 = list_contains(compatible, compat_len, "qcom,cape") ||
+                  list_contains(compatible, compat_len, "qcom,capep") ||
+                  list_contains(compatible, compat_len, "qcom,sm8475");
         soc8750 = list_contains(compatible, compat_len, "qcom,sun") ||
                   list_contains(compatible, compat_len, "qcom,sunp") ||
                   list_contains(compatible, compat_len, "qcom,sm8750");
@@ -232,11 +235,19 @@ void device_info_read(const void *validated_fdt, struct device_info *info)
                      validated_fdt,
                      "qcom,mdss_dsi_baldur_nt36523_csot_3k_dsc_vid",
                      "nt36523 3k fhd plus 165Hz DPHY video panel"));
-        if (tb322 != tb323)
-            info->board = tb322 ? DEVICE_BOARD_TB322FC : DEVICE_BOARD_TB323FU;
+        /* TB320FC (Gen 2, SM8475 "CapeP"): the vendor tree carries the SoC
+         * marker only, so the board identity comes from the exact Lenovo
+         * entry of the Linux reference tree; the stock tree stays UNKNOWN. */
+        tb320 = list_contains(compatible, compat_len, "lenovo,tb320fc");
+        if ((int)tb320 + (int)tb322 + (int)tb323 == 1)
+            info->board = tb320 ? DEVICE_BOARD_TB320FC
+                                : tb322 ? DEVICE_BOARD_TB322FC
+                                        : DEVICE_BOARD_TB323FU;
 
-        if (soc8750 != soc8850)
-            info->soc = soc8750 ? DEVICE_SOC_SM8750 : DEVICE_SOC_SM8850;
+        if ((int)soc8475 + (int)soc8750 + (int)soc8850 == 1)
+            info->soc = soc8475 ? DEVICE_SOC_SM8475
+                                : soc8750 ? DEVICE_SOC_SM8750
+                                          : DEVICE_SOC_SM8850;
     }
 
     rc = memory_total(validated_fdt, &ram);

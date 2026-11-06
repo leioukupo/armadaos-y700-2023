@@ -496,3 +496,9 @@ target_link_libraries(android_touch_spi_trial_test PRIVATE kshim_dt)
 add_test(NAME android_touch_profile_test
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/android_touch_profile_test.py"
         --cc "${CMAKE_C_COMPILER}" --crdk-include "${CRDK_ROOT}/Include")
+
+# Local (not upstream): TB320FC/SM8475 vendor DT probe.
+kshim_test(tb320fc_dt_probe tb320fc_dt_probe.c
+    "${KSHIM_ROOT}/src/dt/keys.c" "${KSHIM_ROOT}/src/drivers/keys.c"
+    "${KSHIM_ROOT}/lib/libfdt/fdt_strerror.c")
+target_link_libraries(tb320fc_dt_probe PRIVATE kshim_dt)

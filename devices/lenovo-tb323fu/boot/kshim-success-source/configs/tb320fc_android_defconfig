@@ -33,6 +33,11 @@ CONFIG_KSHIM_EDL_DISABLE_SDI=y
 # CONFIG_KSHIM_BOOT_TIMING is not set
 
 # Native settings in a provisioned internal backup; boot diagnostics stay off.
+# Gen2 entry protocol: the repacker patches the kernel entry prologue itself,
+# so the manifest header backup is written back and the base image is entered
+# at offset zero instead of the Gen4 offset four.
+CONFIG_KSHIM_GEN2_ENTRY_RESTORE=y
+
 CONFIG_KSHIM_UFS_NATIVE_IO=y
 CONFIG_KSHIM_UFS_LINK_WAKE=y
 CONFIG_KSHIM_UFS_DEVICE_WAKE=y
