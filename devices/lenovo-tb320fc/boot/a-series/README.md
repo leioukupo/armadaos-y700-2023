@@ -65,3 +65,50 @@
 成功后产物 `boot-b-a35.img`：100,663,296 B，
 sha256 `19b62405ac055c8eae1531eef69cb84669a41fbd63823ec9ad59fbca8096dd24`，
 刷入 = `fastboot flash boot_b boot-b-a35.img && fastboot reboot`。
+
+## A36..A43：从卡到机身存储
+
+A36 起本轮系列的目标不再是"让内核活着"，而是把根从 TF 卡搬到机身 UFS。当前状态：A42/A43
+已经能在真机上 `switch_root` 到 `/dev/sda16`（label `y700root-ufs`，A40 的 GPT 手术造出来的
+322.118 GiB 分区），卡退化为 marker 输入 + 日志输出通道。
+
+### 两个根与选择顺序
+
+- 候选根：`/dev/sda16`（UFS）与卡上 p4（label `y700root`）。
+- 一个候选必须依次通过：rw 挂载（失败则 ro，再 `remount,rw`）、`/init` 存在且可执行、
+  `chroot /mnt/root /bin/busybox true` rc=0、`chroot /mnt/root /bin/sh -c 'exit 7'` rc=7。
+  任何一步不过就 umount 换下一个候选 —— A37 的教训是 switch_root 第一件事就释放 initramfs，
+  一个执行不了的 ELF 会让 PID 1 直接死掉，没有回退机会。
+- 缺 `/dev /proc /sys` 挂载点：busybox `switch_root` 用 MS_MOVE 把 initramfs 的这三个目录搬过去，
+  MS_MOVE 要求目标目录存在，所以 A42 拒绝这类候选（`NO_VFS_MOUNTPOINTS`），A43 改成在 rw 挂载
+  的前提下就地补建（`VFS_MOUNTPOINTS_CREATED`），补不出来才换下一个。
+
+### 卡上的 marker 协议（FAT 卷根目录）
+
+| 文件 | 作用 |
+| --- | --- |
+| `y700-ufs.txt` | `UFS_CHECK_GO` 只检查；`UFS_MIGRATE_GO` 检查 + 建 fs + 复制 |
+| `y700/ufs-done.txt` | 迁移完成锁；存在则不再迁移 |
+| `y700-task.sh` | 命令通道：按 sha256 只跑一次，输出到 `y700-tasklog.txt`，sha 记在 `y700/task-run.txt` |
+| `gpt/surgery-done.txt` | GPT 手术锁，存在则 initramfs 不再碰分区表 |
+
+A43 的根顺序就靠这套 marker（marker 必须经一次显式 `mount -o ro` 才读得到 —— 选根之前 `/mnt` 已经是卸载状态）：`UFS_MIGRATE_GO` 在且 done 锁不在 ⇒ `order CARD-FIRST`（先把新根
+推回 UFS），否则 `order UFS-FIRST`。**删掉 `y700/ufs-done.txt` 就是"把卡上的 rootfs 版本推送到机身"**。
+
+### 每轮的物理流程
+
+1. 卡插开发板（读卡器）：`reada42.sh` 读日志，顺带 `dosfsck -aw /dev/sdb1` + `e2fsck -fy /dev/sdb4`
+   —— 每次硬断电都会弄脏 FAT 和 ext4，跳过这步会看到 `may be corrupt`。
+2. 改 rootfs（`rootfs/init`、`y700-task.sh`）与 marker，装回 p4。
+3. 平板连 PC：`fastboot flash boot_b boot-b-aNN.img && fastboot reboot`。
+4. 卡插回平板 → 启动 1（推根）→ 长按电源 10 s 断电 → 再开机 → 启动 2（用新根）。
+5. 卡回开发板读日志。
+
+`rootfs/init` 是卡与 UFS 两处共用的 stage-2；它自己会记录 `rootdev=`，所以日志里能看出这一轮
+到底跑在卡上还是机身里。
+
+### 边界
+
+分区表自 A40 之后不再变动，回滚块（PC `y700-2nd\rollback\`、开发板 `/home/ldc/y700save/surgery/`）
+可把 LBA0..3 与 LBA121268219..121268223 原样写回。仍然只写 `boot_b`，`boot_a`/`super`/`persist`/
+固件槽 LUN `sde` 未碰。

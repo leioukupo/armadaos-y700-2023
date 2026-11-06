@@ -1,12 +1,30 @@
 #!/bin/sh
-# A35 stage-2: this is /init inside the ext4 root on the SD card (label
-# y700root, mmcblk0p4).  It was switch_root-ed into by the initramfs, so
-# stdout/stderr are already /dev/kmsg only if we say so again - devtmpfs was
-# moved over by switch_root, so (re)mount it and re-point the fds.
+# A43 stage-2: /init inside the Alpine root.  The same script lives in two
+# possible homes:
+#   SD card p4  label y700root      (what A35..A40 switch_root-ed into)
+#   UFS   p16   label y700root-ufs  (the partition the A40 GPT surgery created)
+# The initramfs switch_root-ed us, so the virtual filesystems are gone again:
+# re-create them and re-point stdout/stderr at /dev/kmsg.
+#
+# What this version adds over A35:
+#   * it records which device is really our root (card vs UFS);
+#   * a gated migration that puts this root onto UFS partition 16, driven by
+#     markers on the card FAT volume and logged to the card, so a hard power
+#     cut still leaves the whole story readable.
+# Markers on the card FAT volume, file y700-ufs.txt (one directive per line):
+#   UFS_CHECK_GO    inspect, format and copy nothing (default when the file exists)
+#   UFS_MIGRATE_GO  mkfs.ext4 p16 (if it is empty) + copy this root into it
+# Lock after success: y700/ufs-done.txt on the card FAT volume.
+#
+# A43 boot 1 learned: UFS writes and ext4 work (mkfs rc=0, mount rc=0, 322 GiB
+# fs with a 1 GiB journal), but a block device already mounted rw as / cannot be
+# mounted a second time, so the copy source has to be / itself.  The copy walks
+# the top level of / and skips the virtual filesystems plus anything that is a
+# mountpoint, which is also what keeps it from recursing into its own target.
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
-mkdir -p /dev /proc /sys /run /tmp /mnt/card /mnt/root 2>/dev/null
+mkdir -p /dev /proc /sys /run /tmp /mnt/card /mnt/root /mnt/ufs 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
 DV=$?
 mount -t proc proc /proc 2>/dev/null
@@ -23,7 +41,10 @@ R() {
 R "Y700-ROOT-ENTERED up=$(cat /proc/uptime) dev=$DV proc=$PR sys=$SY"
 R "ROOT uname=$(uname -a)"
 R "ROOT alpine=$(cat /etc/alpine-release 2>/dev/null) busybox=$(busybox 2>&1 | head -n 1)"
-R "ROOT init1=$$ cmd=$(cat /proc/1/cmdline 2>/dev/null | busybox tr '\0' ' ')"
+
+ROOTDEV=$(awk '$2=="/"{print $1; exit}' /proc/mounts)
+R "ROOT rootdev=$ROOTDEV"
+R "Y700-A43-ROOT-ALIVE rootdev=$ROOTDEV up=$(cat /proc/uptime)"
 
 CARD=""
 for d in /dev/mmcblk0p1 /dev/mmcblk1p1 /dev/mmcblk2p1 ; do
@@ -35,53 +56,276 @@ for d in /dev/mmcblk0p1 /dev/mmcblk1p1 /dev/mmcblk2p1 ; do
 done
 R "ROOT card=$CARD"
 
+# ---- one line to kmsg and, when the card is in, to the card.
+L() {
+	echo "<0>UFS $*"
+	if [ -n "$CARD" ] ; then
+		echo "up=$(cat /proc/uptime) $*" >> /mnt/card/y700-ufslog.txt
+		sync
+	fi
+}
+
+# ---- A43: copy this root from the SD card onto UFS partition 16.
+# Every gate must hold before a byte is written to UFS:
+#   * p16 exists and its size in 512-byte sectors is exactly the size the
+#     surgery wrote (675529368), so it cannot be another LUN's partition;
+#   * it does not start before the end of p15 (userdata), i.e. the table we
+#     wrote really is the one the kernel parsed;
+#   * it either carries no filesystem at all, or it carries the ext4 we made
+#     ourselves (label y700root-ufs) - anything else is somebody else's data
+#     and we keep our hands off it.
+ufs_migrate() {
+	UFS=/dev/sda16
+	WANT_SZS=675529368
+	GO=0
+	CHk=0
+	MK=$(tr -d '\r' < /mnt/card/y700-ufs.txt 2>/dev/null)
+	case "$MK" in
+		*UFS_MIGRATE_GO*) GO=1 ;;
+		*UFS_CHECK_GO*) CHk=1 ;;
+	esac
+	[ "$GO" = "1" ] && CHk=1
+	case "$ROOTDEV" in
+		*sda16)
+			L "root already runs on $ROOTDEV, migration skipped"
+			return
+			;;
+	esac
+	if [ -f /mnt/card/y700/ufs-done.txt ] ; then
+		L "y700/ufs-done.txt exists, migration finished on an earlier boot"
+		return
+	fi
+	L "pass start rootdev=$ROOTDEV card=$CARD go=$GO chk=$CHk"
+	if [ ! -b "$UFS" ] ; then
+		partprobe /dev/sda 2>/dev/null
+		sleep 1
+		[ -b "$UFS" ] || mknod "$UFS" b 8 16 2>/dev/null
+	fi
+	if [ ! -b "$UFS" ] ; then
+		L "HALT: $UFS missing; drivers=$(ls /sys/bus/platform/drivers 2>/dev/null | grep -i ufs | busybox tr '\n' ' ')"
+		L "HALT blocks: $(ls /sys/block 2>/dev/null | busybox tr '\n' ' ')"
+		return
+	fi
+	SZS=$(cat /sys/block/sda/sda16/size 2>/dev/null)
+	ST16=$(cat /sys/block/sda/sda16/start 2>/dev/null)
+	ST15=$(cat /sys/block/sda/sda15/start 2>/dev/null)
+	Z15=$(cat /sys/block/sda/sda15/size 2>/dev/null)
+	L "p16 start=$ST16 size=$SZS  p15 start=$ST15 size=$Z15 end=$((ST15 + Z15))"
+	if [ "$SZS" != "$WANT_SZS" ] ; then
+		L "HALT: p16 size $SZS != expected $WANT_SZS"
+		return
+	fi
+	if [ "$ST16" -lt "$((ST15 + Z15))" ] ; then
+		L "HALT: p16 overlaps p15, refusing to touch it"
+		return
+	fi
+	# Alpine ships busybox blkid, which ignores -s/-o and prints the whole line
+	# verbatim (A43 boot 2 proved that), so the fields are matched with shell
+	# patterns instead of being parsed by external tools.
+	BL="$(blkid "$UFS" 2>/dev/null)"
+	TYP=none
+	LBL=none
+	UUIDOK=0
+	case "$BL" in *"TYPE=\"ext4\""*) TYP=ext4 ;; esac
+	case "$BL" in *"LABEL=\"y700root-ufs\""*) LBL=y700root-ufs ;; esac
+	case "$BL" in *"UUID=\"a7f8c32d-e82b-4ab3-b07b-8b4a115ca2e6\""*) UUIDOK=1 ;; esac
+	OURFS=0
+	if [ "$TYP" = "ext4" ] && [ "$LBL" = "y700root-ufs" ] ; then
+		OURFS=1
+	fi
+	L "p16 blkid=[$BL] typ=$TYP lbl=$LBL uuidmatch=$UUIDOK ours=$OURFS"
+	if [ "$TYP" != "none" ] && [ "$OURFS" != "1" ] ; then
+		L "HALT: $UFS holds a filesystem that is not ours - not touching"
+		return
+	fi
+	blkid /dev/sda >> /mnt/card/y700-ufslog.txt 2>&1
+	cat /proc/partitions >> /mnt/card/y700-ufslog.txt
+	sync
+	if [ "$GO" != "1" ] ; then
+		L "check only: put UFS_MIGRATE_GO into y700-ufs.txt to format and copy"
+		return
+	fi
+	if [ "$OURFS" != "1" ] ; then
+		L "mkfs.ext4 -F -m 0 -L y700root-ufs $UFS"
+		mkfs.ext4 -F -m 0 -L y700root-ufs "$UFS" > /mnt/card/ufs-mkfs.txt 2>&1
+		MR=$?
+		head -n 25 /mnt/card/ufs-mkfs.txt >> /mnt/card/y700-ufslog.txt
+		sync
+		L "mkfs rc=$MR"
+		[ "$MR" = "0" ] || { L "HALT: mkfs failed" ; return ; }
+	else
+		L "keeping the ext4 we created on an earlier boot, formatting skipped"
+	fi
+	mount -t ext4 -o rw "$UFS" /mnt/ufs 2>/dev/null
+	M1=$?
+	L "mount ufs rc=$M1"
+	[ "$M1" = "0" ] || { L "HALT: cannot mount the ufs root" ; return ; }
+	# ---- the source is / itself; skip the virtual filesystems and every
+	# ---- mountpoint under / so the walk cannot reach /mnt/ufs from below.
+	MP=" $(awk '{printf "%s ", $2}' /proc/mounts)"
+	SRC_N=0
+	SRC_B=0
+	LIST=""
+	for d in $(ls / 2>/dev/null) ; do
+		case "/$d" in
+			/dev|/proc|/sys|/mnt|/lost+found) continue ;;
+		esac
+		case "$MP" in *" /$d "*) continue ;; esac
+		n=$(find "/$d" 2>/dev/null | wc -l)
+		b=$(du -sxk "/$d" 2>/dev/null | busybox cut -f1)
+		SRC_N=$((SRC_N + n))
+		SRC_B=$((SRC_B + ${b:-0}))
+		LIST="$LIST $d"
+	done
+	L "source entries=[$LIST] files=$SRC_N kbytes=$SRC_B"
+	CP=0
+	for d in $LIST ; do
+		cp -a "/$d" /mnt/ufs/ 2>>/mnt/card/ufs-cp.err
+		c=$?
+		if [ "$c" != "0" ] ; then
+			L "cp -a /$d rc=$c"
+			CP=$c
+		fi
+	done
+	[ "$CP" = "0" ] || L "copy had failures, rc=$CP"
+	head -n 20 /mnt/card/ufs-cp.err >> /mnt/card/y700-ufslog.txt 2>/dev/null
+	sync
+	sync
+	# ---- A43 boot 3 lesson: busybox switch_root MS_MOVEs the initramfs's /dev,
+	# ---- /proc and /sys onto the new root, and MS_MOVE needs the target
+	# ---- directory to exist.  The copy deliberately skips those virtual
+	# ---- filesystems, which left the UFS root without the mountpoints and made
+	# ---- switch_root fail with status 1 -> "Attempted to kill init".  Create
+	# ---- them in the target, then check the tree really looks like a root.
+	MISS=""
+	for v in dev proc sys mnt/card mnt/root mnt/ufs tmp run ; do
+		mkdir -p "/mnt/ufs/$v" 2>/dev/null
+		[ -d "/mnt/ufs/$v" ] || MISS="$MISS $v"
+	done
+	if [ -n "$MISS" ] ; then
+		L "HALT: target is missing mountpoints$MISS - switch_root would fail"
+		umount /mnt/ufs 2>/dev/null
+		return
+	fi
+	L "target mountpoints ready: $(ls /mnt/ufs | busybox tr '\n' ' ')"
+	DST_N=$(find /mnt/ufs 2>/dev/null | wc -l)
+	DST_B=$(du -sxk /mnt/ufs 2>/dev/null | busybox cut -f1)
+	L "target files=$DST_N kbytes=$DST_B (source files=$SRC_N kbytes=$SRC_B)"
+	if [ "$DST_N" -ge "$((SRC_N + 2))" ] ; then
+		L "file count ok (target adds the mountpoint plus lost+found)"
+	else
+		L "file count looks short, source=$SRC_N target=$DST_N"
+	fi
+	for f in init bin/sh bin/busybox etc/alpine-release sbin/mke2fs lib/ld-musl-aarch64.so.1 ; do
+		A=$(sha256sum "/$f" 2>/dev/null | busybox cut -d' ' -f1)
+		B=$(sha256sum "/mnt/ufs/$f" 2>/dev/null | busybox cut -d' ' -f1)
+		[ -n "$A" ] && [ "$A" = "$B" ] && V=ok || V=MISMATCH
+		L "verify $f src=${A:-missing} dst=${B:-missing} $V"
+	done
+	chroot /mnt/ufs /bin/busybox true 2>/dev/null
+	L "chroot_test_on_target rc=$?"
+	chroot /mnt/ufs /bin/sh -c 'exit 7' 2>/dev/null
+	L "chroot_shell_on_target rc=$? want=7"
+	mkdir -p /mnt/ufs/root 2>/dev/null
+	echo "migrated from $ROOTDEV up=$(cat /proc/uptime) files=$DST_N" > /mnt/ufs/root/ufs-migrated.txt
+	sync
+	umount /mnt/ufs 2>/dev/null
+	L "umount ufs rc=$?"
+	sync
+	blkid "$UFS" >> /mnt/card/y700-ufslog.txt 2>&1
+	mkdir -p /mnt/card/y700 2>/dev/null
+	echo "UFS_MIGRATED_OK dev=$UFS label=y700root-ufs files=$DST_N kbytes=$DST_B up=$(cat /proc/uptime)" > /mnt/card/y700/ufs-done.txt
+	sync
+	L "UFS_MIGRATED_OK - the A43 initramfs will switch_root from $UFS next boot"
+}
+
+run_task() {
+	TF=/mnt/card/y700-task.sh
+	if [ ! -f "$TF" ] ; then
+		L "task: no y700-task.sh on the card, nothing to run"
+		return
+	fi
+	mkdir -p /mnt/card/y700 2>/dev/null
+	NEW=$(sha256sum "$TF" 2>/dev/null | busybox cut -d' ' -f1)
+	OLD=$(cat /mnt/card/y700/task-run.txt 2>/dev/null)
+	if [ -n "$NEW" ] && [ "$NEW" = "$OLD" ] ; then
+		L "task: y700-task.sh already ran with this content, skipping"
+		return
+	fi
+	cp "$TF" /tmp/y700-task.sh 2>/dev/null
+	CP=$?
+	if [ "$CP" != "0" ] ; then
+		L "task: cannot copy $TF off the card rc=$CP"
+		return
+	fi
+	chmod +x /tmp/y700-task.sh 2>/dev/null
+	L "task: running sha=$NEW up=$(cat /proc/uptime)"
+	if command -v timeout >/dev/null 2>&1 ; then
+		timeout -t 240 /bin/sh /tmp/y700-task.sh > /mnt/card/y700-tasklog.txt 2>&1
+	else
+		/bin/sh /tmp/y700-task.sh > /mnt/card/y700-tasklog.txt 2>&1
+	fi
+	TRC=$?
+	echo "TASK_DONE rc=$TRC sha=$NEW up=$(cat /proc/uptime)" >> /mnt/card/y700-tasklog.txt
+	sync
+	if [ -n "$NEW" ] ; then
+		echo "$NEW" > /mnt/card/y700/task-run.txt
+	fi
+	sync
+	L "task: finished rc=$TRC log=$(wc -c < /mnt/card/y700-tasklog.txt 2>/dev/null) bytes"
+}
+
+if [ -n "$CARD" ] ; then
+	ufs_migrate
+	run_task
+else
+	R "UFS no card mounted, migration skipped"
+fi
+
 if [ -n "$CARD" ] ; then
 	{
-		echo '===== Y700-A35 root report (Alpine on SD p4) ====='
-		echo '== uptime =='
+		echo "===== Y700-A43 root report (rootdev=$ROOTDEV) ====="
+		echo "== uptime =="
 		cat /proc/uptime
-		echo '== uname =='
-		uname -a
-		echo '== alpine-release =='
-		cat /etc/alpine-release
-		echo '== os-release =='
-		cat /etc/os-release
-		echo '== cmdline =='
+		echo "== cmdline =="
 		cat /proc/cmdline
-		echo '== mounts =='
+		echo "== mounts =="
 		cat /proc/mounts
-		echo '== blocks =='
+		echo "== blocks =="
 		ls -l /sys/block
-		echo '== partitions =='
+		echo "== partitions =="
 		cat /proc/partitions
-		echo '== /dev =='
-		ls /dev
-		echo '== root top =='
+		echo "== blkid =="
+		blkid
+		echo "== root top =="
 		ls -l /
-		echo '== init script =='
-		ls -l /init
-		echo '== cpu =='
-		head -n 30 /proc/cpuinfo
-		echo '== meminfo =='
-		head -n 8 /proc/meminfo
-		echo '== busybox =='
-		busybox 2>&1 | head -n 2
-		echo '== musl =='
-		ls -l /lib/ld-musl*
-		echo '== net =='
-		ls /sys/class/net
-		echo '== mmc ios =='
-		for h in /sys/class/mmc_host/mmc*; do
-			[ -d "$h" ] || continue
-			echo "-- $h"
-			cat "$h"/state 2>/dev/null
+		echo "== ufs block =="
+		ls -l /sys/block/sd* 2>/dev/null
+		echo "== net =="
+		ls -l /sys/class/net
+		ip -o link 2>&1
+		echo "== usb and gadget =="
+		ls /sys/bus/platform/drivers 2>/dev/null | grep -iE 'dwc|usb|qmp|typec|glink|pmic' | busybox tr '\n' ' '
+		ls -l /sys/class/typec /sys/class/usb_role /sys/class/power_supply 2>&1
+		echo "== power_supply =="
+		for p in /sys/class/power_supply/* ; do
+			[ -d "$p" ] || continue
+			echo "-- $p type=$(cat $p/type 2>/dev/null) cap=$(cat $p/capacity 2>/dev/null)"
 		done
-		echo '== interrupts head =='
-		head -n 25 /proc/interrupts
-		echo '== ufs? =='
-		ls /sys/bus/platform/drivers | grep -i ufs
-		echo '== dmesg tail =='
-		dmesg | tail -n 40
+		echo "== input =="
+		ls -l /sys/class/input /dev/input 2>&1
+		echo "== display =="
+		ls -l /sys/class/graphics /sys/class/backlight /dev/fb* 2>&1
+		echo "== leds =="
+		ls /sys/class/leds 2>&1
+		echo "== platform drivers =="
+		ls /sys/bus/platform/drivers 2>/dev/null | busybox tr '\n' ' '
+		echo "== firmware on this root =="
+		ls /lib/firmware 2>&1 | busybox tr '\n' ' '
+		echo "== busybox ==="
+		busybox 2>&1 | head -n 2
+		echo "== dmesg tail =="
+		dmesg | tail -n 60
 	} > /mnt/card/y700-root.txt
 	sync
 	sync
@@ -92,14 +336,13 @@ N=0
 while [ "$N" -lt 40 ] ; do
 	N=$((N + 1))
 	if [ -n "$CARD" ] ; then
-		echo "A35 root alive up=$(cat /proc/uptime) n=$N" > /mnt/card/y700-root-alive.txt
+		echo "A43 root alive up=$(cat /proc/uptime) n=$N rootdev=$ROOTDEV" > /mnt/card/y700-root-alive.txt
 		sync
 	fi
 	R "ROOT hb $N up=$(cat /proc/uptime) procs=$(ls /proc | grep -c '^[0-9]')"
 	sleep 5
 done
-R "Y700-A35-ROOT-HEARTBEAT-DONE"
-banner_done=1
+R "Y700-A43-ROOT-HEARTBEAT-DONE"
 while true ; do
 	R "ROOT HOLD up=$(cat /proc/uptime)"
 	sleep 10

@@ -41,3 +41,8 @@ __pycache__/
 /build_files/vendor/*.img
 /devices/lenovo-tb323fu/boot/kshim-success-source/_diag_block.txt
 /devices/lenovo-tb323fu/boot/kshim-success-source/_paintbase.py
+
+# local card logs + vendored android tool copies stay out of the tree
+/y700-*.txt
+/build_files/vendor/*.py
+/devices/lenovo-tb323fu/boot/kshim-success-source/_splice.py
