@@ -135,3 +135,73 @@
 /tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1575:	printk(KERN_EMERG "Y700-DEF tot=%d tmo=%d\n", n,
 /tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1584:			printk(KERN_EMERG "Y700-DEF%d %s %s\n", n,
 /tmp/y700/kbuild/asphalt-linux/drivers/base/dd.c:1591:	printk(KERN_EMERG "Y700-BIND-DUMP end\n");
+
+### A55: fbdev over the ABL splash framebuffer (new local driver, CONFIG_FB_Y700=y)
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/Makefile:124:obj-$(CONFIG_FB_Y700)             += y700fb.o
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/Kconfig:1762:config FB_Y700
+/tmp/y700/kbuild/asphalt-linux/drivers/tty/serial/earlycon-simplefb.c:256:void simplefb_console_off(void)
+/tmp/y700/kbuild/asphalt-linux/include/linux/earlycon_simplefb.h:50:void simplefb_console_off(void);
+/tmp/y700/kbuild/asphalt-linux/include/linux/earlycon_simplefb.h:53:static inline void simplefb_console_off(void) { }
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/y700fb.c:159:	info->screen_base = ioremap_wc((resource_size_t)base, mapped);
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/y700fb.c:204:	ret = register_framebuffer(info);
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/y700fb.c:221:	pr_emerg("Y700-FB up fb%d base=0x%llx size=0x%zx %ux%u stride=%u a8r8g8b8\n",
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/y700fb.c:231:	unregister_framebuffer(info);
+/tmp/y700/kbuild/asphalt-linux/drivers/video/fbdev/y700fb.c:283:late_initcall(y700fb_register);
+
+### A68: KTZ8866 backlight kept bound, but forbidden from clobbering ABL (CONFIG_BACKLIGHT_KTZ8866=y)
+A66 bound the driver and the panel stayed pure black while DSI/INTF streamed; A67 differed only by
+`backlight@11 status="disabled"` and every colour appeared.  So the probe itself was the killer.
+A68 keeps the driver (we want /sys/class/backlight) and removes every write ABL already did better.
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:65:	unsigned int abl_brightness;
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:95: * A68 has NO init sequence.  (y700_chip_data keeps only .default_brightness = 1024 as a fallback)
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:103:static const struct ktz8866_chip_data y700_chip_data = {
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:157:	dev_info(&ktz->client->dev, "Y700-BL %s:%s\n", when, buf);	/* abl-left / after-probe register dump */
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:165:static void ktz8866_y700_read_brightness(struct ktz8866 *ktz)	/* "Y700-BL abl-brightness=%u regs=%02x/%02x" */
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:238:		if (!ktz->chip_data->init_sequence)	/* Y700: DEVICE_ID check only, no reg writes */
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:353:		ktz->enable_gpio = devm_gpiod_get(&client->dev, "enable", GPIOD_OUT_HIGH);	/* was OUT_LOW = EN reset pulse */
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:371:			ktz8866_y700_read_brightness(ktz);
+/tmp/y700/kbuild/asphalt-linux/drivers/video/backlight/ktz8866.c:432:		dev_info(&client->dev, "Y700-BL probe-failed rc=%d, ABL state kept\n", ret);	/* no power_off on failure */
+Patch generator: comfyui `/tmp/y700/kbuild/patch_a68.py`; patched file sha256 cf53200884a3aa97279c79456bd72941311e8c17f866e05a7794f7c44160abae.
+The DTB keeps `kinetic,enable-lcd-bias` in the node, but that property is only read in the non-Y700
+branch of ktz8866_init(), so LCD_BIAS_CFG1 is never rewritten - that write alone is enough to kill the
+LCD bias (AVDD/VGLp/VGLn) and show a lit backlight over a black glass.
+
+
+### A73-A80: touch bring-up on the mainline novatek driver (SPI QCOM GENI + NT36523N)
+A69 had no SPI master at all (`# CONFIG_SPI_QCOM_GENI is not set`); A70 enabled it and added the stub
+panel, A73 added the stage walk, A74/A75 killed the SE-DMA reset, A76 shipped the firmware inside the
+initramfs, A80 fixed the chunk size.  Everything below is built-in (=y), not modules.
+/tmp/y700/kbuild/asphalt-linux/drivers/input/touchscreen/novatek-nt36523n-spi.c:1208:static int nvt_stage = 3;	/* A73: 0 nothing, 1 reset line, 2 trim ID, 3 download */
+/tmp/y700/kbuild/asphalt-linux/drivers/input/touchscreen/novatek-nt36523n-spi.c:478:static int nvt_fw_chunk = 16384;	/* A80, see the note above it */
+/tmp/y700/kbuild/asphalt-linux/drivers/input/touchscreen/novatek-nt36523n-spi.c:482:static int nvt_fw_bytes;		/* A74: stop the download early (bisection) */
+/tmp/y700/kbuild/asphalt-linux/drivers/input/touchscreen/novatek-nt36523n-spi.c:510:"NVT-FW begin chunk=%zu fw=%zu limit=%d"   :561:"NVT-FW end %u chunks, %zu bytes, error=%d"
+/tmp/y700/kbuild/asphalt-linux/drivers/input/touchscreen/novatek-nt36523n-spi.c:567:nvt_poll_dma_copy()	/* 200 x 1 ms on NVT_SPI_DMA_TX_INFO_ADDR */
+/tmp/y700/kbuild/asphalt-linux/drivers/input/touchscreen/novatek-nt36523n-spi.c:736:nvt_log_crc_snapshot()	/* "pre-boot"/"post-boot" CRC snapshot, golden vs read back */
+/tmp/y700/kbuild/asphalt-linux/drivers/spi/spi-geni-qcom.c:35:static bool force_pio = true;	/* A75 default; A74 added the knob */
+/tmp/y700/kbuild/asphalt-linux/drivers/spi/spi-geni-qcom.c:558:	if (force_pio)		/* geni_can_dma() says no -> core does not map -> GENI_SE_FIFO */
+/tmp/y700/kbuild/asphalt-linux/drivers/spi/spi-geni-qcom.c:908:"Y700-GENI xfer %u B mode=%u fifo_bytes=%u force_pio=%d"	/* which path a transfer took */
+Why A80 exists: spi/core.c:spi_transfer_wait() budgets `2*(8000*len/speed_hz)+200 ms` and trusts
+spi-max-frequency=9600000, but with force_pio the QUP SE FIFO (fifo_bytes=64) only moves ~250 KB/s.
+The vendor NVT_FW_TRANSFER_MAX of 63 KiB puts 64513 B on the wire: 307 ms of budget against ~310 ms of
+PIO, so the download dies about half the time with "SPI transfer timed out" -> error -ETIMEDOUT ->
+"firmware SRAM transfer failed", probe returns without an input device (A76/A78/A79 measured it, A77
+got lucky).  16 KiB chunks need ~65 ms against a 227 ms budget; A79 proved the full chain then
+completes from userspace (`error=0`, both CRC snapshots equal, `firmware running: version 0x1d,
+PID 0x6066, 16000x25600`, `input: NT3652N Capacitive Touchscreen`, 30833 events).
+Why force_pio exists: a transfer larger than the SE FIFO makes geni_can_dma() answer yes, transfer_one()
+picks GENI_SE_DMA, and the board resets (A71/A72 lost a whole boot that way; A74 confirmed both
+directions in one boot: PIO -> CRC equal and events; DMA -> last card step is dma-stage3 and silence).
+Why the firmware is in the initramfs: the driver is built-in, so its probe runs during initcalls while
+the root is still the embedded initramfs; a blob in /lib/firmware on the UFS root is invisible then
+(A75: boot-nvt-begin=0).  A76 put novatek/lenovo-tb320fc.bin (196608 B, sha256 d08d4844...d4dad3) at
+/tmp/y700/initramfs/lib/firmware/novatek/ in the tree, and the build deletes usr/initramfs_data.cpio/.o
+so the cpio is regenerated (the kernel does not notice new files in INITRAMFS_SOURCE).
+Patch generators: comfyui `/tmp/y700/kbuild/{patch_a73,patch_a74,patch_a75,patch_a76,patch_a80}.py`,
+builds `/tmp/y700/kbuild/{a73,a74,a75,a76,a80}-build.sh`.  Patched-file sha256 as of A80:
+spi-geni-qcom.c f82698cd0021f7479fbfad2f30ab31957e94913f583e19b4cfa36748504c4e36,
+novatek-nt36523n-spi.c 2af06e11e4c59eee03d74a3b98ed38ba05bc55ec7572112ef0b6a6516ac851ac,
+panel-y700-stub.c f081724f17756ff5c4ead558284ddb232f80f69e247292a49bdbd6c28c8d8192,
+y700fb.c 0efa84db04bb37836b9a8c28706da79388fe8ebdab084e3e0b42f071af1e6cbd.
+Images (only boot_b is ever written): boot-b-a76.img sha256 3f7a4010efa12c3412932b809e9f95e240c792df4d205881d4f88f3edda21bd8,
+boot-b-a80.img sha256 9aa85a2eecb079802bd5d9145e26bd9def591d955e33ba747498cb3d9b025935; DTB is byte for
+byte the A70/A73 build in both (`A76_DTB_SAME_AS_A73`, `A80_DTB_SAME_AS_A73`).
