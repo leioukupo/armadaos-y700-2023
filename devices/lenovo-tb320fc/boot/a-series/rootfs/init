@@ -1,5 +1,5 @@
 #!/bin/sh
-# A43 stage-2: /init inside the Alpine root.  The same script lives in two
+# A44 stage-2: /init inside the Alpine root.  The same script lives in two
 # possible homes:
 #   SD card p4  label y700root      (what A35..A40 switch_root-ed into)
 #   UFS   p16   label y700root-ufs  (the partition the A40 GPT surgery created)
@@ -16,7 +16,7 @@
 #   UFS_MIGRATE_GO  mkfs.ext4 p16 (if it is empty) + copy this root into it
 # Lock after success: y700/ufs-done.txt on the card FAT volume.
 #
-# A43 boot 1 learned: UFS writes and ext4 work (mkfs rc=0, mount rc=0, 322 GiB
+# A44 boot 1 learned: UFS writes and ext4 work (mkfs rc=0, mount rc=0, 322 GiB
 # fs with a 1 GiB journal), but a block device already mounted rw as / cannot be
 # mounted a second time, so the copy source has to be / itself.  The copy walks
 # the top level of / and skips the virtual filesystems plus anything that is a
@@ -44,7 +44,7 @@ R "ROOT alpine=$(cat /etc/alpine-release 2>/dev/null) busybox=$(busybox 2>&1 | h
 
 ROOTDEV=$(awk '$2=="/"{print $1; exit}' /proc/mounts)
 R "ROOT rootdev=$ROOTDEV"
-R "Y700-A43-ROOT-ALIVE rootdev=$ROOTDEV up=$(cat /proc/uptime)"
+R "Y700-A44-ROOT-ALIVE rootdev=$ROOTDEV up=$(cat /proc/uptime)"
 
 CARD=""
 for d in /dev/mmcblk0p1 /dev/mmcblk1p1 /dev/mmcblk2p1 ; do
@@ -65,7 +65,7 @@ L() {
 	fi
 }
 
-# ---- A43: copy this root from the SD card onto UFS partition 16.
+# ---- A44: copy this root from the SD card onto UFS partition 16.
 # Every gate must hold before a byte is written to UFS:
 #   * p16 exists and its size in 512-byte sectors is exactly the size the
 #     surgery wrote (675529368), so it cannot be another LUN's partition;
@@ -120,7 +120,7 @@ ufs_migrate() {
 		return
 	fi
 	# Alpine ships busybox blkid, which ignores -s/-o and prints the whole line
-	# verbatim (A43 boot 2 proved that), so the fields are matched with shell
+	# verbatim (A44 boot 2 proved that), so the fields are matched with shell
 	# patterns instead of being parsed by external tools.
 	BL="$(blkid "$UFS" 2>/dev/null)"
 	TYP=none
@@ -191,7 +191,7 @@ ufs_migrate() {
 	head -n 20 /mnt/card/ufs-cp.err >> /mnt/card/y700-ufslog.txt 2>/dev/null
 	sync
 	sync
-	# ---- A43 boot 3 lesson: busybox switch_root MS_MOVEs the initramfs's /dev,
+	# ---- A44 boot 3 lesson: busybox switch_root MS_MOVEs the initramfs's /dev,
 	# ---- /proc and /sys onto the new root, and MS_MOVE needs the target
 	# ---- directory to exist.  The copy deliberately skips those virtual
 	# ---- filesystems, which left the UFS root without the mountpoints and made
@@ -236,7 +236,7 @@ ufs_migrate() {
 	mkdir -p /mnt/card/y700 2>/dev/null
 	echo "UFS_MIGRATED_OK dev=$UFS label=y700root-ufs files=$DST_N kbytes=$DST_B up=$(cat /proc/uptime)" > /mnt/card/y700/ufs-done.txt
 	sync
-	L "UFS_MIGRATED_OK - the A43 initramfs will switch_root from $UFS next boot"
+	L "UFS_MIGRATED_OK - the A44 initramfs will switch_root from $UFS next boot"
 }
 
 run_task() {
@@ -247,9 +247,14 @@ run_task() {
 	fi
 	mkdir -p /mnt/card/y700 2>/dev/null
 	NEW=$(sha256sum "$TF" 2>/dev/null | busybox cut -d' ' -f1)
-	OLD=$(cat /mnt/card/y700/task-run.txt 2>/dev/null)
-	if [ -n "$NEW" ] && [ "$NEW" = "$OLD" ] ; then
-		L "task: y700-task.sh already ran with this content, skipping"
+	# A44: the run-once key is sha PLUS root device, so one script runs once from
+	# the card root and once from the UFS root; the A43 key was the bare sha, so
+	# the card-root pass swallowed the UFS-root pass entirely.
+	RB=$(basename "$ROOTDEV" 2>/dev/null)
+	[ -n "$RB" ] || RB=unknown
+	KEY="$NEW $RB"
+	if grep -q "$KEY" /mnt/card/y700/task-run.txt 2>/dev/null ; then
+		L "task: already ran on $RB with this content, skipping"
 		return
 	fi
 	cp "$TF" /tmp/y700-task.sh 2>/dev/null
@@ -260,19 +265,27 @@ run_task() {
 	fi
 	chmod +x /tmp/y700-task.sh 2>/dev/null
 	L "task: running sha=$NEW up=$(cat /proc/uptime)"
+	LOGF=/mnt/card/y700-tasklog-$RB.txt
+	L "task: running sha=$NEW rootdev=$ROOTDEV up=$(cat /proc/uptime)"
+	# busybox 1.37 takes SECS as a positional argument (timeout SECS PROG); the
+	# A43 form "timeout -t 240" died with "unrecognized option: t", rc=1.
+	TMO=$(busybox tr -dc '0-9' < /mnt/card/y700-task-timeout.txt 2>/dev/null)
+	[ -n "$TMO" ] || TMO=240
 	if command -v timeout >/dev/null 2>&1 ; then
-		timeout -t 240 /bin/sh /tmp/y700-task.sh > /mnt/card/y700-tasklog.txt 2>&1
+		timeout $TMO /bin/sh /tmp/y700-task.sh > "$LOGF" 2>&1
 	else
-		/bin/sh /tmp/y700-task.sh > /mnt/card/y700-tasklog.txt 2>&1
+		/bin/sh /tmp/y700-task.sh > "$LOGF" 2>&1
 	fi
 	TRC=$?
-	echo "TASK_DONE rc=$TRC sha=$NEW up=$(cat /proc/uptime)" >> /mnt/card/y700-tasklog.txt
+	echo "TASK_DONE rc=$TRC sha=$NEW rootdev=$ROOTDEV up=$(cat /proc/uptime)" >> "$LOGF"
 	sync
-	if [ -n "$NEW" ] ; then
-		echo "$NEW" > /mnt/card/y700/task-run.txt
+	if [ "$TRC" = "0" ] ; then
+		echo "$KEY" >> /mnt/card/y700/task-run.txt
+	else
+		L "task: rc=$TRC not recorded, will retry on the next boot"
 	fi
 	sync
-	L "task: finished rc=$TRC log=$(wc -c < /mnt/card/y700-tasklog.txt 2>/dev/null) bytes"
+	L "task: finished rc=$TRC log=$LOGF bytes=$(wc -c < $LOGF 2>/dev/null)"
 }
 
 if [ -n "$CARD" ] ; then
@@ -284,7 +297,7 @@ fi
 
 if [ -n "$CARD" ] ; then
 	{
-		echo "===== Y700-A43 root report (rootdev=$ROOTDEV) ====="
+		echo "===== Y700-A44 root report (rootdev=$ROOTDEV) ====="
 		echo "== uptime =="
 		cat /proc/uptime
 		echo "== cmdline =="
@@ -336,13 +349,13 @@ N=0
 while [ "$N" -lt 40 ] ; do
 	N=$((N + 1))
 	if [ -n "$CARD" ] ; then
-		echo "A43 root alive up=$(cat /proc/uptime) n=$N rootdev=$ROOTDEV" > /mnt/card/y700-root-alive.txt
+		echo "A44 root alive up=$(cat /proc/uptime) n=$N rootdev=$ROOTDEV" > /mnt/card/y700-root-alive.txt
 		sync
 	fi
 	R "ROOT hb $N up=$(cat /proc/uptime) procs=$(ls /proc | grep -c '^[0-9]')"
 	sleep 5
 done
-R "Y700-A43-ROOT-HEARTBEAT-DONE"
+R "Y700-A44-ROOT-HEARTBEAT-DONE"
 while true ; do
 	R "ROOT HOLD up=$(cat /proc/uptime)"
 	sleep 10

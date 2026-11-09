@@ -205,3 +205,27 @@ y700fb.c 0efa84db04bb37836b9a8c28706da79388fe8ebdab084e3e0b42f071af1e6cbd.
 Images (only boot_b is ever written): boot-b-a76.img sha256 3f7a4010efa12c3412932b809e9f95e240c792df4d205881d4f88f3edda21bd8,
 boot-b-a80.img sha256 9aa85a2eecb079802bd5d9145e26bd9def591d955e33ba747498cb3d9b025935; DTB is byte for
 byte the A70/A73 build in both (`A76_DTB_SAME_AS_A73`, `A80_DTB_SAME_AS_A73`).
+
+
+### A81-A82: the panel becomes the console, and a distro root becomes bootable
+A81 turns the display from "ABL streams pixels, we only read them" into a real console; A82 lets PID 1 be
+handed to a distribution instead of our Alpine root.  Everything is still built-in (=y), boot_b only.
+drivers/video/fbdev/y700fb.c:static bool y700fb_takeover = true;	/* A81, was off while fbcon was absent */
+.config: CONFIG_FRAMEBUFFER_CONSOLE=y CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y CONFIG_FB_Y700=y
+config: CONFIG_CMDLINE now ends with "selinux=0 systemd.unit=multi-user.target" (CMDLINE_FORCE stays on)
+/tmp/y700/initramfs/init - A82 root gate:
+  "for cand in /init /sbin/init /usr/lib/systemd/systemd"	: first executable wins, kept in INITTGT
+  stage "A82 root_init=$INITTGT dev=$D osrelease=..."		: which distribution the candidate is
+  "A82 no-busybox-in-root ... busybox chroot probe skipped"	: absence of busybox is not a verdict
+  exec /bin/busybox switch_root /mnt/root "$INITTGT"		: switch_root into systemd
+  *CARD_FIRST_GO*) RESYNC=1					: card root without asking it to re-migrate UFS
+Why A82 exists: the only root the gate ever accepted was the Alpine minirootfs we build (executable /init
+plus a working busybox).  The ArmadaOS root on the card (p3, btrfs, ostree deploy .../79073b86....0,
+12.36 GiB) has /sbin/init -> ../lib/systemd/systemd, no /init and no busybox, and its SELinux policy is
+enforcing, so a flattened ext4 copy on sda16 needs both a generalised probe and selinux=0 on the cmdline.
+Card-root /init (rootfs/init, now byte-identical to the card copy, sha256 70530a10...): run_task reads
+/mnt/card/y700-task-timeout.txt for its ceiling (default 240 s) so a 15 GiB install round can finish.
+Patch generators: comfyui /tmp/y700/kbuild/{patch_a81,patch_a82}.py, builds {a81,a82}-build.sh.
+Images: boot-b-a81.img sha256 355134951b9287bc72ef0fe1cac89a3450c473aaa4e15ba0aa2a582ec6843aa8 (flashed),
+boot-b-a82.img sha256 fc0774b4f35ae4247b337d6a8070e3b1fc67426b269122d63e43a9c2513a0199; DTB byte-for-byte
+A70/A73 in both (A81_DTB_SAME_AS_A73, A82_DTB_SAME_AS_A73).
