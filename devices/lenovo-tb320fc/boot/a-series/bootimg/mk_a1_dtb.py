@@ -98,7 +98,9 @@ DISABLE_NODES = ('display-subsystem@ae00000', 'display-controller@ae01000',
 MINIMAL_NODES = ('interrupt-controller@b220000',
                  'gpu@3d00000', 'gmu@3d6a000', 'clock-controller@3d90000',
                  'pcie@1c00000', 'phy@1c06000',
-                 'usb@a600000', 'phy@88e8000', 'phy@88e3000',
+                 # A45: usb@a600000 and its HS phy come back as a
+                 # peripheral (see usb_peripheral); the SS/QMP phy stays off.
+                 'phy@88e8000',
                  'isp@acb7000', 'cci@ac15000', 'cci@ac16000',
                  'clock-controller@aaf0000', 'clock-controller@ade0000',
                  'clock-controller@af00000', 'phy@ae94400', 'phy@ae96400',
@@ -143,6 +145,42 @@ SPMI_OLD = 'interrupts-extended = <0xbe 0x01 0x04>;'
 SPMI_NEW = 'interrupts-extended = <0x01 0x00 0x1e1 0x04>;'
 
 MINIMAL = os.environ.get('Y700_MINIMAL') == '1'
+
+# Extra nodes pinned off by name (comma separated).  A50: the DP controller sits
+# in the DPU's component match list - add_mdp_components() walks the dpu node's
+# of_graph endpoints and adds every available remote port parent - and
+# msm-dp-display fails probe with -ENODEV on this pad, so the DPU master waits
+# forever for a component that never arrives and no DRM card is ever created.
+# A disabled node is skipped by of_device_is_available(), which takes it out of
+# the match list.
+EXTRA_DISABLE = [n for n in os.environ.get('Y700_EXTRA_DISABLE', '').split(',') if n]
+
+# A96: hand the applications SMMU back to Linux.  The DPU is ours now, and msm
+# refuses to bind without an IOMMU (msm_kms_init_vm(): "no IOMMU, bailing out"
+# -> dpu_kms_hw_init fails -ENODEV -> no card).  arm-smmu disables every context
+# bank ABL left programmed, so the masters we actually use (ufshc, mmc, usb,
+# mdss/dpu) must get their iommus bindings back or their DMA aborts.  With this
+# set the apps SMMU node stays enabled and only bindings pointing at it survive.
+APPS_SMMU = os.environ.get('Y700_APPS_SMMU') == '1'
+APPS_SMMU_NODE = 'iommu@15000000'
+
+# A47 node sweep -> A48 promotion.  y700-sweep/good.txt (the nodes the board
+# survived enabling at runtime) is copied here as bare node names; every name in
+# the file is left out of the pinned-off set for the next build.  The file is
+# optional: without it the DTB is exactly what it was.
+UNPIN_FILE = os.path.join(WORK, 'unpin_next.txt')
+
+
+def unpin_nodes():
+    """Node names the sweep proved safe to enable."""
+    if not os.path.exists(UNPIN_FILE):
+        return set()
+    out = set()
+    for ln in open(UNPIN_FILE, encoding='utf-8'):
+        ln = ln.strip()
+        if ln and not ln.startswith('#'):
+            out.add(ln.split('/')[-1])
+    return out
 
 BOOTARGS = ('earlycon=simplefb keep_bootcon nokaslr loglevel=8 ignore_loglevel '
             'initcall_debug consoleblank=0 clk_ignore_unused pd_ignore_unused '
@@ -249,6 +287,11 @@ def strip_icc_refs(text, phandles):
     Leaving the matching `interconnect-names` behind is harmless: the icc core
     only ever reads `interconnects`.
     """
+    if not phandles:
+        # An empty list means "no provider is pinned off", not "match
+        # everything": an empty alternation would match every line and delete
+        # every interconnects property in the tree.
+        return text, 0
     hit = re.compile(r'(?<![0-9a-fA-F])(%s)(?![0-9a-fA-F])' % '|'.join(phandles))
     lines = text.split('\n')
     kill = [i for i, ln in enumerate(lines)
@@ -293,21 +336,54 @@ def mark_regulators_always_on(text):
     return '\n'.join(lines), added
 
 
-def strip_iommu_refs(text):
-    """Drop every iommu binding so no consumer defers on the disabled SMMU.
+def node_phandle(text, node):
+    """The phandle dtc gave `node`, so consumers can be filtered per IOMMU."""
+    lines = text.split('\n')
+    hdr = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == '%s {' % node:
+            hdr = i
+            break
+    assert hdr is not None, 'node not found: %s' % node
+    ind = lines[hdr][:len(lines[hdr]) - len(lines[hdr].lstrip())]
+    end = lines.index(ind + '};', hdr + 1)
+    for k in range(hdr + 1, end):
+        m = re.match(r'\s*phandle = <(0x[0-9a-f]+)>;$', lines[k])
+        if m:
+            return m.group(1)
+    raise AssertionError('no phandle on %s' % node)
 
-    With the SMMU nodes off, any remaining `iommus = <&apps_smmu ...>` makes
+
+def strip_iommu_refs(text, keep=None):
+    """Drop the iommu bindings whose IOMMU is pinned off.
+
+    With an SMMU node disabled, any remaining `iommus = <&that_smmu ...>` makes
     `iommu_probe_device()` return -EPROBE_DEFER forever, i.e. UFS/USB/eMMC would
-    never probe.  ABL leaves the streams bypassed, so physical addressing works.
+    never probe; ABL leaves those streams bypassed, so physical addressing works.
+    A96 keeps the apps SMMU on, and then the opposite holds: arm-smmu turns off
+    every context bank ABL had programmed, so a master only keeps working DMA if
+    Linux re-programs a context bank for it - the binding must stay.
     """
     props = ('iommus', 'iommu-map', 'iommu-map-mask')
-    out, n = [], 0
+    out, kept, n = [], 0, 0
     for ln in text.split('\n'):
-        if any(re.match(r'\t+%s = <[^>]*>;$' % p, ln) for p in props):
-            n += 1
+        hit = None
+        for p in props:
+            if re.match(r'\t+%s = <[^>]*>;$' % p, ln):
+                hit = p
+                break
+        if hit is None:
+            out.append(ln)
             continue
-        out.append(ln)
-    return '\n'.join(out), n
+        vals = re.search(r'= <([^>]*)>;$', ln).group(1).split()
+        # iommus = <phandle sid mask>...; iommu-map(-mask) = <rid phandle sid mask>...
+        phs = vals[0::3] if hit == 'iommus' else vals[1::4]
+        if keep and phs and all(v == keep for v in phs):
+            kept += 1
+            out.append(ln)
+            continue
+        n += 1
+    return '\n'.join(out), n, kept
 
 
 def set_own_prop(text, name, prop, value, expect=1):
@@ -337,6 +413,106 @@ def set_own_prop(text, name, prop, value, expect=1):
               % (name, prop, lines[k].strip(), value.split(' = ', 1)[1]))
         lines[k] = pad + value
     return '\n'.join(lines), len(hit)
+
+
+
+# A45: the USB controller comes back - as a device, and with the HS phy only.
+#
+# Three edits, three reasons:
+# 1. The PDC stays pinned off (A1m/A1r), so this node's three &pdc interrupts have
+#    to go with it.  dwc3-qcom looks them up with platform_get_irq_byname_optional,
+#    but of_irq_get_byname() on an interrupt whose parent host was never published
+#    returns -EPROBE_DEFER, which the optional variant does not swallow: the probe
+#    would defer forever.  Deleting the *names* is what makes them optional.
+# 2. The SS phy (phy@88e8000, qcom,sm8475-qmp-usb3-dp-phy) stays disabled: poking
+#    0x088e8000 is exactly what took the board down in the pre-minimal rounds.  With
+#    phy-names cut to "usb2-phy" the dwc3 core sees -ENODEV for the SS phy (that one
+#    is tolerated), maximum-speed keeps the gadget at 480 Mbit, and
+#    qcom,select-utmi-as-pipe-clk tells the glue no pipe clock exists.
+# 3. dr_mode becomes "peripheral" so dwc3-qcom enables the VBUS override, and
+#    dropping usb-role-switch keeps the typec role machinery out - no TCPM or
+#    qcom-pmic typec driver is built in, so a role switch would never appear.
+# Safety net: usb30_prim_gdsc is ALWAYS_ON in drivers/clk/qcom/gcc-sm8450.c, so the
+# block is powered before any of this happens.
+EUSB2_NODE = 'phy@88e3000'
+USB_NODE = 'usb@a600000'
+USB_IRQ_OLD = ('interrupts-extended = <0x01 0x00 0x85 0x04 0x01 0x00 0x82 0x04 '
+               '0x01 0x00 0x83 0x04 0xbe 0x0e 0x03 0xbe 0x0f 0x03 0xbe 0x11 0x04>;')
+USB_IRQ_NEW = ('interrupts-extended = <0x01 0x00 0x85 0x04 0x01 0x00 0x82 0x04 '
+               '0x01 0x00 0x83 0x04>;')
+USB_NAMES_OLD = (r'interrupt-names = "dwc_usb3\0pwr_event\0hs_phy_irq'
+                 r'\0dp_hs_phy_irq\0dm_hs_phy_irq\0ss_phy_irq";')
+USB_NAMES_NEW = r'interrupt-names = "dwc_usb3\0pwr_event\0hs_phy_irq";'
+USB_PHYS_OLD = 'phys = <0x13f 0x42 0x00>;'
+USB_PHYS_NEW = 'phys = <0x13f>;'
+USB_PHYNAMES_OLD = r'phy-names = "usb2-phy\0usb3-phy";'
+USB_PHYNAMES_NEW = r'phy-names = "usb2-phy";'
+USB_MAXSPEED_OLD = 'maximum-speed = "super-speed-plus";'
+USB_MAXSPEED_NEW = 'maximum-speed = "high-speed";'
+USB_DRMODE_OLD = 'dr_mode = "otg";'
+USB_DRMODE_NEW = 'dr_mode = "peripheral";'
+USB_ADD = ('maximum-speed = "high-speed";', 'qcom,select-utmi-as-pipe-clk;')
+
+
+def node_span(text, name):
+    """(header index, closing-brace index) of node `name`, tab-layout aware."""
+    lines = text.split('\n')
+    for i, ln in enumerate(lines):
+        if ln.strip() == '%s {' % name:
+            ind = ln[:len(ln) - len(ln.lstrip())]
+            return lines, i, lines.index(ind + '};', i + 1), ind
+    raise AssertionError('node not found: %s' % name)
+
+
+def drop_own_flag(text, name, prop):
+    """Delete node `name`'s own valueless `prop;` line (children untouched)."""
+    lines, hdr, end, _ind = node_span(text, name)
+    depth, kill = 0, []
+    for k in range(hdr + 1, end):
+        if depth == 0 and lines[k].strip() == '%s;' % prop:
+            kill.append(k)
+        depth += lines[k].count('{') - lines[k].count('}')
+    assert len(kill) == 1, 'expected 1 bare %s in %s, got %d' % (prop, name, len(kill))
+    for k in reversed(kill):
+        del lines[k]
+    return '\n'.join(lines)
+
+
+def add_own_props(text, name, props):
+    """Insert props straight after the node header; dtc order is irrelevant."""
+    lines, hdr, end, ind = node_span(text, name)
+    depth, own = 0, []
+    for k in range(hdr + 1, end):
+        if depth == 0 and lines[k].strip():
+            own.append(lines[k].strip())
+        depth += lines[k].count('{') - lines[k].count('}')
+    added = [p for p in props if p.split(' =')[0].rstrip(';') not in ' '.join(own)]
+    for k, p in enumerate(added):
+        lines.insert(hdr + 1 + k, ind + '\t' + p)
+    return '\n'.join(lines), added
+
+
+def usb_peripheral(text):
+    for old, new in ((USB_IRQ_OLD, USB_IRQ_NEW), (USB_NAMES_OLD, USB_NAMES_NEW),
+                     (USB_PHYS_OLD, USB_PHYS_NEW),
+                     (USB_PHYNAMES_OLD, USB_PHYNAMES_NEW),
+                     (USB_DRMODE_OLD, USB_DRMODE_NEW),
+                     (USB_MAXSPEED_OLD, USB_MAXSPEED_NEW)):
+        assert text.count(old) == 1, 'usb property not unique: %r (%d)' % (old, text.count(old))
+        text = text.replace(old, new)
+    # A46: drop the eUSB2 repeater dependency (see the comment above).
+    text, n = strip_own_prop(text, EUSB2_NODE, 'phys')
+    assert n == 1, 'expected 1 phys in %s, got %d' % (EUSB2_NODE, n)
+    print('A46: %s needs no I2C eUSB2 repeater driver (ABL already runs it for '
+          'fastboot), dropped its phys reference' % EUSB2_NODE)
+    text = drop_own_flag(text, USB_NODE, 'usb-role-switch')
+    text, _n = strip_own_prop(text, USB_NODE, 'role-switch-default-mode')
+    text, added = add_own_props(text, USB_NODE, USB_ADD)
+    print('A45: %s is a high-speed peripheral: pdc irqs trimmed to 3 cells, ss phy dropped, '
+          'dr_mode=peripheral, max-speed capped to HS, added %d props %s'
+          % (USB_NODE, len(added), USB_ADD))
+    return text
+
 
 
 def main():
@@ -410,16 +586,31 @@ def main():
     if MINIMAL:
         disabled += list(MINIMAL_NODES)
         disabled += prefixed_nodes(text, MINIMAL_PREFIXES)
+    unpinned = unpin_nodes() if MINIMAL else set()
+    disabled = [n for n in dict.fromkeys(disabled) if n not in unpinned]
+    # EXTRA_DISABLE is a deliberate per-round pin, so it wins over the sweep's
+    # promoted list - the DP controller is 'safe to enable' and still has to stay
+    # off, because a component driver whose probe fails blocks the DPU master.
+    disabled += [n for n in EXTRA_DISABLE if n not in disabled]
+    # A96 un-pins the apps SMMU last: nothing this round may put it back, and it
+    # is not in unpin_next.txt because that file is the sweep's, not ours.
+    if APPS_SMMU:
+        disabled = [n for n in disabled if n != APPS_SMMU_NODE]
     for node in disabled:
         text = set_status_disabled(text, node)
+    # 4a2. A45: the dwc3 wrapper is back on, as an HS peripheral.
+    text = usb_peripheral(text)
 
     # 4b. icc providers pinned off must not be left in any consumer's phandle list
     icc_off, icc_refs, spmi_irq = [], 0, 0
     if MINIMAL:
         for node, phandle in ICC_OFF:
+            if node in unpinned:
+                continue
             text = set_status_disabled(text, node)
             icc_off.append(node)
-        text, icc_refs = strip_icc_refs(text, [p for _, p in ICC_OFF])
+        text, icc_refs = strip_icc_refs(
+            text, [p for n, p in ICC_OFF if n not in unpinned])
         # the arbiter must not wait for the (permanently off) PDC irq domain
         assert text.count(SPMI_OLD) == 1, 'spmi periph_irq is not <&pdc 1 LEVEL_HIGH>'
         text, spmi_irq = set_own_prop(text, 'spmi@c400000',
@@ -448,8 +639,12 @@ def main():
 
     # 7. the board has 34 iommus/iommu-map consumers (ufshc, usb, mmc, pci, ...);
     # with the SMMU nodes disabled they must all go away or nothing probes.
-    text, iorefs = strip_iommu_refs(text)
-    assert iorefs >= 30, 'too few iommu refs stripped: %d' % iorefs
+    keep_ph = node_phandle(text, APPS_SMMU_NODE) if APPS_SMMU else None
+    text, iorefs, iokeep = strip_iommu_refs(text, keep_ph)
+    if APPS_SMMU:
+        assert iokeep >= 20, 'A96 kept only %d iommu refs' % iokeep
+    else:
+        assert iorefs >= 30, 'too few iommu refs stripped: %d' % iorefs
     sd_head = chr(10) + chr(9) * 2 + 'mmc@8804000 {'
     assert text.count(sd_head) == 1, 'sd node header not unique'
     at = text.index(sd_head) + len(sd_head)
@@ -497,6 +692,49 @@ def main():
                 'status = "disabled";' + text[_at:])
     print('A33: pinned smp2p x4 and the uart bluetooth child disabled')
 
+    # A65: pin the KTZ8866 backlight chip off.  Nothing else in this kernel
+    # touches the display (DSI/DPU/DP/panel nodes are all disabled, so the
+    # panel keeps running on ABL's setup and Linux only writes ABL's fb), yet
+    # ktz8866 probes at 2.26 s: it drives the EN pin (TLMM 62) low then high,
+    # enables vddpos/vddneg and rewrites BL_EN/BL_CFG1/BL_CFG2/BL_OPTION2/
+    # PWM_RAMP/LCD_BOOST/OUTP/OUTN/LCD_BIAS_CFG1.  If the LCD bias comes out
+    # wrong the glass cannot switch pixels at all: pure black panel with the
+    # DSI stream, the MISR signatures and even the backlight glow still alive -
+    # exactly the symptom.  With this node disabled the chip keeps whatever
+    # ABL programmed, which we know works (the Android logo is lit).
+    if os.environ.get('Y700_A65_BL_OFF'):
+        _mo = re.search(r'(?m)^(\t+)backlight@11 \{$', text)
+        assert _mo, 'A65 backlight@11 header not found'
+        _at = _mo.end()
+        assert 'status = ' not in text[_at:_at + 400], 'A65 backlight@11 already has a status'
+        text = (text[:_at] + chr(10) + _mo.group(1) + chr(9) +
+                'status = "disabled";' + text[_at:])
+        print('A65: backlight@11 pinned status=disabled (ktz8866 will not bind)')
+    else:
+        print('A65 pin skipped: backlight@11 left as the sweep set it')
+
+    # A70: the Novatek NVT36xxx touch driver is a drm_panel_follower, and
+    # panel@0 (the phandle its `panel` property points at) sits under the
+    # disabled dsi@ae94000, so find_panel_by_fwnode() can never resolve it and
+    # the SPI client defers forever.  Register a root-level stub panel instead
+    # (drivers/gpu/drm/panel/panel-y700-stub.c) and repoint the property.  The
+    # stub calls drm_panel_prepare()/enable() from its own probe, which is what
+    # releases the follower - no CRTC, no DSI host, no MDSS register written.
+    if os.environ.get('Y700_A70'):
+        assert '0x7f00' not in text, 'A70 phandle 0x7f00 already in use'
+        stub = (chr(10) + chr(9) + 'y700-stub-panel {' +
+                chr(10) + chr(9) * 2 +
+                'compatible = "armada,y700-stub-panel";' +
+                chr(10) + chr(9) * 2 + 'phandle = <0x7f00>;' +
+                chr(10) + chr(9) + '};')
+        assert text.rstrip().endswith(chr(10) + '};'), 'A70 root close not found'
+        close = text.rindex(chr(10) + '};')
+        text = text[:close] + stub + text[close:]
+        text, _a70 = set_own_prop(text, 'touchscreen@0', 'panel',
+                                  'panel = <0x7f00>;')
+        assert _a70 == 1, 'A70 rewired the panel phandle %d times' % _a70
+        print('A70: y700-stub-panel added (phandle 0x7f00), touchscreen@0 repointed')
+
     open(OUT_DTS, 'w', newline='\n', encoding='utf-8').write(text)
     subprocess.run([DTC, '-q', '-O', 'dtb', '-W', 'no-unit_address_vs_reg',
                     '-W', 'no-unique_unit_address', '-W', 'no-avoid_unnecessary_addr_size',
@@ -508,7 +746,8 @@ def main():
     print('a1.dtb %d bytes / a1.dts %d bytes' % (len(blob), len(text)))
     print('append placeholder hits: %d at %s' % (len(hits), [hex(h) for h in hits]))
     print('regulators pinned always-on: %d' % rails)
-    print('iommu consumer properties removed: %d' % iorefs)
+    print('iommu consumer properties removed: %d, kept for %s: %d'
+          % (iorefs, APPS_SMMU_NODE if APPS_SMMU else 'no smmu', iokeep))
     print('nodes pinned disabled: %d (minimal=%s)' % (len(disabled), MINIMAL))
     print('properties stripped: %d %s' % (stripped, STRIP_PROPS))
     print('icc providers off: %s / consumer refs removed: %d'

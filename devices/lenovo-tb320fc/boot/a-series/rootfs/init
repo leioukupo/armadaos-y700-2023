@@ -259,11 +259,16 @@ run_task() {
 	fi
 	cp "$TF" /tmp/y700-task.sh 2>/dev/null
 	CP=$?
+	TSRC=/tmp/y700-task.sh
 	if [ "$CP" != "0" ] ; then
-		L "task: cannot copy $TF off the card rc=$CP"
-		return
+		# A yanked card plus an ext4 root with no journal can leave /tmp unusable
+		# (inode #13 iget: checksum invalid).  The task is still runnable straight
+		# off the card, and the card is mounted for as long as the task runs.
+		echo "<3>Y700-TASK cp to /tmp failed rc=$CP, running off the card" > /dev/kmsg 2>/dev/null
+		L "task: cannot copy $TF off the card rc=$CP, running it from the card"
+		TSRC="$TF"
 	fi
-	chmod +x /tmp/y700-task.sh 2>/dev/null
+	chmod +x "$TSRC" 2>/dev/null
 	L "task: running sha=$NEW up=$(cat /proc/uptime)"
 	LOGF=/mnt/card/y700-tasklog-$RB.txt
 	L "task: running sha=$NEW rootdev=$ROOTDEV up=$(cat /proc/uptime)"
@@ -272,9 +277,9 @@ run_task() {
 	TMO=$(busybox tr -dc '0-9' < /mnt/card/y700-task-timeout.txt 2>/dev/null)
 	[ -n "$TMO" ] || TMO=240
 	if command -v timeout >/dev/null 2>&1 ; then
-		timeout $TMO /bin/sh /tmp/y700-task.sh > "$LOGF" 2>&1
+		timeout $TMO /bin/sh "$TSRC" > "$LOGF" 2>&1
 	else
-		/bin/sh /tmp/y700-task.sh > "$LOGF" 2>&1
+		/bin/sh "$TSRC" > "$LOGF" 2>&1
 	fi
 	TRC=$?
 	echo "TASK_DONE rc=$TRC sha=$NEW rootdev=$ROOTDEV up=$(cat /proc/uptime)" >> "$LOGF"
