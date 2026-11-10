@@ -30,14 +30,5 @@ diff --git a/arch/arm64/boot/dts/qcom/sm8475-lenovo-tb320fc.dts b/arch/arm64/boo
  };
  
  &mdss_dsi0 {
-@@ -598,7 +604,7 @@
- };
- 
- &apps_smmu {
--	qcom,preserve-boot-mappings;
-+	/* No mainline consumer on SM8475; the property is dropped here. */
- };
- 
- &tlmm {
 -- 
 2.53.0

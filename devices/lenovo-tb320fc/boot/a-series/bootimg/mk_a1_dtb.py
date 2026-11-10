@@ -735,6 +735,26 @@ def main():
         assert _a70 == 1, 'A70 rewired the panel phandle %d times' % _a70
         print('A70: y700-stub-panel added (phandle 0x7f00), touchscreen@0 repointed')
 
+    # A102: the display chain is live now, so the touch follower has to hang off
+    # the real panel.  A96 shows the ordering is what kills touch: the stub
+    # registered prepared=1 at 2.19 s, the driver finished its 196608-byte
+    # firmware upload and printed "finger input ready" at 3.1647 s, and 9 ms
+    # later panel-novatek-nt36523 probed - devm_gpiod_get(..., GPIOD_OUT_HIGH)
+    # asserts the panel reset line right there, then a 770 ms DSI init runs.
+    # The NT36523 DDIC and its SPI touch engine are one chip, so that reset
+    # discards the touch firmware the driver had just uploaded and INT 21
+    # (msmgpio, name spi0.0) never fires again.
+    # Repoint `panel` at the node the DSI panel driver registers: then
+    # find_panel_by_fwnode() defers the SPI client until that panel exists and
+    # drm_panel_add_follower()/panel_prepared() run the upload after the panel
+    # came up instead of 770 ms before it.
+    if os.environ.get('Y700_A102'):
+        _ph = node_phandle(text, 'panel@0')
+        text, _a102 = set_own_prop(text, 'touchscreen@0', 'panel',
+                                   'panel = <%s>;' % _ph)
+        assert _a102 == 1, 'A102 rewired the panel phandle %d times' % _a102
+        print('A102: touchscreen@0 panel -> %s (real dsi panel@0)' % _ph)
+
     open(OUT_DTS, 'w', newline='\n', encoding='utf-8').write(text)
     subprocess.run([DTC, '-q', '-O', 'dtb', '-W', 'no-unit_address_vs_reg',
                     '-W', 'no-unique_unit_address', '-W', 'no-avoid_unnecessary_addr_size',
