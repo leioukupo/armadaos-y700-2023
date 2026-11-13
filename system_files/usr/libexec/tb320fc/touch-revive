@@ -1,0 +1,76 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# One cold re-init of the Novatek touch controller on TB320FC.
+#
+# The controller hangs off the DSI panel: its probe path calls panel_prepared(),
+# so unbind + bind IS a full bring-up (engine reset, reset GPIO, trim ID, 196 KiB
+# firmware download, input registration, enable_irq). A116-A118 measured that
+# after a DPMS blank the panel comes back prepared but the IC stays deaf, so
+# this is the recovery that has to run on every wake.
+#
+# Driver directory names differ between kernel trees, so the SPI device is found
+# by its open-firmware compatible instead of a hard-coded driver name.
+TB320FC_TAG=TB320FC-TOUCH-REVIVE-v1
+CONF=/etc/tb320fc/touch.conf
+want_input=1
+[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+reason=${1:-manual}
+
+driver_dir() {
+	for dd in /sys/bus/spi/drivers/*; do
+		[ -d "${dd}" ] || continue
+		for sp in "${dd}"/spi*; do
+			[ -e "${sp}" ] || continue
+			comp=$(tr '\0' ' ' < "${sp}/of_node/compatible" 2>/dev/null)
+			nm=$(cat "${sp}/of_node/name" 2>/dev/null)
+			case "${comp} ${nm}" in
+				*novatek*|*nt36xxx*|*nt36523*) echo "${dd}"; return 0 ;;
+			esac
+		done
+	done
+	return 1
+}
+
+# The controller registers its input device under a name carrying the vendor
+# string (the machine profile matches it through ARMADA_PRIMARY_TOUCHSCREEN).
+input_nodes() {
+	for e in /sys/class/input/event*; do
+		[ -e "${e}" ] || continue
+		nm=$(cat "${e}/device/name" 2>/dev/null)
+		case "$(echo "${nm}" | tr 'A-Z' 'a-z')" in
+			*nvt*|*novatek*|*nt36*) echo "${e##*/}";;
+		esac
+	done
+}
+
+DDIR=$(driver_dir)
+if [ -z "${DDIR:-}" ] ; then
+	echo "${TB320FC_TAG} ${reason} FAIL no bound novatek SPI device dirs=[$(ls /sys/bus/spi/drivers 2>/dev/null | tr '\n' ',')]"
+	exit 1
+fi
+names=
+for sp in "${DDIR}"/spi*; do
+	[ -e "${sp}" ] && names="${names} ${sp##*/}"
+done
+echo "${TB320FC_TAG} ${reason} start drv=${DDIR##*/} dev=[${names} ] input=[$(input_nodes | tr '\n' ',')]"
+
+for n in ${names}; do
+	echo "${n}" > "${DDIR}/unbind" 2>&1 | sed "s/^/${TB320FC_TAG} unbind: /"
+done
+sleep 1
+for n in ${names}; do
+	echo "${n}" > "${DDIR}/bind" 2>&1 | sed "s/^/${TB320FC_TAG} bind: /"
+done
+sleep 4
+
+bound=0
+for sp in "${DDIR}"/spi*; do
+	[ -e "${sp}" ] && bound=$((bound + 1))
+done
+have=$(input_nodes | wc -l)
+if [ "${bound}" -ge 1 ] && [ "${have}" -ge "${want_input}" ] ; then
+	echo "${TB320FC_TAG} ${reason} ok bound=${bound} input=[$(input_nodes | tr '\n' ',')]"
+	exit 0
+fi
+echo "${TB320FC_TAG} ${reason} FAIL bound=${bound} input=${have} want=${want_input} drv=[$(ls "${DDIR}" 2>/dev/null | tr '\n' ',')]"
+exit 1

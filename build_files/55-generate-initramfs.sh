@@ -21,6 +21,7 @@ dracut \
     --add ostree \
     --add armada-splash \
     --add armada-ostree-fallback \
+    --add armada-gpu-firmware \
     "${IMG}" "${KVER}"
 
 # dracut drops modules silently: fail the build rather than ship without.
@@ -37,6 +38,16 @@ required=(
     usr/lib/ostree/ostree-prepare-root
 )
 
+# The GPU firmware rides in the initramfs: DRM_MSM is built-in, so the GMU/zap
+# requests happen during initcalls, before the real root is mounted. Only
+# required when the image carries that firmware at all - one image, several boards.
+if [ -e /usr/lib/firmware/qcom/gmu_gen70000.bin ]; then
+    required+=(
+        usr/lib/firmware/qcom/gmu_gen70000.bin
+        usr/lib/firmware/qcom/a730_sqe.fw
+        usr/lib/firmware/qcom/sm8475/lenovo/tb320fc/a730_zap.mdt
+    )
+fi
 if ! lsinitrd "${IMG}" | awk '
     BEGIN {
         count = ARGC - 1

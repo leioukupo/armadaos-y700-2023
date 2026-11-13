@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# ADSP + AudioReach + the two CS35L45 amplifiers of the TB320FC speaker path.
+# The helper exits 0 without touching anything unless the lenovo,tb320fc (or
+# legacy lenovo,asphalt) device-tree token is present, so this unit is inert on
+# every other device.
+[Unit]
+Description=TB320FC speaker path (ADSP, q6apm/q6prm, cs35l45 routing)
+After=local-fs.target systemd-udev-trigger.service
+Before=sound.target display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb320fc/audio
+StandardOutput=journal
+StandardError=journal
+# Cold boot brings up the ADSP plus two amplifier DSPs; the helper polls for the
+# sound card itself, so give it room instead of the 90 s default.
+TimeoutStartSec=infinity
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

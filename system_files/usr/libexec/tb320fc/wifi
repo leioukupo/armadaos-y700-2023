@@ -1,0 +1,71 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC Wi-Fi bring-up: Qualcomm WCN6855 (QCA6490 package) on PCIe RC1, served
+# by ath11k_pci with the wcn6855-pmu power sequence (pwrseq-qcom-wcn plus PCI
+# pwrctrl).
+#
+# Ordering is the whole story here (PROGRESS.md A120-A130):
+#   * a probe that runs inside the initramfs cannot read
+#     /usr/lib/firmware/ath11k/WCN6855/hw2.1/{amss,board-2,m3}.bin; and
+#   * re-binding an endpoint ath11k has already probed makes
+#     ath11k_pci_sw_reset() write PCIE_SOC_GLOBAL_RESET, which reboots the tablet.
+# So this unit runs on the real root, loads the module once, and never binds or
+# unbinds anything.
+TB320FC_TAG=TB320FC-WIFI-v1
+CONF=/etc/tb320fc/wifi.conf
+load=on
+regdom=CN
+polls=30
+[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+/usr/libexec/tb320fc/board-check || exit 0
+
+FW=/usr/lib/firmware/ath11k/WCN6855/hw2.1
+wlan() {
+	for n in /sys/class/net/wlan*; do
+		[ -e "${n}" ] && { echo "${n##*/}"; return 0; }
+	done
+	return 1
+}
+
+echo "${TB320FC_TAG} start fw=[$(ls "${FW}" 2>/dev/null | tr '\n' ',')] regdb=$([ -e /usr/lib/firmware/regulatory.db ] && echo present || echo missing) regdom=${regdom}"
+[ -e "${FW}/amss.bin" ] || echo "${TB320FC_TAG} FAIL ath11k firmware missing under ${FW}"
+
+# The tb320fc kernel overlay builds ATH11K/ATH11K_PCI (and the PCIe power
+# sequencer it selects) as modules, which moves the load out of the initramfs and
+# into here.  With PCI_PWRCTRL_PWRSEQ=m the pcie0 bridge itself waits for the
+# sequencer (fw_devlink.strict=1), so the provider comes up first and the bridge
+# gets its deferred probe before ath11k is asked to bind.
+pci_ready() {
+	for d in /sys/bus/pci/devices/*; do
+		[ -e "${d}" ] || continue
+		grep -qi 0x17cb "${d}/vendor" 2>/dev/null && { echo "${d##*/}"; return 0; }
+	done
+	return 1
+}
+if [ "${load}" = on ] ; then
+	for m in pci_pwrctrl_pwrseq pwrseq_qcom_wcn ; do modprobe "${m}" 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=${m}"; done
+	j=0
+	while [ "${j}" -lt 15 ] ; do PCI=$(pci_ready) && break; sleep 1; j=$((j + 1)); done
+	echo "${TB320FC_TAG} pci_endpoint=${PCI:-none} waited=${j}s"
+	modprobe ath11k_pci 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=ath11k_pci"
+fi
+
+i=0
+I=
+while [ "${i}" -lt "${polls}" ; do
+	I=$(wlan) && break
+	sleep 2
+	i=$((i + 1))
+done
+if [ -z "${I:-}" ] ; then
+	echo "${TB320FC_TAG} FAIL no wlan interface after $((i * 2))s"
+	echo "${TB320FC_TAG} pci_drv=[$(ls /sys/bus/pci/drivers/ath11k_pci 2>/dev/null | tr '\n' ',')] net=[$(ls /sys/class/net 2>/dev/null | tr '\n' ',')] rfkill=[$(rfkill list 2>/dev/null | tr '\n' ',')]"
+	exit 0
+fi
+
+timeout 15 ip link set "${I}" up 2>&1 | sed "s/^/${TB320FC_TAG} ip-up: /"
+if [ -n "${regdom}" ] && command -v iw >/dev/null 2>&1 ; then
+	timeout 15 iw reg set "${regdom}" 2>&1 | sed "s/^/${TB320FC_TAG} reg: /"
+fi
+echo "${TB320FC_TAG} wlan=${I} mac=$(cat "/sys/class/net/${I}/address" 2>/dev/null) operstate=$(cat "/sys/class/net/${I}/operstate" 2>/dev/null) wireless=$([ -d "/sys/class/net/${I}/wireless" ] && echo yes || echo no) reg=[$(iw reg get 2>/dev/null | sed -n '2p')]"
+exit 0

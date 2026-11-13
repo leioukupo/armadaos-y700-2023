@@ -1,0 +1,83 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC (Lenovo Y700 Gen2) speaker path bring-up.
+#
+# The machine driver is snd-sc8280xp ("lenovo,y700-sndcard"), the DSP side is
+# AudioReach: ADSP -> GPR (apr.c in this tree) -> q6prm/q6apm -> cs35l45 x2.
+# Two facts drive the ordering here (PROGRESS.md A131-A141):
+#   * the core stops retrying deferred probes once initcalls are done, so the
+#     module chain must be loaded in dependency order from user space, after the
+#     ADSP is up. systemd-modules-load/udev coldplug cannot guarantee that.
+#   * the two "Digital PCM Volume" kcontrols come up at 0, which is -102.25 dB:
+#     everything probes fine and no sound comes out. The mute=1 dBscale control
+#     rejects text forms like "-8dB", so the value is written as a raw integer.
+TB320FC_TAG=TB320FC-AUDIO-v1
+CONF=/etc/tb320fc/audio.conf
+load=on
+unmute=on
+digvol=400
+polls=40
+[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+/usr/libexec/tb320fc/board-check || exit 0
+
+MODS="qcom_glink_smem smp2p qcom_pil_info qcom_common qcom_pd_mapper qcom_q6v5 qcom_q6v5_pas snd-soc-qcom-common snd-q6dsp-common cs_dsp snd-soc-wm-adsp snd-soc-qcom-sdw q6core snd-q6apm q6apm-dai q6apm-lpass-dais q6prm q6prm-clocks snd-soc-cs35l45 snd-soc-cs35l45-i2c snd-soc-sc8280xp"
+
+ADSP_FW=/usr/lib/firmware/qcom/sm8475/lenovo/tb320fc
+CS_FW=/usr/lib/firmware/cirrus
+echo "${TB320FC_TAG} start adsp_fw=$(ls "${ADSP_FW}" 2>/dev/null | wc -l) cs_fw=$(ls "${CS_FW}" 2>/dev/null | wc -l) remoteproc=[$(ls /sys/class/remoteproc 2>/dev/null | tr '\n' ',')]"
+[ -e "${ADSP_FW}/adsp.mdt" ] || echo "${TB320FC_TAG} FAIL adsp firmware missing under ${ADSP_FW}"
+[ -e "${CS_FW}/spk1-cs35l45-dsp1-spk-prot.wmfw" ] || echo "${TB320FC_TAG} FAIL cs35l45 protection firmware missing"
+
+if [ "${load}" = on ] ; then
+	for m in ${MODS} ; do
+		modprobe "${m}" 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=${m}"
+	done
+fi
+
+card_for_mixer() {
+	for c in /proc/asound/card[0-9]* ; do
+		n=${c##*/card}
+		amixer -c "$n" controls 2>/dev/null | grep -q 'PRIMARY_MI2S_RX Audio Mixer' && { echo "$n"; return 0; }
+	done
+	return 1
+}
+
+spkroute() {
+	nc=$1
+	setc() { amixer -c"${nc}" cset "name=$1" "$2" >/dev/null 2>&1 || echo "${TB320FC_TAG} route miss [$1=$2]"; }
+	setc "PRIMARY_MI2S_RX Audio Mixer MultiMedia1" 1
+	for s in SPK1 SPK2 ; do
+		setc "$s AMP Enable Switch" 0
+		setc "$s DSP1 Firmware" Protection
+		setc "$s Amplifier Mode" SPK
+		setc "$s Analog PCM Volume" 0
+		setc "$s Digital PCM Volume" "${digvol}"
+		setc "$s DSP_RX1 Source" ASP_RX1
+		setc "$s DSP_RX2 Source" ASP_RX2
+		setc "$s DSP_RX3 Source" VMON
+		setc "$s DSP_RX4 Source" IMON
+		setc "$s DSP_RX5 Source" VDD_BATTMON
+		setc "$s DSP_RX6 Source" VDD_BSTMON
+		setc "$s DSP_RX7 Source" CLASSH_TGT
+		setc "$s DSP_RX8 Source" VDD_BATTMON
+		setc "$s DACPCM Source" DSP_TX1
+		setc "$s DSP1 Preload Switch" 1
+		setc "$s AMP Enable Switch" 1
+	done
+	echo "${TB320FC_TAG} route card=${nc} digvol=${digvol} mixer=MultiMedia1"
+}
+
+i=0
+while [ "${i}" -lt "${polls}" ; do
+	NC=$(card_for_mixer) && break
+	sleep 2
+	i=$((i + 1))
+done
+if [ -z "${NC:-}" ] ; then
+	echo "${TB320FC_TAG} FAIL no sound card with PRIMARY_MI2S_RX after $((i * 2))s"
+	echo "${TB320FC_TAG} cards=[$(sed -n '2,10p' /proc/asound/cards 2>/dev/null | tr -s '\n\t' ' ')]"
+	exit 0
+fi
+echo "${TB320FC_TAG} card ready nc=${NC} waited=$((i * 2))s"
+[ "${unmute}" = on ] && spkroute "${NC}"
+exit 0

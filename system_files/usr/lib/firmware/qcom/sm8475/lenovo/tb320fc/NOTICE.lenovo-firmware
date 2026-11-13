@@ -1,0 +1,26 @@
+Proprietary Lenovo device firmware for the Legion Y700 Gen2 (TB320FC, SM8475).
+
+These are the stock firmware blobs from that exact model's Android firmware,
+copied verbatim; nothing here is built from source in this repository. They are
+Lenovo/Qualcomm/Cirrus/Novatek property and are redistributed here only so that
+mainline drivers on the same hardware can load them.
+
+in this directory (asked for by DT, see the kernel board file):
+  adsp.mdt, adsp.b00..b23, adsp.b25   ADSP (audio DSP) image. The stock set has
+                                      no b24 segment; the ADSP loads fine
+                                      without it. remoteproc_adsp firmware-name.
+  a730_zap.mdt, a730_zap.b00..b02     Adreno A730 zap shader, the secure
+                                      microcode for the GPU power domain.
+                                      gpu_zap_shader firmware-name.
+in ../../ (the Adreno A730 on this SoC revision needs the stock pair, the
+linux-firmware files of the same names are for other Adreno SKUs):
+  a730_sqe.fw                         GMU ringbuffer front-end
+  gmu_gen70000.bin                    GMU microcode
+in ../../../cirrus/ and again in the firmware root (the CS35L45 driver looks in
+both places):
+  spk1-cs35l45-dsp1-spk-prot.bin/.wmfw, spk2-...   amplifier protection
+                                      firmware and tuning; the two speakers use
+                                      the same wmfw, which the stock image
+                                      carries as a symlink from spk2 to spk1.
+in ../../../ (requested by name from novatek,nvt36xxx-ts-spi):
+  novatek_ts_fw.bin                   NVT36xxx SPI touch controller firmware

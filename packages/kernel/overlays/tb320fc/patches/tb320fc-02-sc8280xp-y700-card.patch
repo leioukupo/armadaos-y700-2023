@@ -1,0 +1,19 @@
+--- a/sound/soc/qcom/sc8280xp.c
++++ b/sound/soc/qcom/sc8280xp.c
+@@ -331,6 +331,16 @@
+ 	{.compatible = "ayaneo,pocket-s2-sndcard", "ayaneo-ps2"},
+ 	{.compatible = "konkr,pocket-fit-sndcard", "sm8650"},
+ 	{.compatible = "lenovo,tb710fu-sndcard", "sm8650"},
++	/*
++	 * Lenovo Legion Y700 Gen2 (TB320FC, SM8475): the card is described fully
++	 * in DT plus its own topology, so the only thing missing here is the
++	 * driver_name the AudioReach loader builds the firmware path from -
++	 * qcom/sm8475/Lenovo-Y700-tplg.bin.  The two CS35L45s hang off
++	 * PRIMARY_MI2S_RX, which is already the format this driver sets for that
++	 * link in sc8280xp_snd_startup(), and the card enables the MI2S input
++	 * clock through the i2s_clk clock on its DT node.
++	 */
++	{.compatible = "lenovo,y700-sndcard", "sm8475"},
+ 	{.compatible = "qcom,eliza-sndcard", "eliza"},
+ 	{.compatible = "qcom,kaanapali-sndcard", "kaanapali"},
+ 	{.compatible = "qcom,qcm6490-idp-sndcard", "qcm6490"},

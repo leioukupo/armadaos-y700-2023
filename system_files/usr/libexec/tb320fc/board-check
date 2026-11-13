@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Board gate for every tb320fc helper: on any other machine these units exit 0
+# without touching anything. The live boot DTB carries "lenovo,tb320fc"; older
+# bring-up DTBs carried "lenovo,asphalt", so both tokens mean this board.
+DT_COMPATIBLE="${TB320FC_DT_COMPATIBLE:-/proc/device-tree/compatible}"
+tr '\0' '\n' < "${DT_COMPATIBLE}" 2>/dev/null | grep -qxE 'lenovo,tb320fc|lenovo,asphalt'

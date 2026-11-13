@@ -152,6 +152,15 @@ systemctl enable armada-splash-early.service
 systemctl enable armada-splash-reboot-screen.service
 systemctl enable armada-splash-poweroff-screen.service
 
+# Lenovo Legion Y700 Gen2 (TB320FC) board bring-up: the ADSP audio chain, the PMIC
+# GLINK battery/Type-C chain, ath11k Wi-Fi and the touchscreen revive watcher.  Each
+# helper exits 0 unless the running board really is a TB320FC, so enabling them for every
+# device is a no-op elsewhere.
+systemctl enable tb320fc-audio.service
+systemctl enable tb320fc-power.service
+systemctl enable tb320fc-wifi.service
+systemctl enable tb320fc-touch.service
+
 # logind's "reboot implies set-wall-message" annotation lets Steam re-enable
 # the reboot wall past the deny rule; the pre-check fails loud on a reformat.
 login1_policy=/usr/share/polkit-1/actions/org.freedesktop.login1.policy

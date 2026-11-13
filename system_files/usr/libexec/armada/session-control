@@ -40,17 +40,28 @@ if [[ "$(armada_plasma_shell "${STEAMOS_MANAGER_STATE}")" == mobile ]]; then
     desktop_session=armada-plasma-mobile.desktop
 fi
 
-case "${1:-}" in
+# default-session lets the device profile pick: a handheld stays on gamemode, a
+# tablet profile (lenovo-tb320fc) asks for the Plasma desktop instead.
+requested=${1:-}
+if [[ "${requested}" == default-session ]]; then
+    default_session=$(/usr/libexec/armada/device-env 2>/dev/null |
+        sed -n 's/^ARMADA_DEFAULT_SESSION=//p' | head -1)
+    default_session=${default_session#\'}
+    default_session=${default_session%\'}
+    case "${default_session}" in desktop) requested=default-desktop ;; *) requested=default-gamemode ;; esac
+fi
+
+case "${requested}" in
     switch-desktop|default-desktop)   session=$desktop_session ;;
     switch-gamemode|default-gamemode) session=gamescope-session-steam.desktop ;;
-    *) echo "usage: $0 {switch-desktop|switch-gamemode|default-gamemode|default-desktop}" >&2; exit 1 ;;
+    *) echo "usage: $0 {switch-desktop|switch-gamemode|default-gamemode|default-desktop|default-session}" >&2; exit 1 ;;
 esac
 
 printf '[Autologin]\nSession=%s\n' "${session}" > /etc/sddm.conf.d/zz-holo-autologin.conf
 rm -f /etc/sddm.conf.d/zz-steamos-autologin.conf
 systemctl reset-failed sddm.service 2>/dev/null || true
 
-if [[ "${1}" == default-* ]]; then
+if [[ "${requested}" == default-* ]]; then
     exit 0
 fi
 

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Keeps the Novatek touch controller alive across DPMS blanks on TB320FC.
+[Unit]
+Description=TB320FC touch watchdog (re-init the NT36xxx after a panel blank)
+After=display-manager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tb320fc/touch-watch
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# Battery, USB-C PD and alt-mode for TB320FC. Every one of those is served by the
+# ADSP through PMIC GLINK, hence the hard ordering after tb320fc-audio.service.
+[Unit]
+Description=TB320FC battery and USB-C PD (ADSP PMIC GLINK)
+After=tb320fc-audio.service local-fs.target systemd-udev-trigger.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb320fc/power
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=infinity
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

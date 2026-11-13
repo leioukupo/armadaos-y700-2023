@@ -1,0 +1,91 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC touch watchdog.
+#
+# A116-A118 on real hardware: the ktz8866 backlight never moves `brightness` for
+# DPMS, it flips bl_power 0 -> 4 (FB_BLANK_POWERDOWN) -> 0, and the touch IRQ
+# counter freezes from the blank onwards - the panel wakes, the controller does
+# not. So the trigger is bl_power, and the recovery is one cold re-init per rung
+# of a ladder, stopped as soon as the input device is back.
+TB320FC_TAG=TB320FC-TOUCH-v1
+CONF=/etc/tb320fc/touch.conf
+revive=auto
+ladder="5 20 45"
+sample=1
+[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+/usr/libexec/tb320fc/board-check || exit 0
+REV=/usr/libexec/tb320fc/touch-revive
+FLAG=/run/tb320fc-touch-revive
+NO=/run/tb320fc-no-touch-watch
+
+upt() { cut -d . -f 1 /proc/uptime; }
+bpath() {
+	for b in /sys/class/backlight/*; do
+		[ -e "${b}/bl_power" ] && { echo "${b}"; return 0; }
+	done
+	return 1
+}
+bpow() {
+	b=$(bpath)
+	[ -n "${b}" ] || { echo NA; return; }
+	v=$(cat "${b}/bl_power" 2>/dev/null)
+	[ -n "${v}" ] || v=NA
+	echo "${v}"
+}
+sensors() {
+	b=$(bpath)
+	[ -n "${b}" ] || { echo none; return; }
+	echo "${b##*/}=$(cat "${b}/brightness" 2>/dev/null)/$(cat "${b}/bl_power" 2>/dev/null)"
+}
+
+[ -e "${NO}" ] && { echo "${TB320FC_TAG} exit: ${NO} exists"; exit 0; }
+
+lastpw=$(bpow)
+unblankat=0
+ladidx=0
+blanked=0
+n=0
+echo "${TB320FC_TAG} start bl=[$(sensors)] ladder=[${ladder}] revive=${revive}"
+while : ; do
+	n=$((n + 1))
+	pw=$(bpow)
+	if [ "${pw}" != "${lastpw}" ] ; then
+		echo "${TB320FC_TAG} bl_power ${lastpw} -> ${pw}"
+		if [ "${pw}" = 4 ] ; then
+			blanked=$((blanked + 1))
+			unblankat=0
+			ladidx=0
+			echo "${TB320FC_TAG} blanked n=${blanked}"
+		elif [ "${lastpw}" = 4 ] ; then
+			unblankat=$(upt)
+			ladidx=0
+			echo "${TB320FC_TAG} unblanked at=${unblankat} revive=${revive}"
+		fi
+		lastpw=${pw}
+	fi
+
+	# One re-init per rung; the ladder is a retry schedule, not a repeat policy.
+	if [ "${unblankat}" -gt 0 ] && [ "${revive}" = auto ] ; then
+		want=-1
+		i=0
+		for off in ${ladder} ; do
+			i=$((i + 1))
+			if [ "${i}" -gt "${ladidx}" ] ; then want=${off}; break; fi
+		done
+		if [ "${want}" -ge 0 ] && [ "$(upt)" -ge $((unblankat + want)) ] ; then
+			ladidx=${i}
+			echo "${TB320FC_TAG} revive rung ${i} (+${want}s)"
+			"${REV}" "ladder${i}" || true
+		fi
+	fi
+
+	if [ -e "${FLAG}" ] ; then
+		rm -f "${FLAG}" 2>/dev/null
+		"${REV}" flag || true
+	fi
+
+	if [ $((n % 120)) -eq 0 ] ; then
+		echo "${TB320FC_TAG} hb bl=[$(sensors)] blanked=${blanked} lad=${ladidx}"
+	fi
+	sleep "${sample}"
+done

@@ -1,0 +1,42 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC battery / USB-C charging bring-up (PROGRESS.md A142, A145-A147).
+#
+# This board has no charger or fuel-gauge node in the Android DTB at all: the
+# fuel gauge and the USB-C PD controller live behind the ADSP's PMIC GLINK. So
+# /sys/class/power_supply only exists once pmic_glink + qcom_battmgr + the UCSI
+# chain are loaded, and that needs the ADSP already running - which is why this
+# unit runs after tb320fc-audio.service. aux-hpd-bridge is mandatory too
+# (CONFIG_DRM_AUX_HPD_BRIDGE=m is an aux-device supplier for pmic_glink_altmode).
+TB320FC_TAG=TB320FC-POWER-v1
+CONF=/etc/tb320fc/power.conf
+load=on
+polls=25
+[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+/usr/libexec/tb320fc/board-check || exit 0
+
+MODS="fsa4480 aux_hpd_bridge pmic_glink qcom_battmgr typec_ucsi ucsi_glink pmic_glink_altmode"
+if [ "${load}" = on ] ; then
+	for m in ${MODS} ; do
+		modprobe "${m}" 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=${m}"
+	done
+fi
+
+bat=/sys/class/power_supply/qcom-battmgr-bat
+i=0
+while [ "${i}" -lt "${polls}" ; do
+	[ -e "${bat}/capacity" ] && break
+	sleep 2
+	i=$((i + 1))
+done
+echo "${TB320FC_TAG} psy=[$(ls /sys/class/power_supply 2>/dev/null | tr '\n' ',')] waited=$((i * 2))s"
+if [ -e "${bat}/capacity" ] ; then
+	for f in capacity status charge_now charge_full energy_now energy_full power_now voltage_now; do
+		printf '%s=%s ' "$f" "$(cat "${bat}/${f}" 2>/dev/null || echo -)"
+	done
+	echo
+else
+	echo "${TB320FC_TAG} FAIL ${bat} never appeared (ADSP PMIC GLINK not answering?)"
+fi
+echo "${TB320FC_TAG} usb=[$(cat /sys/class/power_supply/qcom-battmgr-usb/online 2>/dev/null || echo -) $(cat /sys/class/power_supply/qcom-battmgr-usb/voltage_max 2>/dev/null || echo -) $(cat /sys/class/power_supply/qcom-battmgr-usb/input_current_limit 2>/dev/null || echo -)]"
+exit 0

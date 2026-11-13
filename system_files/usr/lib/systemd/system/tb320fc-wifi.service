@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+# WCN6855 (ath11k) bring-up, run on the real root where its firmware is
+# reachable. See /usr/libexec/tb320fc/wifi for why this must not happen in the
+# initramfs.
+[Unit]
+Description=TB320FC Wi-Fi (WCN6855 ath11k) bring-up
+After=local-fs.target systemd-udev-trigger.service
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb320fc/wifi
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=infinity
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
