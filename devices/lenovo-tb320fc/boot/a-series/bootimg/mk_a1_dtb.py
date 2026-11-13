@@ -164,6 +164,33 @@ EXTRA_DISABLE = [n for n in os.environ.get('Y700_EXTRA_DISABLE', '').split(',') 
 APPS_SMMU = os.environ.get('Y700_APPS_SMMU') == '1'
 APPS_SMMU_NODE = 'iommu@15000000'
 
+# A104: the Adreno 730 stack comes back.  Nothing here is a kernel change - the
+# gen7/a7xx driver is already built in (nm vmlinux has a7xx_gpulist,
+# a7xx_gpu_funcs, a7xx_pwrup_reglist), the board DT carries the whole
+# description (gpu@3d00000 "qcom,adreno-730.1" + qcom,gmu + zap-shader,
+# gmu@3d6a000 with rscc and the cx/gx power domains, gpucc
+# clock-controller@3d90000, and the dedicated adreno SMMU iommu@3da0000), and
+# the root has Mesa 26.2.5 with msm_dri.so, libdrm_freedreno and
+# libvulkan_freedreno in /usr/lib64.  What kept the GPU away is that A1m pinned
+# those four nodes off and A96 dropped the two `iommus` bindings that point at
+# the adreno SMMU, so freedreno got ENXIO from fd_pipe_new2 and weston printed
+# "GL renderer: llvmpipe".
+#
+# The four nodes move together, and the bindings with them:
+#   * gpu/gmu carry iommus = <&adreno_smmu ...>; enabling a master whose SMMU is
+#     pinned off leaves iommu_probe_device() deferring forever, the msm
+#     component master never completes, and the display card we already have
+#     disappears with the GPU.
+#   * with the adreno SMMU on, its bindings must stay - arm-smmu blanks every
+#     context bank ABL had programmed, the same reason A96 kept the apps SMMU
+#     bindings alive.
+# aoss-qmp (power-management@c300000) stays pinned off on purpose: qmp_get()
+# answers -EINVAL when the referenced node has no platform device, and
+# a6xx_gmu.c only treats -EPROBE_DEFER as fatal, so GMU comes up without GPU ACD.
+GPU_ON = os.environ.get('Y700_GPU') == '1'
+GPU_NODES = ('gpu@3d00000', 'gmu@3d6a000', 'clock-controller@3d90000')
+GPU_SMMU_NODE = 'iommu@3da0000'
+
 # A47 node sweep -> A48 promotion.  y700-sweep/good.txt (the nodes the board
 # survived enabling at runtime) is copied here as bare node names; every name in
 # the file is left out of the pinned-off set for the next build.  The file is
@@ -354,6 +381,93 @@ def node_phandle(text, node):
     raise AssertionError('no phandle on %s' % node)
 
 
+def own_status(text, name):
+    """The status dtc shows for `name` itself, "ok" when it carries none.
+
+    The A1m walker (set_status_disabled) matches any indentation, so the check
+    here has to as well - gpu@3d00000 and friends sit two tabs deep under /soc,
+    which is exactly where a one-tab regex like node_body() finds nothing.
+    """
+    lines = text.split('\n')
+    for i, ln in enumerate(lines):
+        if ln.strip() != '%s {' % name:
+            continue
+        ind = ln[:len(ln) - len(ln.lstrip())]
+        try:
+            end = lines.index(ind + '};', i + 1)
+        except ValueError:
+            continue
+        depth = 0
+        for k in range(i + 1, end):
+            if depth == 0:
+                m = re.match(r'\s*status = "([^"]*)";$', lines[k])
+                if m:
+                    return m.group(1)
+            depth += lines[k].count('{') - lines[k].count('}')
+        return 'ok'
+    raise AssertionError('node not found: %s' % name)
+
+
+def iommu_cells_by_phandle(text):
+    """phandle -> #iommu-cells, for every node that declares both.
+
+    A decompiled node is brace-flat and the SMMU nodes of this board have no
+    children, so one brace-free slice is the whole node.
+    """
+    out = {}
+    for blk in re.findall(r"\{[^{}]*#iommu-cells[^{}]*\}", text):
+        cells = re.search(r"#iommu-cells = <([^>]+)>;", blk)
+        ph = re.search(r"phandle = <([^>]+)>;", blk)
+        if cells and ph:
+            out[ph.group(1)] = int(cells.group(1), 0)
+    return out
+
+
+
+def iommu_ref_phandles(text, prop, vals):
+    """Every phandle an iommus / iommu-map property line references.
+
+    A map property is a list of (rid-base, phandle, #iommu-cells specifier
+    cells, rid-length) entries, so its stride is 3 + #iommu-cells of the target
+    node - the stride drivers/of/base.c::of_map_id() and
+    qcom_pcie_config_sid_1_9_0() (drivers/pci/controller/dwc/pcie-qcom.c) use.
+    The vendor apps SMMU declares #iommu-cells = <2>, so the stride on this
+    board is 5, and the old stride of 4 read
+
+        iommu-map = <0x00 0x44 0x1c00 0x00 0x01 0x100 0x44 0x1c01 0x00 0x01>;
+
+    as the phandles 0x44, 0x100 and 0x01.  None of them is the kept apps SMMU,
+    so pcie@1c00000 and pcie@1c08000 lost the property even with the SMMU
+    enabled.  qcom_pcie_config_sid_1_9_0() then returns 0 without touching
+    PARF_BDF_TO_SID_CFG, the host leaves the BDF-to-SID table in bypass, and the
+    WCN6855 endpoint reaches the SMMU on a stream that owns no context bank.
+    Enumeration, BAR sizing, MSI and the MHI BHI handshake all survive that,
+    because none of them writes to host memory; the first copy-engine DMA after
+    ath11k has downloaded amss.bin is aborted.  That is the silent reset of
+    A122-A124 and A129 (firmware inside the initramfs, dead 3-5 s in) and of
+    A121 and A128 (insmod after the root is up, dead on the spot), while A126
+    (ATH11K_PCI=y with no firmware in reach) stops at -110 without a DMA and
+    boots.
+    """
+    if prop == "iommus":
+        return vals[0::3]
+    cells = iommu_cells_by_phandle(text)
+    ph = vals[1] if len(vals) > 1 else None
+    if ph in cells:
+        stride = 3 + cells[ph]
+        if len(vals) % stride == 0:
+            got = [vals[i + 1] for i in range(0, len(vals), stride)]
+            if got and all(g == ph for g in got):
+                return got
+        if cells[ph] == 2 and len(vals) % 4 == 0:
+            # the 4-cell layout of_check_bad_map() tolerates, kept for parity
+            got = [vals[i + 1] for i in range(0, len(vals), 4)]
+            tail = [vals[i + 3] for i in range(0, len(vals), 4)]
+            if got and all(g == ph for g in got) and all(t == "0x01" for t in tail):
+                return got
+    raise AssertionError("unparsable %s property: %s" % (prop, " ".join(vals)))
+
+
 def strip_iommu_refs(text, keep=None):
     """Drop the iommu bindings whose IOMMU is pinned off.
 
@@ -365,6 +479,7 @@ def strip_iommu_refs(text, keep=None):
     Linux re-programs a context bank for it - the binding must stay.
     """
     props = ('iommus', 'iommu-map', 'iommu-map-mask')
+    keep = {keep} if isinstance(keep, str) else set(keep or ())
     out, kept, n = [], 0, 0
     for ln in text.split('\n'):
         hit = None
@@ -376,9 +491,10 @@ def strip_iommu_refs(text, keep=None):
             out.append(ln)
             continue
         vals = re.search(r'= <([^>]*)>;$', ln).group(1).split()
-        # iommus = <phandle sid mask>...; iommu-map(-mask) = <rid phandle sid mask>...
-        phs = vals[0::3] if hit == 'iommus' else vals[1::4]
-        if keep and phs and all(v == keep for v in phs):
+        # A113 cut a map property into 4-cell entries (rid, phandle, specifier,
+        # mask).  The vendor stride on this board is 5; see iommu_ref_phandles().
+        phs = iommu_ref_phandles(text, hit, vals)
+        if keep and phs and all(v in keep for v in phs):
             kept += 1
             out.append(ln)
             continue
@@ -596,6 +712,11 @@ def main():
     # is not in unpin_next.txt because that file is the sweep's, not ours.
     if APPS_SMMU:
         disabled = [n for n in disabled if n != APPS_SMMU_NODE]
+    # A104 un-pins the GPU last too: gpu/gmu/gpucc are in MINIMAL_NODES and the
+    # adreno SMMU in DISABLE_NODES, and unpin_next.txt belongs to the sweep.
+    if GPU_ON:
+        disabled = [n for n in disabled
+                    if n not in GPU_NODES + (GPU_SMMU_NODE,)]
     for node in disabled:
         text = set_status_disabled(text, node)
     # 4a2. A45: the dwc3 wrapper is back on, as an HS peripheral.
@@ -639,9 +760,15 @@ def main():
 
     # 7. the board has 34 iommus/iommu-map consumers (ufshc, usb, mmc, pci, ...);
     # with the SMMU nodes disabled they must all go away or nothing probes.
-    keep_ph = node_phandle(text, APPS_SMMU_NODE) if APPS_SMMU else None
-    text, iorefs, iokeep = strip_iommu_refs(text, keep_ph)
+    keep_ph = []
     if APPS_SMMU:
+        keep_ph.append(node_phandle(text, APPS_SMMU_NODE))
+    if GPU_ON:
+        keep_ph.append(node_phandle(text, GPU_SMMU_NODE))
+    text, iorefs, iokeep = strip_iommu_refs(text, keep_ph)
+    if GPU_ON:
+        assert iokeep >= 20, 'A104 kept only %d iommu refs' % iokeep
+    elif APPS_SMMU:
         assert iokeep >= 20, 'A96 kept only %d iommu refs' % iokeep
     else:
         assert iorefs >= 30, 'too few iommu refs stripped: %d' % iorefs
@@ -767,7 +894,18 @@ def main():
     print('append placeholder hits: %d at %s' % (len(hits), [hex(h) for h in hits]))
     print('regulators pinned always-on: %d' % rails)
     print('iommu consumer properties removed: %d, kept for %s: %d'
-          % (iorefs, APPS_SMMU_NODE if APPS_SMMU else 'no smmu', iokeep))
+          % (iorefs, ','.join(keep_ph) or 'no smmu', iokeep))
+    if GPU_ON:
+        _gpu_ph = node_phandle(text, 'gpu@3d00000')
+        _smmu_ph = node_phandle(text, GPU_SMMU_NODE)
+        for _n in GPU_NODES + (GPU_SMMU_NODE,):
+            assert own_status(text, _n) != 'disabled', \
+                'A104 left %s disabled (%s)' % (_n, own_status(text, _n))
+        assert text.count('iommus = <%s ' % _smmu_ph) == 2, \
+            'A104: gpu and gmu must both bind the adreno SMMU'
+        print('A104: gpu stack on - gpu@3d00000 phandle %s, adreno smmu %s, '
+              'gmu qcom,qmp reference kept but aoss-qmp stays off'
+              % (_gpu_ph, _smmu_ph))
     print('nodes pinned disabled: %d (minimal=%s)' % (len(disabled), MINIMAL))
     print('properties stripped: %d %s' % (stripped, STRIP_PROPS))
     print('icc providers off: %s / consumer refs removed: %d'

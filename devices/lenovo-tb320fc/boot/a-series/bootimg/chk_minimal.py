@@ -65,10 +65,23 @@ EXTRA_DISABLE = {n.strip().split('/')[-1]
                  if n.strip()}
 
 
+# A104: Y700_GPU=1 puts the Adreno 730 stack back on.  gpu@3d00000 (gen7),
+# gmu@3d6a000, gpucc clock-controller@3d90000 and the dedicated adreno SMMU
+# iommu@3da0000 are a single unit - the two masters bind that SMMU, so an check
+# that pinned them off would contradict the DT that is actually built.
+GPU_ON = os.environ.get("Y700_GPU") == "1"
+GPU_NODES = ("gpu@3d00000", "gmu@3d6a000", "clock-controller@3d90000")
+GPU_SMMU_NODE = "iommu@3da0000"
+
+
 UNPINNED = _unpinned() - EXTRA_DISABLE
 WANT_OFF = (tuple(n for n in WANT_OFF if n not in UNPINNED) +
             tuple(sorted(EXTRA_DISABLE)))
 WANT_ON = WANT_ON + tuple(sorted(UNPINNED))
+if GPU_ON:
+    WANT_OFF = tuple(n for n in WANT_OFF
+                     if n not in GPU_NODES + (GPU_SMMU_NODE,))
+    WANT_ON = WANT_ON + GPU_NODES + (GPU_SMMU_NODE,)
 
 
 def own_props(lines, hdr):
@@ -90,6 +103,13 @@ def status_of(lines, name):
                 if m:
                     return m.group(1)
             return 'ok'
+    return None
+
+
+def hdr_of(lines, name):
+    for i, ln in enumerate(lines):
+        if ln.strip() == "%s {" % name:
+            return i
     return None
 
 
@@ -120,6 +140,24 @@ def main():
     text = '\n'.join(lines)
     print('iommus left: %d / iommu-map left: %d'
           % (text.count('iommus = <'), text.count('iommu-map = <')))
+    if GPU_ON:
+        h = hdr_of(lines, GPU_SMMU_NODE)
+        assert h is not None, 'A104: %s missing from the DT' % GPU_SMMU_NODE
+        sph = None
+        for prop in own_props(lines, h):
+            m = re.match(r'phandle = <(0x[0-9a-f]+)>;$', prop)
+            if m:
+                sph = m.group(1)
+        assert sph, 'A104: no phandle on %s' % GPU_SMMU_NODE
+        n_ad = text.count('iommus = <%s ' % sph)
+        print('adreno smmu %s consumers: %d (must be 2)' % (sph, n_ad))
+        bad += 0 if n_ad == 2 else 1
+        for node in GPU_NODES[:2]:
+            g = hdr_of(lines, node)
+            joined = ' '.join(own_props(lines, g)) if g is not None else ''
+            ok = ('iommus = <%s ' % sph) in joined
+            print('%-24s binds adreno smmu: %s' % (node, 'OK' if ok else 'BAD'))
+            bad += 0 if ok else 1
     wp = text.count('wakeup-parent')
     print('wakeup-parent left: %d (must be 0)' % wp)
     bad += wp
