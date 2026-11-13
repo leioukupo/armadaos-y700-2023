@@ -20,7 +20,8 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 | 触屏/手写笔 | 已实机验证：NT36523N host-download SPI 固件加载成功，输入挂在真实 DSI 面板上（A98-A103），方向正确、可拖窗口，熄屏恢复后仍可用 |
 | GPU/显示 | 已实机验证：Adreno 730 + GMU + gpucc + adreno-SMMU 全部绑定，`renderD128` 存在，weston `GL renderer: FD730`（GPU 固件必须进 initramfs，见 `boot/a-series/kernel/patches/a104-build.sh`） |
 | Wi-Fi | 已实机验证：WCN6855 走 `ath11k_pci`（`.ko`，根挂载后 insmod），已能连网；死结是 boot DTB 里 `pcie@1c00000` 缺 `iommu-map`，A130 修好后端到端通了，路线见根目录 `qca6490.md` 与 `PROGRESS.md` A120-A130 |
-| 音频 | 已实机验证：ADSP(AudioReach) + `q6apm`/`q6prm` + `snd-sc8280xp`(lenovo,y700-sndcard) + 两片 CS35L45，立体声外放出声；拓扑与 UCM 已进 `system_files`，开机自动写功放路由（A131-A141） |
+| 音频 | 已实机验证：ADSP(AudioReach) + `q6apm`/`q6prm` + `snd-sc8280xp`(lenovo,y700-sndcard) + 两片 CS35L45，立体声外放出声；拓扑与 UCM 已进 `system_files`，开机自动写功放路由（A131-A141），A143 起开机不再播放测试音 |
+| 电池/充电 | 已实机验证：ADSP PMIC GLINK 路线（`pmic_glink` + `qcom_battmgr` + `ucsi_glink`，不改 DT），`/sys/class/power_supply` 齐全、USB-C 已按 PD/PPS 11 V · 3 A 充电（A142）；功率上限在 ADSP 固件侧，见[电池与充电](#电池与充电) |
 | 触觉反馈 | PM8008（i2c5）尚无主线消费方，节点保持禁用 |
 | 内置手柄 | 本机无内置手柄，`ARMADA_BUILTIN_GAMEPAD=0`，不等待 CompositeDevice |
 
@@ -55,9 +56,22 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 - **拓扑**：`audioreach_tplg_init()` 取 `qcom/<driver_name>/<card_name>-tplg.bin`，本机即 `qcom/sm8475/Lenovo-Y700-tplg.bin`；缺它只有 `ASoC: failed to instantiate card -2`。源文件 `audio_topology/sm8475/Lenovo-Y700.m4`，用 audioreach-topology `993a17dcb672357998a463a73f120064d6c74f4f` + alsa-topology-utils 1.2.16 的 `alsatplg` 生成，成品 10 436 字节。
 - **开机必须写的路由**：`PRIMARY_MI2S_RX Audio Mixer MultiMedia1` = 1，两片 CS35L45 的 `DSP1 Firmware`=Protection、`Amplifier Mode`=SPK、`DSP_RX1..8 Source`（ASP_RX1/ASP_RX2/VMON/IMON/VDD_BATTMON/VDD_BSTMON/CLASSH_TGT/VDD_BATTMON）、`DACPCM Source`=DSP_TX1、`DSP1 Preload Switch`=1、`AMP Enable Switch` 先 0 后 1。静音的真正原因是 `SPK1/SPK2 Digital PCM Volume` 复位为 0（= -102.25 dB），而 `mute=1` 的 dBscale 控件拒绝 `-8dB` 这类文本写法，只能写原始值（当前用 400）。
 - **UCM**：`Lenovo-Y700` / `HiFi` 用例把上面这套序列编码进 `system_files/usr/share/alsa/ucm2/conf.d/sm8475/Lenovo-Y700.conf` 与 `ucm2/Lenovo/Y700/HiFi.conf`；`/etc/y700-audio.conf` 的 `unmute=on` 让 `y700-audio.sh` 每次开机也写一遍，两者互为保险。
+- **必须静默**：A143 起 `/etc/y700-audio.conf` 的 `play` 默认 `off`，开机不再跑 `speaker-test` 440 Hz 扫频（功放路由照旧写）。要复现测试音就临时改回 `play=on` 再 `systemctl restart y700-audio`。
 - **固件**：ADSP（26 个文件 / 13 MB，`adsp.mdt` + `adsp.b*`）与 CS35L45 保护固件（`spk1/spk2-cs35l45-dsp1-spk-prot.wmfw/.bin`）来自 <https://github.com/dianqk/firmware-lenovo-asphalt>（`lenovo/tb320fc/audio/`，原样取自 TB320FC 的 `modem_b`/`vendor`），**不入库**；运行时装到 `/usr/lib/firmware/qcom/sm8475/lenovo/tb320fc/` 与 `/usr/lib/firmware/cirrus/`，A 系列由 initramfs 的 `fw_install` 从 TF 卡 `y700-fw/{adsp,cs35l45}` 补齐。
 
-构建与诊断脚本：`boot/a-series/kernel/patches/a131..a141-build.sh`（模块与门禁）、`boot/a-series/initramfs/y700-patch-a141.sh`（把 `.ko`/拓扑/UCM 装进根）、`boot/a-series/rootfs/y700-audio-a141.sh`（`/usr/local/bin/y700-audio.sh` + `y700-audio.service`）。
+构建与诊断脚本：`boot/a-series/kernel/patches/a131..a143-build.sh`（模块与门禁）、`boot/a-series/initramfs/y700-patch-a143.sh`（把 `.ko`/拓扑/UCM 装进根）、`boot/a-series/rootfs/y700-audio-a143.sh`（`/usr/local/bin/y700-audio.sh` + `y700-audio.service`）。
+
+## 电池与充电
+
+官方 Android 的 DTB 里没有任何 charger/fuel-gauge 节点：电量计与 USB-C PD 都在 ADSP 的 **PMIC GLINK** 上。主线不需要改 DT，只要按顺序加载 7 个模块：
+`fsa4480 → aux-hpd-bridge → pmic_glink → qcom_battmgr → typec_ucsi → ucsi_glink → pmic_glink_altmode`。
+
+- `qcom_battmgr`/`ucsi_glink`/`pmic_glink_altmode` 都是 `pmic_glink` 的 aux-device，必须排在它后面；rpmsg 通道 `PMIC_RTR_ADSP_APPS` 由 ADSP 主动开，DT 里没有 glink 子节点也能匹配（前提是 ADSP 已经跑起来，见[音频](#音频)）。
+- `qcom_battmgr_of_variants` 没有 sm8450 条目，会回落 `QCOM_BATTMGR_SM8350`，所以 psy 名字是 `qcom-battmgr-bat` / `-usb` / `-wls`（不是 `battery`），桌面集成要按这个名找。
+- `CONFIG_DRM_AUX_HPD_BRIDGE=m` 就必须带 `drivers/gpu/drm/bridge/aux-hpd-bridge.ko`，缺它 `pmic_glink_altmode` 这一环起不来。
+- 实机读数（A142）：`status=Charging`、`charge_type=Fast`、SOH 91%、cycle 563、model `ALIUM_..._3600MAH`；`qcom-battmgr-usb` `online=1`、`voltage_max=11 V`、`input_current_limit=3 A`；`typec port1 power_operation_mode=usb_power_delivery`；电池侧 4.25 V · 5.0 A。
+- **更高功率不在 Linux 这侧**：PD/PPS 档位由 ADSP 固件请求，`qcom_battmgr.c` 没有 `property_set`（`input_current_limit` 只读，写入 `Permission denied`），这棵树也没有 UCSI 字符设备与 debugfs，用户态无法请求更高 PDO；11 V · 3 A = 33 W 已是本机官方档位，换更大功率的充电头也不会变。真要超过它只能改 ADSP 充电固件，那会偏离不破坏 Android 的前提。
+- 脚本：`boot/a-series/rootfs/y700-power-a143.sh` 装成 `/usr/local/bin/y700-power.sh`，`y700-power.service` 排在 `y700-audio.service` 之后（ADSP 已热），日志 `/var/log/y700-power.txt`，标记 `Y700-A143-PWR` + `MARK-1`（电量/状态）与 `MARK-2`（PD 档位）。
 
 ## 在设备上构建镜像
 
