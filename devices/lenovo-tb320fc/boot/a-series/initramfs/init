@@ -1,4 +1,5 @@
 #!/bin/sh
+echo "Y700-A138-BOOT serial=0 initbytes=$(wc -l < "$0" 2>/dev/null)" > /dev/kmsg 2>/dev/null
 # A1s.  New this round: the aggre2-noc provider (interconnect@1700000) is pinned
 # off in the DT and all 38 consumer references to its phandle are deleted - A1r
 # died ~10 ms into probing exactly that device (screen went black, then the ABL
@@ -58,7 +59,7 @@ banner() {
 	done
 }
 
-banner "Y700-INIT-REACHED-A43-USERSPACE-RUNNING"
+banner "Y700-INIT-REACHED-A56-USERSPACE-RUNNING"
 P "Q ver $(cut -d ' ' -f 3 /proc/version)"
 P "Q up0=$(cut -d ' ' -f 1 /proc/uptime) $(grep -o 'y700_pause=[0-9]*' /proc/cmdline)"
 
@@ -146,29 +147,29 @@ mining
 # ---- seconds left on the wall clock.  A30: fast scan, one explicit rescan,
 # ---- mount, write, and then a 4 s reprint loop so a photograph of the panel
 # ---- shows the SD state without needing the card to work at all.
-# ---- A43: the SD host binds (sdhci_msm ret=0) but A30 saw no mmcblk node,
+# ---- A56: the SD host binds (sdhci_msm ret=0) but A30 saw no mmcblk node,
 # ---- and A30's own sysfs probes were false negatives: this tree names the
-# ---- platform driver "sdhci_msm" with an underscore.  A43 prints the real
+# ---- platform driver "sdhci_msm" with an underscore.  A56 prints the real
 # ---- mmc state (mmc_host, the driver's bind dir, debugfs ocr/cards, and the
 # ---- mmc lines out of the log buffer) on every round, and re-probes the host
 # ---- with unbind/bind so the slot is powered down and back up and mmc_rescan
 # ---- runs again from scratch - three times, with settling delays.
 echo 1 > /sys/kernel/debug/y700_alive 2>/dev/null
-P "A43 flag=$? up=$(cut -d . -f 1 /proc/uptime)"
+P "A56 flag=$? up=$(cut -d . -f 1 /proc/uptime)"
 SDP=/sys/bus/platform/drivers/sdhci_msm
 DEVP=8804000.mmc
 mmclog() {
     dmesg | grep -iE 'mmc|sdhci|8804000' | tail -n 4 | cut -d ']' -f 2- | cut -c 1-40
 }
 mmcinfo() {
-    P "A43 mh=$(ls /sys/class/mmc_host 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 drv=$(ls $SDP 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 blk=$(ls /sys/block 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 ocr=$(cat /sys/kernel/debug/mmc*/ocr 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 cards=$(cat /sys/kernel/debug/mmc*/cards 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 reg=$(cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null | grep -iE 'ldo6|ldo9' | cut -c 1-40)"
-    P "A43 mmclog:"
+    P "A56 mh=$(ls /sys/class/mmc_host 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 drv=$(ls $SDP 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 blk=$(ls /sys/block 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 ocr=$(cat /sys/kernel/debug/mmc*/ocr 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 cards=$(cat /sys/kernel/debug/mmc*/cards 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 reg=$(cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null | grep -iE 'ldo6|ldo9' | cut -c 1-40)"
+    P "A56 mmclog:"
     mmclog
 }
 rescan() {
@@ -185,21 +186,21 @@ rescan() {
 mmcinfo
 rescan
 sleep 2
-P "A43 pass2 (after rescan)"
+P "A56 pass2 (after rescan)"
 mmcinfo
 _n=0
 while [ $_n -lt 3 ] && ! ls /dev/mmcblk*p[0-9] >/dev/null 2>&1 ; do
     _n=$((_n + 1))
-    P "A43 rebind $_n via $SDP"
+    P "A56 rebind $_n via $SDP"
     if [ -e "$SDP/unbind" ] ; then
         echo $DEVP > $SDP/unbind 2>/dev/null
-        P "A43 unbind rc=$?"
+        P "A56 unbind rc=$?"
         sleep 2
         echo $DEVP > $SDP/bind 2>/dev/null
-        P "A43 bind rc=$?"
+        P "A56 bind rc=$?"
         sleep 3
     else
-        P "A43 no-unbind-attr drv=$(ls -d /sys/bus/platform/drivers/*mmc* 2>/dev/null | busybox tr '\n' ' ')"
+        P "A56 no-unbind-attr drv=$(ls -d /sys/bus/platform/drivers/*mmc* 2>/dev/null | busybox tr '\n' ' ')"
         break
     fi
     mmcinfo
@@ -208,13 +209,13 @@ _n=0
 while [ $_n -lt 5 ] ; do
     _n=$((_n + 1))
     if ls /dev/mmcblk*p[0-9] >/dev/null 2>&1 ; then
-        P "A43 parts after ${_n}s"
+        P "A56 parts after ${_n}s"
         break
     fi
     rescan
     sleep 1
 done
-P "A43 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
+P "A56 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
 mkdir -p /mnt 2>/dev/null
 MNT=""
 MF=""
@@ -231,16 +232,46 @@ for d in /dev/mmcblk*p[0-9] /dev/mmcblk* /dev/sd*[0-9] ; do
         break
     fi
 done
-P "A43 mount=$MNT fs=$MF"
+P "A56 mount=$MNT fs=$MF"
+# A131: the previous boot's console is already in RAM ($PS, read from ramoops at
+# the top of this script) and the card is mounted rw right now.  Save it here,
+# before the patch runs - the patch ended four boots without ever printing
+# PATCH_DONE, and a patch that dies cannot report anything.
+if [ -n "$MNT" ] && [ -s "$PS" ] ; then
+    mkdir -p /mnt/y700-out 2>/dev/null
+    tail -c 500000 "$PS" > /mnt/y700-out/y700-pst-previous.txt 2>/dev/null
+    busybox sync
+    P "A131 PST saved bytes=$(wc -c < /mnt/y700-out/y700-pst-previous.txt 2>/dev/null) hits=$(grep -aciE 'kernel panic|Unable to handle|Oops:|Internal error|Call trace|watchdog' /mnt/y700-out/y700-pst-previous.txt 2>/dev/null)"
+    grep -aiE 'kernel panic|Unable to handle kernel|Oops:|Internal error|Call trace' /mnt/y700-out/y700-pst-previous.txt 2>/dev/null | tail -n 8 | cut -c 1-170
+fi
+# A131: the pstore question is asked unconditionally.  A111-A113 only spoke
+# about ramoops inside the "card is mounted AND the console buffer is non-empty"
+# branch, so an empty pstore was indistinguishable from a skipped branch - and
+# every recent reset was a hard power cut, which does leave pstore empty.
+P "A131 PST files=[$(cat /tmp/pstfiles 2>/dev/null | busybox tr '\n' ' ')] ramoops_bytes=$(wc -c < "$PS" 2>/dev/null) saved=$(wc -c < /mnt/y700-out/y700-pst-previous.txt 2>/dev/null)"
+
+# ---- A131: the whole pstore set, not just the console record ----
+# The console ring is what carries the previous boot to its death; dmesg-ramoops
+# (record-size 0x4000) is what a panic leaves behind, and pmsg is empty for us.
+# console-ramoops-0 holds ONE circular buffer: everything the dead boot printed,
+# then everything this boot printed.  The seam between the two is the answer.
+for f in /sys/fs/pstore/* ; do
+	b=$(basename "$f")
+	cat "$f" > "/mnt/y700-out/pst-$b.tmp" 2>/dev/null && mv -f "/mnt/y700-out/pst-$b.tmp" "/mnt/y700-out/pst-$b.txt" 2>/dev/null
+done
+busybox sync
+P "A131 PST copied files=$(ls /mnt/y700-out/pst-*.txt 2>/dev/null | wc -l) bytes=$(cat /mnt/y700-out/pst-*.txt 2>/dev/null | wc -c)"
+P "A131 KOBJ ath11k_drv=$(ls -d /sys/bus/pci/drivers/ath11k_pci 2>/dev/null | wc -l) pci_dev=$(ls -d /sys/bus/pci/devices/0000:01:00.0 2>/dev/null | wc -l) blacklist=$(grep -o 'initcall_blacklist=[^ ]*' /proc/cmdline)"
+dmesg | grep -iE 'ramoops|pstore|blacklisted' | head -8 | cut -c1-120
 SDOK=0
 SZ=0
 LN=0
 if [ -n "$MNT" ] ; then
-    echo "A43 /init is alive up=$(cat /proc/uptime)" > /mnt/y700-alive.txt
+    echo "A56 /init is alive up=$(cat /proc/uptime)" > /mnt/y700-alive.txt
     busybox sync
-    P "A43 alive.txt written"
+    P "A56 alive.txt written"
 	{
-		echo '===== Y700-A43 boot log ====='
+		echo '===== Y700-A56 boot log ====='
 		echo '== uptime =='
 		cat /proc/uptime
 		echo '== cmdline =='
@@ -343,21 +374,21 @@ if [ -n "$MNT" ] ; then
     busybox sync
     umount /mnt 2>/dev/null
     busybox sync
-    P "A43 boot.txt unmounted"
+    P "A56 boot.txt unmounted"
     if mount -o ro -t "$MF" "$MNT" /mnt 2>/dev/null ; then
         SZ=$(wc -c < /mnt/y700-boot.txt 2>/dev/null)
         LN=$(wc -l < /mnt/y700-boot.txt 2>/dev/null)
         umount /mnt 2>/dev/null
         busybox sync
         SDOK=1
-        P "A43 readback sz=$SZ ln=$LN"
+        P "A56 readback sz=$SZ ln=$LN"
     else
-        P "A43 readback FAILED"
+        P "A56 readback FAILED"
     fi
 else
-    P "A43 NO-CARD-MOUNTED"
+    P "A56 NO-CARD-MOUNTED"
 fi
-# ---- A43: hand the system over to the ext4 root on the SD card.
+# ---- A56: hand the system over to the ext4 root on the SD card.
 # ---- A34 proved the card itself reads in PIO mode, so the only thing left for
 # ---- the initramfs is to mount the real root and switch_root into it.  Two
 # ---- guards matter: (a) /init must exist and be executable in the new root,
@@ -365,14 +396,14 @@ fi
 # ---- through chroot() *before* switch_root, because switch_root deletes the
 # ---- initramfs as its first step - an ELF the kernel refuses to execute would
 # ---- leave PID 1 dead with no fallback and the board would just reboot.
-# ---- A43: same handover as A36, but every step is echoed onto the card too.
+# ---- A56: same handover as A36, but every step is echoed onto the card too.
 # ---- A36 showed the gap: y700-boot.txt is snapshotted *before* the handover, so
 # ---- if switch_root fails afterwards nothing on the card says so (y700-root.txt
 # ---- stayed from the previous boot).  STAGE() re-mounts the FAT volume, appends
 # ---- one line, and unmounts again - the file lives on the card, so it survives
 # ---- switch_root either way and is readable after a hard power cut.
 stage() {
-    P "A43 STAGE $1"
+    P "A56 STAGE $1"
     if [ -n "$MNT" ] && mount -t "$MF" -o rw "$MNT" /mnt 2>/dev/null ; then
         echo "up=$(cat /proc/uptime) $1" >> /mnt/y700-stage.txt
         busybox sync
@@ -381,7 +412,7 @@ stage() {
     fi
 }
 stage_dump() {
-    P "A43 DUMP $1"
+    P "A56 DUMP $1"
     if [ -n "$MNT" ] && mount -t "$MF" -o rw "$MNT" /mnt 2>/dev/null ; then
         echo "up=$(cat /proc/uptime) ---- $1 ----" >> /mnt/y700-stage.txt
         dmesg | busybox tail -n 25 >> /mnt/y700-stage.txt
@@ -389,10 +420,10 @@ stage_dump() {
         umount /mnt 2>/dev/null
         busybox sync
     else
-        P "A43 DUMP-MOUNT-FAILED $MNT $MF"
+        P "A56 DUMP-MOUNT-FAILED $MNT $MF"
     fi
 }
-# ---- A43: write the shrunk GPT to the UFS.  A39 read the table back off the
+# ---- A56: write the shrunk GPT to the UFS.  A39 read the table back off the
 # ---- disk and proved the primary copy is intact (header CRC 0xb8c00337, entry
 # ---- CRC 0x7d154971) and that a healthy backup copy exists - but not where the
 # ---- generator assumed.  With nent=32 and esz=128 the entry array is one 4KiB
@@ -400,7 +431,7 @@ stage_dump() {
 # ---- 121268219 and its header at LBA 121268223, so 121268220..121268222 are
 # ---- zero padding.  A39 probed LBA total-5 = 121268219, i.e. the live backup
 # ---- array, and compared a padding block against the primary array, so its
-# ---- gate correctly refused to write.  A43 stops guessing: the offsets come
+# ---- gate correctly refused to write.  A56 stops guessing: the offsets come
 # ---- from geom.txt, which the generator writes from the on-disk headers, and
 # ---- the blobs themselves carry the exact original blocks (orig-mbr,
 # ---- orig-primary-header, orig-primary-entries, orig-backup-entries,
@@ -446,8 +477,8 @@ gpt_crc() {
     busybox crc32 "$1" 2>/dev/null | busybox cut -d' ' -f1
 }
 gpt_surgery() {
-    if [ ! -b /dev/sda ] ; then stage "A43 GPT no /dev/sda" ; return ; fi
-    if ! mount -t "$MF" -o rw "$MNT" /mnt 2>/dev/null ; then stage "A43 GPT card rw mount failed" ; return ; fi
+    if [ ! -b /dev/sda ] ; then stage "A56 GPT no /dev/sda" ; return ; fi
+    if ! mount -t "$MF" -o rw "$MNT" /mnt 2>/dev/null ; then stage "A56 GPT card rw mount failed" ; return ; fi
     mkdir -p /tmp /mnt/gpt
     GPTG=/mnt/gpt/geom.txt
     GOK=1
@@ -455,12 +486,12 @@ gpt_surgery() {
     SZ4=$((SZS / 8))
     LB=$(cat /sys/block/sda/queue/logical_block_size 2>/dev/null)
     RO=$(blockdev --getro /dev/sda 2>/dev/null)
-    gptlog "A43 gpt pass szs512=$SZS lba4k=$SZ4 logical=$LB ro=$RO"
+    gptlog "A56 gpt pass szs512=$SZS lba4k=$SZ4 logical=$LB ro=$RO"
     [ "$SZ4" = "121268224" ] || { gptlog "HALT lba4k mismatch" ; GOK=0 ; }
     [ "$LB" = "4096" ] || { gptlog "HALT logical_block_size mismatch" ; GOK=0 ; }
     if [ -f /mnt/gpt/surgery-done.txt ] ; then
         gptlog "surgery already completed on an earlier boot, skipping"
-        stage "A43 gpt already done"
+        stage "A56 gpt already done"
         busybox sync
         umount /mnt 2>/dev/null
         return
@@ -581,7 +612,7 @@ gpt_surgery() {
             if [ "$S15" = "26180928" ] && [ "$Z15" = "268435456" ] && [ "$S16" = "294616384" ] && [ "$Z16" = "675529368" ] ; then
                 [ -c /dev/sda16 ] || busybox mknod /dev/sda16 b 8 16 2>/dev/null
                 gptlog "GPT_SURGERY_OK sda16=$(ls /dev/sda16 2>/dev/null) szs512=$(blockdev --getsz /dev/sda16 2>/dev/null)"
-                echo "A43 gpt surgery ok up=$(cat /proc/uptime)" > /mnt/gpt/surgery-done.txt
+                echo "A56 gpt surgery ok up=$(cat /proc/uptime)" > /mnt/gpt/surgery-done.txt
                 busybox sync
             else
                 gptlog "GPT_SURGERY_SYSFS_MISMATCH"
@@ -600,12 +631,12 @@ gpt_surgery() {
     busybox sync
     umount /mnt 2>/dev/null
     busybox sync
-    stage "A43 gpt pass done go=$GO ok=$GOK probeok=$PROBEOK"
+    stage "A56 gpt pass done go=$GO ok=$GOK probeok=$PROBEOK"
 }
 gpt_surgery
-# A43b CARD MOUNT
-stage "A43 start card=$MNT fs=$MF sda=$(ls /dev/sda 2>/dev/null)"
-# ---- A43: pick the root.  There are now two real roots: the ext4 the stage-2
+# A56b CARD MOUNT
+stage "A56 start card=$MNT fs=$MF sda=$(ls /dev/sda 2>/dev/null)"
+# ---- A56: pick the root.  There are now two real roots: the ext4 the stage-2
 # ---- /init put on UFS partition 16 (label y700root-ufs) and the SD card root
 # ---- that created it (label y700root).  UFS is tried first.  A candidate is
 # ---- only accepted when it mounts, holds an executable /init and a binary from
@@ -622,31 +653,31 @@ try_root() {
     MT=0
     while [ $ATT -lt 3 ] ; do
         ATT=$((ATT + 1))
-        stage "A43 mount attempt $ATT rw dev=$D"
+        stage "A56 mount attempt $ATT rw dev=$D"
         if mount -t ext4 -o rw "$D" /mnt/root 2>/dev/null ; then
             MT=1
             break
         fi
-        stage "A43 mount $ATT rw dev=$D failed"
+        stage "A56 mount $ATT rw dev=$D failed"
         if mount -t ext4 -o ro "$D" /mnt/root 2>/dev/null ; then
             if mount -o remount,rw /mnt/root 2>/dev/null ; then
                 MT=1
-                stage "A43 remounted rw dev=$D"
+                stage "A56 remounted rw dev=$D"
             else
                 MT=2
-                stage "A43 remount rw failed, would switch_root read-only dev=$D"
+                stage "A56 remount rw failed, would switch_root read-only dev=$D"
             fi
             break
         fi
-        stage "A43 mount $ATT ro dev=$D failed too"
-        stage_dump "A43 dmesg tail after failure $ATT on $D"
+        stage "A56 mount $ATT ro dev=$D failed too"
+        stage_dump "A56 dmesg tail after failure $ATT on $D"
         busybox sleep 2
     done
     if [ "$MT" = "0" ] ; then
-        stage "A43 ROOT_MOUNT_FAILED dev=$D after $ATT attempts"
+        stage "A56 ROOT_MOUNT_FAILED dev=$D after $ATT attempts"
         return 1
     fi
-    stage "A43 root_mounted mt=$MT dev=$D top=$(ls /mnt/root | busybox tr '\n' ' ')"
+    stage "A56 root_mounted mt=$MT dev=$D top=$(ls /mnt/root | busybox tr '\n' ' ')"
     MISS=""
     for v in dev proc sys ; do
         [ -d "/mnt/root/$v" ] || MISS="$MISS $v"
@@ -663,35 +694,46 @@ try_root() {
         done
         if [ -z "$STILL" ] ; then
             MISS=""
-            stage "A43 VFS_MOUNTPOINTS_CREATED dev=$D created=$CREATED"
+            stage "A56 VFS_MOUNTPOINTS_CREATED dev=$D created=$CREATED"
         else
-            stage "A43 NO_VFS_MOUNTPOINTS dev=$D still-missing=$STILL - switch_root would fail, next candidate"
+            stage "A56 NO_VFS_MOUNTPOINTS dev=$D still-missing=$STILL - switch_root would fail, next candidate"
         fi
     fi
     if [ -n "$MISS" ] ; then
-        stage "A43 NO_VFS_MOUNTPOINTS dev=$D missing=$MISS mt=$MT - switch_root would fail, next candidate"
+        stage "A56 NO_VFS_MOUNTPOINTS dev=$D missing=$MISS mt=$MT - switch_root would fail, next candidate"
         umount /mnt/root 2>/dev/null
         return 1
     fi
-    if [ ! -f /mnt/root/init ] || [ ! -x /mnt/root/init ] ; then
-        stage "A43 NO_ROOT_INIT dev=$D head=$(head -c 40 /mnt/root/init 2>/dev/null | busybox tr '\n' ' ')"
+    INITTGT=""
+    for cand in /init /sbin/init /usr/lib/systemd/systemd ; do
+        if [ -x "/mnt/root$cand" ] ; then
+            INITTGT="$cand"
+            break
+        fi
+    done
+    if [ -z "$INITTGT" ] ; then
+        stage "A56 NO_ROOT_INIT dev=$D head=$(head -c 40 /mnt/root/init 2>/dev/null | busybox tr '\n' ' ') sbin=$(head -c 40 /mnt/root/sbin/init 2>/dev/null | busybox tr '\n' ' ')"
         umount /mnt/root 2>/dev/null
         return 1
     fi
-    stage "A43 init_head=$(head -c 40 /mnt/root/init | busybox tr '\n' ' ')"
-    chroot /mnt/root /bin/busybox true 2>/dev/null
-    T=$?
-    stage "A43 chroot_test dev=$D rc=$T"
-    if [ "$T" != "0" ] ; then
-        stage "A43 CHROOT_TEST_FAILED dev=$D"
-        umount /mnt/root 2>/dev/null
-        return 1
+    stage "A82 root_init=$INITTGT dev=$D osrelease=$(head -c 60 /mnt/root/usr/lib/os-release 2>/dev/null | busybox tr '\n' ' ')"
+    if [ -x /mnt/root/bin/busybox ] || [ -x /mnt/root/usr/bin/busybox ] ; then
+        chroot /mnt/root /bin/busybox true 2>/dev/null
+        T=$?
+        stage "A56 chroot_test dev=$D rc=$T"
+        if [ "$T" != "0" ] ; then
+            stage "A56 CHROOT_TEST_FAILED dev=$D"
+            umount /mnt/root 2>/dev/null
+            return 1
+        fi
+    else
+        stage "A82 no-busybox-in-root dev=$D - busybox chroot probe skipped"
     fi
     chroot /mnt/root /bin/sh -c 'exit 7' 2>/dev/null
     S=$?
-    stage "A43 shell_exec_test dev=$D rc=$S want=7"
+    stage "A56 shell_exec_test dev=$D rc=$S want=7"
     if [ "$S" != "7" ] ; then
-        stage "A43 SHELL_EXEC_FAILED dev=$D - /bin/sh is not runnable, next candidate"
+        stage "A56 SHELL_EXEC_FAILED dev=$D - /bin/sh is not runnable, next candidate"
         umount /mnt/root 2>/dev/null
         return 1
     fi
@@ -716,6 +758,7 @@ if [ -n "$MNT" ] && mount -t "$MF" -o ro "$MNT" /mnt 2>/dev/null ; then
 fi
 case "$MKT" in
     *UFS_MIGRATE_GO*) RESYNC=1 ;;
+    *CARD_FIRST_GO*) RESYNC=1 ;;
 esac
 if [ "$RESYNC" = "1" ] && [ "$LOCK" = "present" ] ; then
     RESYNC=0
@@ -723,10 +766,10 @@ fi
 CARDGLOB="$(ls /dev/mmcblk*p4 2>/dev/null | busybox tr '\n' ' ')"
 if [ "$RESYNC" = "1" ] ; then
     ORDER="$CARDROOT $CARDGLOB /dev/sda16 $UFSROOT"
-    stage "A43 order CARD-FIRST marker=[$MKT] done-lock=$LOCK card=$MNT reason=ufs-resync-pending"
+    stage "A56 order CARD-FIRST marker=[$MKT] done-lock=$LOCK card=$MNT reason=ufs-resync-pending"
 else
     ORDER="/dev/sda16 $UFSROOT $CARDROOT $CARDGLOB"
-    stage "A43 order UFS-FIRST marker=[$MKT] done-lock=$LOCK card=$MNT"
+    stage "A56 order UFS-FIRST marker=[$MKT] done-lock=$LOCK card=$MNT"
 fi
 CAND=""
 for d in $ORDER ; do
@@ -734,30 +777,49 @@ for d in $ORDER ; do
     case " $CAND " in *" $d "*) continue ;; esac
     CAND="$CAND $d"
 done
-stage "A43 candidates ufs_label=$UFSROOT card_label=$CARDROOT list=$(for d in $CAND ; do [ -b "$d" ] && printf "%s " "$d" ; done)"
+stage "A56 candidates ufs_label=$UFSROOT card_label=$CARDROOT list=$(for d in $CAND ; do [ -b "$d" ] && printf "%s " "$d" ; done)"
 for d in $CAND ; do
     if try_root "$d" ; then
         RDEV="$d"
         busybox sync
         busybox sync
-        stage "A43 SWITCH_ROOT_TO $RDEV"
-        exec /bin/busybox switch_root /mnt/root /init
-        stage "A43 SWITCH_ROOT_RETURNED rc=$?"
+        # ---- A131: built-in patch channel.
+        # A script shipped inside this initramfs runs against the root we are about
+        # to enter, while that root is mounted rw at /mnt/root.  That takes the SD
+        # card out of the loop entirely: a rootfs change is now one
+        # "fastboot flash boot_b" away, and the card is only ever a log sink again.
+        # The script guards itself with a marker inside the root, and everything it
+        # prints goes to kmsg so the panel console shows the outcome.  $3 is
+        # the card /init picked earlier: the patch uses it to carry the
+        # previous boot's evidence out of a root nothing else can read.
+        if [ -x /y700-patch.sh ] ; then
+            stage "A131 PATCH_RUN dev=$RDEV card=$MNT up=$(cut -d . -f 1 /proc/uptime)"
+            # A109-A112 printed PATCH_RUN and then nothing at all: the patch ended
+            # the boot instead of returning.  Cap it so a stuck or fatal patch can
+            # never block switch_root - rc=124 means the cap fired.
+            timeout 90 /bin/sh /y700-patch.sh "$RDEV" /mnt/root "$MNT"
+            stage "A131 PATCH_DONE rc=$? up=$(cut -d . -f 1 /proc/uptime)"
+            busybox sync
+            busybox sync
+        fi
+        stage "A82 SWITCH_ROOT_TO $RDEV init=$INITTGT"
+        exec /bin/busybox switch_root /mnt/root "$INITTGT"
+        stage "A56 SWITCH_ROOT_RETURNED rc=$?"
         break
     fi
 done
-stage "A43 NO_ROOT_ACCEPTED list=$(for d in $CAND ; do [ -b "$d" ] && printf "%s " "$d" ; done)"
-stage "A43 HOLD_LOOP_REACHED"
-banner "Y700-A43-HOLD-NO-REBOOT"
+stage "A56 NO_ROOT_ACCEPTED list=$(for d in $CAND ; do [ -b "$d" ] && printf "%s " "$d" ; done)"
+stage "A56 HOLD_LOOP_REACHED"
+banner "Y700-A56-HOLD-NO-REBOOT"
 _i=0
 while true ; do
     _i=$((_i + 1))
-    P "A43 R$_i ok=$SDOK sz=$SZ au=$(cat /sys/kernel/debug/y700_alive 2>/dev/null)"
-    P "A43 mh=$(ls /sys/class/mmc_host 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 cards=$(cat /sys/kernel/debug/mmc*/cards 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 ocr=$(cat /sys/kernel/debug/mmc*/ocr 2>/dev/null | busybox tr '\n' ' ')"
-    P "A43 log:"
+    P "A56 R$_i ok=$SDOK sz=$SZ au=$(cat /sys/kernel/debug/y700_alive 2>/dev/null)"
+    P "A56 mh=$(ls /sys/class/mmc_host 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 dev=$(ls /dev/mmcblk* 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 cards=$(cat /sys/kernel/debug/mmc*/cards 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 ocr=$(cat /sys/kernel/debug/mmc*/ocr 2>/dev/null | busybox tr '\n' ' ')"
+    P "A56 log:"
     mmclog
     sleep 5
 done
