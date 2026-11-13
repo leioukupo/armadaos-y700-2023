@@ -21,7 +21,7 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 | GPU/显示 | 已实机验证：Adreno 730 + GMU + gpucc + adreno-SMMU 全部绑定，`renderD128` 存在，weston `GL renderer: FD730`（GPU 固件必须进 initramfs，见 `boot/a-series/kernel/patches/a104-build.sh`） |
 | Wi-Fi | 已实机验证：WCN6855 走 `ath11k_pci`（`.ko`，根挂载后 insmod），已能连网；死结是 boot DTB 里 `pcie@1c00000` 缺 `iommu-map`，A130 修好后端到端通了，路线见根目录 `qca6490.md` 与 `PROGRESS.md` A120-A130 |
 | 音频 | 已实机验证：ADSP(AudioReach) + `q6apm`/`q6prm` + `snd-sc8280xp`(lenovo,y700-sndcard) + 两片 CS35L45，立体声外放出声；拓扑与 UCM 已进 `system_files`，开机自动写功放路由（A131-A141），A143 起开机不再播放测试音 |
-| 电池/充电 | 已实机验证：ADSP PMIC GLINK 路线（`pmic_glink` + `qcom_battmgr` + `ucsi_glink`，不改 DT），`/sys/class/power_supply` 齐全、USB-C 已按 PD/PPS 11 V · 3 A 充电（A142）；功率上限在 ADSP 固件侧，见[电池与充电](#电池与充电) |
+| 电池/充电 | 已实机验证：ADSP PMIC GLINK 路线（`pmic_glink` + `qcom_battmgr` + `ucsi_glink`，不改 DT），`/sys/class/power_supply` 齐全、USB-C 已按 PD/PPS 11 V · 3 A 充电（A142）；固件给的 charge/energy/power 三个数是坏的，A145-A146 起由内核派生，桌面读数与剩余时间正常 |
 | 触觉反馈 | PM8008（i2c5）尚无主线消费方，节点保持禁用 |
 | 内置手柄 | 本机无内置手柄，`ARMADA_BUILTIN_GAMEPAD=0`，不等待 CompositeDevice |
 
@@ -59,7 +59,7 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 - **必须静默**：A143 起 `/etc/y700-audio.conf` 的 `play` 默认 `off`，开机不再跑 `speaker-test` 440 Hz 扫频（功放路由照旧写）。要复现测试音就临时改回 `play=on` 再 `systemctl restart y700-audio`。
 - **固件**：ADSP（26 个文件 / 13 MB，`adsp.mdt` + `adsp.b*`）与 CS35L45 保护固件（`spk1/spk2-cs35l45-dsp1-spk-prot.wmfw/.bin`）来自 <https://github.com/dianqk/firmware-lenovo-asphalt>（`lenovo/tb320fc/audio/`，原样取自 TB320FC 的 `modem_b`/`vendor`），**不入库**；运行时装到 `/usr/lib/firmware/qcom/sm8475/lenovo/tb320fc/` 与 `/usr/lib/firmware/cirrus/`，A 系列由 initramfs 的 `fw_install` 从 TF 卡 `y700-fw/{adsp,cs35l45}` 补齐。
 
-构建与诊断脚本：`boot/a-series/kernel/patches/a131..a143-build.sh`（模块与门禁）、`boot/a-series/initramfs/y700-patch-a143.sh`（把 `.ko`/拓扑/UCM 装进根）、`boot/a-series/rootfs/y700-audio-a143.sh`（`/usr/local/bin/y700-audio.sh` + `y700-audio.service`）。
+构建与诊断脚本：`boot/a-series/kernel/patches/a131..a146-build.sh`（模块与门禁）、`boot/a-series/initramfs/y700-patch-a143.sh`（把 `.ko`/拓扑/UCM 装进根）、`boot/a-series/rootfs/y700-audio-a143.sh`（`/usr/local/bin/y700-audio.sh` + `y700-audio.service`）。
 
 ## 电池与充电
 
@@ -72,6 +72,36 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 - 实机读数（A142）：`status=Charging`、`charge_type=Fast`、SOH 91%、cycle 563、model `ALIUM_..._3600MAH`；`qcom-battmgr-usb` `online=1`、`voltage_max=11 V`、`input_current_limit=3 A`；`typec port1 power_operation_mode=usb_power_delivery`；电池侧 4.25 V · 5.0 A。
 - **更高功率不在 Linux 这侧**：PD/PPS 档位由 ADSP 固件请求，`qcom_battmgr.c` 没有 `property_set`（`input_current_limit` 只读，写入 `Permission denied`），这棵树也没有 UCSI 字符设备与 debugfs，用户态无法请求更高 PDO；11 V · 3 A = 33 W 已是本机官方档位，换更大功率的充电头也不会变。真要超过它只能改 ADSP 充电固件，那会偏离不破坏 Android 的前提。
 - 脚本：`boot/a-series/rootfs/y700-power-a143.sh` 装成 `/usr/local/bin/y700-power.sh`，`y700-power.service` 排在 `y700-audio.service` 之后（ADSP 已热），日志 `/var/log/y700-power.txt`，标记 `Y700-A143-PWR` + `MARK-1`（电量/状态）与 `MARK-2`（PD 档位）。
+
+### 电量百分比不是内核说的那个数（A145）
+
+SM8450 的 ADSP 只回答「逐属性 GET」，响应里从不填 `power_unit`，于是 `battmgr->unit` 停在 0（= mWh）：
+`qcom_battmgr_bat_get_property()` 里所有 `if (unit != mAh) return -ENODATA` 的分支把 `CHARGE_NOW`/`CHARGE_FULL` 全吃掉，
+而 `sm8350_bat_props[]` 里根本没有 `ENERGY_*`。结果 upower 只看到 `Energy=0 / EnergyFull=0`。
+Plasma 面板用 upower 的 `Percentage`（来自 `CAPACITY`，所以图标一直是对的），但 Solid/powerdevil 的 `batteryRemainingTime`
+按 `Energy/EnergyFull` 算百分比，得到 0 ⇒ 每次重新查询（典型触发：DPMS 熄屏后点亮）就弹「电池电量极低，系统将在 60 秒后睡眠」并真的挂起。
+
+- 修法：只改驱动。SM8350 变体下用 `BATT_CHG_COUNTER`(µAh) + `BATT_CAPACITY`(%) + `BATT_VOLT_NOW`(µV) 派生 charge/energy 一对，
+  内核单位约定 charge 用 µAh、energy 用 µWh = µAh × µV / 1e6；派生属性一次发「三连 GET」，保证三个数同批新鲜。
+- 补丁：`boot/a-series/kernel/patches/qcom-battmgr-a145-patch.py`；构建轮 `a145-build.sh` 的门禁要求源码含
+  `sm8350_bat_is_derived(psp)`，且 `qcom_battmgr.ko` 与 `usr/initramfs_data.cpio` 都含 `Y700-A145 battmgr derives` 标记。
+- 实机：`charge_now=3516240 charge_full=3588000 energy_now=14944020 energy_full=15249000`，upower
+  `Energy=14.93 Wh / EnergyFull=15.23 Wh`，`batteryRemainingTime` 不再是 0，熄屏复测不再弹窗。
+
+### 功率也要派生（A146）
+
+固件自报 `power_now=34.3 W`，而它自己给的 `current_now=-1.302 A`、`voltage_now=4.223 V` 只有 5.5 W，差一个数量级。
+upower 直接把 `POWER_NOW` 当 `energy-rate`，于是「快满了却只剩 25 分钟」。
+
+- 修法：SM8350 变体下 `POWER_NOW` 也走派生，`= |current_now| × voltage_now / 1e6`；
+  `sm8350_bat_derived_props[]` 多带一个 `BATT_CURR_NOW`。
+- 补丁：`boot/a-series/kernel/patches/qcom-battmgr-a146-patch.py`（叠在 A145 之上），构建轮 `a146-build.sh`。
+
+### `.ko` 每次开机都会被重新铺
+
+`/usr/lib/y700/*.ko` 由 initramfs 里的 `y700-patch.sh` 每次开机铺上去，只替换根文件系统里的 `.ko` 会在下一次开机被盖掉 ——
+电池、音频这类驱动修复必须重出 boot 镜像才生效。
+
 
 ## 在设备上构建镜像
 
