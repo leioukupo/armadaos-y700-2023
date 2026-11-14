@@ -7,7 +7,7 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 | 型号 | TB320FC |
 | SoC | Qualcomm SM8475（第一代骁龙 8+，内部代号 Cape/CapeP） |
 | 设备树标识 | `lenovo,tb320fc`、`qcom,sm8475` |
-| 内核 | ArmadaOS Freedom 统一 Linux 7.2.6 |
+| 内核 | ArmadaOS Freedom 统一 Linux 7.2.6 + tb320fc 覆盖层（`KERNEL_OVERLAYS=tb320fc`，release `7.2.6-tb320fc`） |
 | Armada Control 配置 | `lenovo-tb320fc`，无风扇平板 |
 
 ## 功能状态
@@ -26,6 +26,18 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 | 内置手柄 | 本机无内置手柄，`ARMADA_BUILTIN_GAMEPAD=0`，不等待 CompositeDevice |
 
 启动链、显示/触摸与 GPU 已实机验证（见根目录 `PROGRESS.md` A97-A105）；kShimC 菜单与 Android 启动尚未实机验证。镜像层面的工作（live 逆向、boot 镜像解码、打包往返与 dry-run 全链路）已完成，见[二代引导文档](boot/README.md)。
+
+## 整机进镜像（A150 起）
+
+A 系列那些「开机后打补丁」的脚本已经不是路线了：本机现在全部走 ArmadaOS 自己的引导，缺的东西都在镜像里。
+
+- **内核**：`packages/kernel` 的 7.2.6 + Freedom 补丁集（301 个补丁）+ `overlays/tb320fc/`（`KERNEL_OVERLAYS=tb320fc`），板级 DTS 用实机验证过的 asphalt 文件，另加两块补丁：battmgr 派生属性、`lenovo,y700-sndcard` 匹配项。见 `packages/kernel/overlays/tb320fc/README.md`。
+- **固件**：ADSP、A730 zap/GMU/sqe、CS35L45 保护固件、`novatek_ts_fw.bin` 全部入库在 `system_files/usr/lib/firmware/`，出处写在 `qcom/sm8475/lenovo/tb320fc/NOTICE.lenovo-firmware`。
+- **GPU 固件进 initramfs**：`DRM_MSM` 是内建的，GMU/zap 在 initcall 阶段就要取固件，那时还没 switch_root；`system_files/usr/lib/dracut/modules.d/92armada-gpu-firmware` 负责塞进去，`build_files/55-generate-initramfs.sh` 少了就构建失败。
+- **开机自动做的四件事**：`tb320fc-{audio,power,wifi,touch}.service`（`40-vendor-system-files.sh` 里 enable），脚本在 `system_files/usr/libexec/tb320fc/`，配置在 `system_files/etc/tb320fc/*.conf`。每个脚本先跑 `board-check`，不是本机就直接退出，所以对其他机型是空操作。
+- **桌面自启**：`ARMADA_DEFAULT_SESSION`（`devices/defaults.conf` = `gamemode`，`devices/lenovo-tb320fc.conf` = `desktop`）经 `session-control default-session` 决定 sddm 自动登录的会话；本机进 Plasma 桌面而不是 gamemode，挂起仍是 `ARMADA_SUSPEND_MODE=fake`。
+
+构建入口只有一条：`KERNEL_OVERLAYS=tb320fc bash packages/kernel/scripts/build-kernel.sh`。少了这个变量，`overlays/tb320fc/patches`（battmgr 派生读数、音频卡匹配）与 config 片段都不会打上，而 DTB 照样能编出来 —— 症状是「能开机、电池和声音坏」。另外 `localhost/armada/pkg/kernel:<hash>` 的 tag 只按 `packages/kernel` 的源码算（`packages/package-hash.sh`），换掉 `out/armada-kernel-*.tar.zst` 不会让 tag 变化，所以替换 tarball 之后必须重新 `podman build` 那个 image，并从 image 里把 DTB 抽出来核对，否则 rootfs 装的还是旧内核。
 
 ## 存储与双系统
 
@@ -55,9 +67,9 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 - **两个必须同时成立的前提**：`qcom_pd_mapper.ko` 要在 `qcom_q6v5_pas.ko` 之前 insmod，且 boot DTB 里 `gpr/service@1`、`service@2` 的 `qcom,protection-domain` 必须保留。少了 mapper，GPR 服务的 PDR 查找失败，设备根本不会创建；把属性删掉虽然能让设备出现，但 ADSP 侧的 PDR 通知（QMI service 66，`msm/adsp/audio_pd`）没人接，`APM_CMD_GET_SPF_STATE` 每次探针都超时（A138 反证、A140 定案）。
 - **拓扑**：`audioreach_tplg_init()` 取 `qcom/<driver_name>/<card_name>-tplg.bin`，本机即 `qcom/sm8475/Lenovo-Y700-tplg.bin`；缺它只有 `ASoC: failed to instantiate card -2`。源文件 `audio_topology/sm8475/Lenovo-Y700.m4`，用 audioreach-topology `993a17dcb672357998a463a73f120064d6c74f4f` + alsa-topology-utils 1.2.16 的 `alsatplg` 生成，成品 10 436 字节。
 - **开机必须写的路由**：`PRIMARY_MI2S_RX Audio Mixer MultiMedia1` = 1，两片 CS35L45 的 `DSP1 Firmware`=Protection、`Amplifier Mode`=SPK、`DSP_RX1..8 Source`（ASP_RX1/ASP_RX2/VMON/IMON/VDD_BATTMON/VDD_BSTMON/CLASSH_TGT/VDD_BATTMON）、`DACPCM Source`=DSP_TX1、`DSP1 Preload Switch`=1、`AMP Enable Switch` 先 0 后 1。静音的真正原因是 `SPK1/SPK2 Digital PCM Volume` 复位为 0（= -102.25 dB），而 `mute=1` 的 dBscale 控件拒绝 `-8dB` 这类文本写法，只能写原始值（当前用 400）。
-- **UCM**：`Lenovo-Y700` / `HiFi` 用例把上面这套序列编码进 `system_files/usr/share/alsa/ucm2/conf.d/sm8475/Lenovo-Y700.conf` 与 `ucm2/Lenovo/Y700/HiFi.conf`；`/etc/y700-audio.conf` 的 `unmute=on` 让 `y700-audio.sh` 每次开机也写一遍，两者互为保险。
-- **必须静默**：A143 起 `/etc/y700-audio.conf` 的 `play` 默认 `off`，开机不再跑 `speaker-test` 440 Hz 扫频（功放路由照旧写）。要复现测试音就临时改回 `play=on` 再 `systemctl restart y700-audio`。
-- **固件**：ADSP（26 个文件 / 13 MB，`adsp.mdt` + `adsp.b*`）与 CS35L45 保护固件（`spk1/spk2-cs35l45-dsp1-spk-prot.wmfw/.bin`）来自 <https://github.com/dianqk/firmware-lenovo-asphalt>（`lenovo/tb320fc/audio/`，原样取自 TB320FC 的 `modem_b`/`vendor`），**不入库**；运行时装到 `/usr/lib/firmware/qcom/sm8475/lenovo/tb320fc/` 与 `/usr/lib/firmware/cirrus/`，A 系列由 initramfs 的 `fw_install` 从 TF 卡 `y700-fw/{adsp,cs35l45}` 补齐。
+- **UCM**：`Lenovo-Y700` / `HiFi` 用例把上面这套序列编码进 `system_files/usr/share/alsa/ucm2/conf.d/sm8475/Lenovo-Y700.conf` 与 `ucm2/Lenovo/Y700/HiFi.conf`；`/etc/tb320fc/audio.conf` 的 `unmute=on` 让 `/usr/libexec/tb320fc/audio` 每次开机也写一遍，两者互为保险。
+- **必须静默**：A143 起默认不放测试音，开机只写功放路由（`/etc/tb320fc/audio.conf` 里不再有 `play`）。要复现测试音就临时 `systemctl restart tb320fc-audio` 之后再手动 `speaker-test`。
+- **固件**：ADSP（26 个文件 / 13 MB，`adsp.mdt` + `adsp.b*`）与 CS35L45 保护固件（`spk1/spk2-cs35l45-dsp1-spk-prot.wmfw/.bin`）来自 <https://github.com/dianqk/firmware-lenovo-asphalt>（`lenovo/tb320fc/audio/`，原样取自 TB320FC 的 `modem_b`/`vendor`），A150 起**已入库**在 `system_files/usr/lib/firmware/`（`qcom/sm8475/lenovo/tb320fc/`、`cirrus/` 与固件根同名副本），出处与差异写在 `qcom/sm8475/lenovo/tb320fc/NOTICE.lenovo-firmware`；spk2 的 wmfw 在原图里是指向 spk1 的符号链接，入库时按普通副本落地。
 
 构建与诊断脚本：`boot/a-series/kernel/patches/a131..a146-build.sh`（模块与门禁）、`boot/a-series/initramfs/y700-patch-a143.sh`（把 `.ko`/拓扑/UCM 装进根）、`boot/a-series/rootfs/y700-audio-a143.sh`（`/usr/local/bin/y700-audio.sh` + `y700-audio.service`）。
 
@@ -117,7 +129,7 @@ upower 直接把 `POWER_NOW` 当 `energy-rate`，于是「快满了却只剩 25 
 |---|---|
 | [设备配置](../../system_files/usr/lib/armada/devices/lenovo-tb320fc.conf) | 机型识别、270° 旋转、触屏选择 |
 | [板级 DTS](../../packages/kernel/dts/sm8475-lenovo-tb320fc.dts) | 由 live vendor 设备树重构 |
-| [DTS 适配补丁](../../packages/kernel/dts/sm8475-lenovo-tb320fc.dts.patch) | kShim 交接（SMMU 解绑等） |
+| [tb320fc 内核覆盖层](../../packages/kernel/overlays/tb320fc/) | battmgr 派生属性、`lenovo,y700-sndcard` 匹配项、config 片段 |
 | [基础设备树](../../packages/kernel/dts/sm8475.dtsi) | 派生自主线 sm8450.dtsi |
 | [面板驱动补丁](../../packages/kernel/patches/0750-drm-panel-nt36523-add-Lenovo-TB320FC-NT36523N.patch) | NT36523N 面板驱动 |
 | [触摸驱动补丁](../../packages/kernel/patches/0751-input-touchscreen-import-Novatek-NVT36xxx-host-download-SPI-driver-for-Lenovo-TB320FC.patch) | NVT36xxx host-download SPI 触摸驱动 |

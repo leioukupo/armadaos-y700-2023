@@ -5,6 +5,8 @@
 #include <gicv3.h>
 #include <arm64/boot.h>
 #include <manifest.h>
+#include <pack_contract.h>
+#include <gen2_derive.h>
 #include <platform.h>
 #include <menu_text.h>
 #include <device_info.h>
@@ -40,6 +42,11 @@ static struct kshim_qcom_edl_probe EdlProbe;
 #include <qcom_dt.h>
 #include <dt_handoff.h>
 #include <dt_simplefb.h>
+#if (defined(KSHIM_DIAG_REPORT) && KSHIM_DIAG_REPORT) || \
+    (defined(KSHIM_DIAG_CATCH) && KSHIM_DIAG_CATCH)
+#include <diag_fb.h>
+#include <diag_catch.h>
+#endif
 #include <tb323fu_ramoops.h>
 #include <tb323fu_ramoops_export.h>
 #if defined(KSHIM_DIAGNOSTIC_MEMORY_ONLY) && (KSHIM_DIAGNOSTIC_MEMORY_ONLY != 0)
@@ -129,6 +136,18 @@ static bool get_manifest(uint64_t linux_base,
         return false;
 
     uint64_t manifest_offset = manifest_address - linux_base;
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+    /* The repacker indexes the base-image entry from the ARM64 image base but
+     * the attached-shim entry from the base kernel entry, and code1 is entered
+     * at image_base + base_entry_offset.  The interval that every entry has to
+     * fit in is therefore measured from the image base: measuring it from
+     * linux_base makes the 46 MiB base image at offset zero look like it
+     * overruns the manifest, which is what rejected the manifest and skipped
+     * the whole menu. */
+    if (kshim_pack_contract.base_entry_offset > linux_base)
+        return false;
+    manifest_offset += kshim_pack_contract.base_entry_offset;
+#endif
     if (manifest_address > UINT64_MAX - manifest_size ||
         !parse_manifest_entries(manifest_address, manifest_size, view))
         return false;
@@ -136,8 +155,20 @@ static bool get_manifest(uint64_t linux_base,
 
     uint32_t attached_shim_index = manifest->header.entry_count - 1;
     const MANIFEST_ENTRY *attached_shim = view->entries[attached_shim_index];
-    uint64_t attached_shim_offset =
-        *(const uint64_t *)(linux_base + 0x30);
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+    /* The code1 protocol never writes into the base image, so the five-word
+     * manifest block the old protocol left at the patched entry site does not
+     * exist: reading linux_base+0x30 here would return kernel code and the
+     * whole manifest would be rejected, which is what made the TB320FC build
+     * skip the menu entirely.  The runtime carries the same facts in its pack
+     * contract, whose offsets are relative to the image base, while manifest
+     * entry offsets and linux_base are relative to the executed entry
+     * (image_base + base_entry_offset). */
+    const uint64_t attached_shim_offset =
+        kshim_pack_contract.shim_offset - kshim_pack_contract.base_entry_offset;
+#else
+    uint64_t attached_shim_offset = *(const uint64_t *)(linux_base + 0x30);
+#endif
     if (manifest->header.default_entry == attached_shim_index ||
         attached_shim->type != MF_ENTRY_TYPE_SHIM ||
         attached_shim->flags != MF_ENTRY_FLAG_EXECUTABLE ||
@@ -157,7 +188,13 @@ static bool get_manifest(uint64_t linux_base,
         base_entry->offset != 0)
         return false;
 
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+    uint64_t runtime_image_size = kshim_pack_contract.manifest_offset +
+        kshim_pack_contract.manifest_size -
+        kshim_pack_contract.base_entry_offset;
+#else
     uint64_t runtime_image_size = *(const uint64_t *)(linux_base + 0x10);
+#endif
     if (linux_base > UINT64_MAX - runtime_image_size)
         return false;
     uint64_t packed_image_end = linux_base + runtime_image_size;
@@ -372,12 +409,86 @@ static uint32_t select_image(const MANIFEST_VIEW *view, uint64_t fdt, uint64_t l
 extern void _arm64_mmu_setup(void);
 
 /* Last operation before leaving the runtime, after all boot diagnostics. */
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+/* Stage beacons: stage k floods the top (KSHIM_DIAG_BEACON_STAGES+1-k) /
+ * KSHIM_DIAG_BEACON_STAGES of the live scanout frame with its own colour, so
+ * when the runtime stops the frozen panel reads as a stack of equal bands and
+ * the topmost (thickest) band is the deepest milestone reached.  Stage 1 is
+ * painted from assembly at _platform_init, before any memory work.  The
+ * geometry is measured on real hardware: TB320FC scanout is 1600x2560 RGBA,
+ * stride 6400, i.e. exactly 0xfa0000 bytes. */
+#define KSHIM_DIAG_BEACON_STAGES 12u
+static void kshim_diag_beacon(unsigned stage)
+{
+    static const uint32_t palette[] = {
+        0xffff0000u, /*  1: entered _platform_init (also painted in asm) */
+        0xff00ff00u, /*  2: entered kshim_main */
+        0xff0000ffu, /*  3: base-image contract derived */
+        0xffffffffu, /*  4: early MMU decision taken */
+        0xff00ffffu, /*  5: runtime memory snapshot captured */
+        0xffffff00u, /*  6: device resources initialised */
+        0xffff00ffu, /*  7: base-image (manifest) path entered */
+        0xff8080ffu, /*  8: manifest parsed and accepted */
+        0xffff8080u, /*  9: boot selection finished */
+        0xff80ff80u, /* 10: prepare_boot entered */
+        0xff808080u, /* 11: platform handoff done (MMU off) */
+        0xff000080u, /* 12: console quiesced, payload next */
+    };
+    volatile uint64_t *frame =
+        (volatile uint64_t *)(uintptr_t)KSHIM_DIAG_SPLASH_BASE;
+    const unsigned stages = KSHIM_DIAG_BEACON_STAGES;
+    const uint32_t pixel = stage < sizeof(palette) / sizeof(palette[0])
+                             ? palette[stage] : palette[1];
+    const uint64_t bytes = (uint64_t)KSHIM_DIAG_BEACON_FRAME_BYTES *
+        (stages + 1u - stage) / stages;
+    const uint64_t word = ((uint64_t)pixel << 32) | (uint64_t)pixel;
+
+    for (uint64_t off = 0; off < bytes; off += 8u)
+        frame[off / 8u] = word;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
+/* A whole-frame fill in one unmistakable colour: the runtime refuses a
+ * payload handoff and is waiting forever, which is otherwise identical to a
+ * hung device from outside. */
+static void kshim_diag_beacon_refused(void)
+{
+    volatile uint64_t *frame =
+        (volatile uint64_t *)(uintptr_t)KSHIM_DIAG_SPLASH_BASE;
+    const uint64_t word = (UINT64_C(0xffff8000) << 32) | UINT64_C(0xffff8000);
+
+    for (uint64_t off = 0; off < (uint64_t)KSHIM_DIAG_BEACON_FRAME_BYTES;
+         off += 8u)
+        frame[off / 8u] = word;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+#endif
+
 static void prepare_boot(void)
 {
-    if (kshim_platform_prepare_handoff() || kshim_console_quiesce()) {
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(10u);
+#endif
+    if (kshim_platform_prepare_handoff()) {
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+        kshim_diag_beacon_refused();
+#endif
         printf("Device shutdown incomplete; refusing payload handoff\n");
         for (;;) (void)delay(100000);
     }
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(11u);
+#endif
+    if (kshim_console_quiesce()) {
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+        kshim_diag_beacon_refused();
+#endif
+        printf("Device shutdown incomplete; refusing payload handoff\n");
+        for (;;) (void)delay(100000);
+    }
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(12u);
+#endif
 }
 
 /* SDE scan-out discovery and three-channel telemetry for TB320FC (diagnostic
@@ -1096,9 +1207,60 @@ static void kshim_diag_sde_probe(const void *fdt, struct diag_state *state,
  * base image is entered and the entry point becomes offset zero instead of
  * the Gen4 convention of offset four.  With the option off, or without a
  * valid manifest header, the previous offset-four behaviour is unchanged. */
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+_Static_assert(sizeof(KSHIM_PACK_CONTRACT) == KSHIM_PACK_CONTRACT_BYTES,
+               "The packer scans a fixed 40-byte contract block");
+
+/* Emitted for the repacker to fill in: it looks for magic+version followed
+ * by four zero quads in this image and writes the offsets below it.  used
+ * keeps it alive through --gc-sections. */
+__attribute__((used))
+volatile const KSHIM_PACK_CONTRACT kshim_pack_contract = {
+    KSHIM_PACK_CONTRACT_MAGIC, KSHIM_PACK_CONTRACT_VERSION,
+    0, 0, 0, 0,
+};
+#endif
+
+/* The repacker diverted the branch in ARM64 header code1 into this runtime.
+ * Before execution continues in the base image that branch has to say what
+ * the loader left there, otherwise the header is a loop back into us.  The
+ * original word is reconstructable: it branched to base_entry_offset from
+ * offset 4, which is exactly what the packed contract recorded. */
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+static void gen2_restore_header(uint64_t image_base)
+{
+    const uint64_t imm = (kshim_pack_contract.base_entry_offset - 4u) >> 2u;
+    volatile uint32_t *slot =
+        (volatile uint32_t *)(uintptr_t)(image_base + 4u);
+
+    if (imm > 0x03FFFFFFu)
+        return;
+    *slot = 0x14000000u | (uint32_t)imm;
+    /* An ARM64 I-cache is not coherent with the D-cache, and the loader ran
+     * with the caches on, so lines for these bytes can still be around with
+     * the MMU off.  Clean and invalidate data, invalidate instruction, then
+     * synchronize the pipeline. */
+    for (uint64_t off = 0u; off < 0x40u; off += 64u) {
+        __asm__ volatile("dc civac, %0" :: "r"(image_base + off) : "memory");
+        __asm__ volatile("ic ivau, %0" :: "r"(image_base + off) : "memory");
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+    __asm__ volatile("isb" ::: "memory");
+}
+#endif
+
 static uint64_t kshim_base_entry_offset(uint64_t linux_base,
                                         uint64_t manifest_address)
 {
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+    /* The base image entry still holds its original instructions because the
+     * loader was diverted from the ARM64 header branch instead, so the base
+     * kernel is entered at offset zero with nothing to restore and no
+     * instruction cache to synchronize. */
+    (void)linux_base;
+    (void)manifest_address;
+    return 0;
+#else
 #if defined(CONFIG_KSHIM_GEN2_ENTRY_RESTORE) && CONFIG_KSHIM_GEN2_ENTRY_RESTORE
     const MANIFEST_HEADER *header;
     volatile uint8_t *site;
@@ -1131,6 +1293,7 @@ static uint64_t kshim_base_entry_offset(uint64_t linux_base,
     }
 #endif
     return 4;
+#endif
 }
 
 #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
@@ -1163,6 +1326,148 @@ static void remember_selected_boot(uint32_t target,uint64_t selected_fdt)
 }
 #endif
 
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+KSHIM_GEN2_DERIVE kshim_gen2_derive;
+
+extern uint64_t kshim_image_runtime_base_asm(void);
+extern uint64_t __image_runtime_base__;
+
+/* Nothing below DRAM is worth poking at with the MMU off: a wild physical
+ * read there is how a diagnostic turns into a bus hang. */
+#define GEN2_DRAM_FLOOR UINT64_C(0x80000000)
+
+/* Under the code1 entry protocol this runtime was appended to the base image,
+ * so the base image starts where this runtime runs from minus shim_offset.
+ * Three independent ways of locating this runtime are tried, and a candidate
+ * is only believed when an ARM64 header is actually sitting under it: a wrong
+ * base either jumps into a bus or, worse, looks plausible and dies later. */
+#define GEN2_SEARCH_STEP  UINT64_C(0x10000)
+#define GEN2_SEARCH_SPAN  UINT64_C(0x200000)
+
+/* What the three letters in the report mean for the address the runtime
+ * derived by subtraction: is it inside RAM, does it carry the ARMd magic, and
+ * does the image_size the header declares look real.  The first word is not
+ * checked: this device ships an EFI zboot base image whose code0 is an ADD
+ * rather than the usual branch, so demanding a branch rejects a header that
+ * the loader itself jumps through. */
+#define GEN2_FLOOR_OK     1u
+#define GEN2_MAGIC_OK     2u
+#define GEN2_IMAGE_SZ_OK  4u
+
+static unsigned gen2_header_flags(uint64_t base)
+{
+    const volatile uint32_t *header = (const volatile uint32_t *)(uintptr_t)base;
+    unsigned flags = 0u;
+
+    if (base < GEN2_DRAM_FLOOR)
+        return 0;
+    flags |= GEN2_FLOOR_OK;
+    if (header[0x38 / 4] == 0x644D5241u)
+        flags |= GEN2_MAGIC_OK;
+    if (header[0x10 / 4] != 0 && header[0x10 / 4] < 0x10000000u)
+        flags |= GEN2_IMAGE_SZ_OK;
+    return flags;
+}
+
+static int gen2_header_there(uint64_t base)
+{
+    return gen2_header_flags(base) ==
+           (GEN2_FLOOR_OK | GEN2_MAGIC_OK | GEN2_IMAGE_SZ_OK);
+}
+
+static uint64_t gen2_image_base(unsigned *reason)
+{
+    uint64_t cand[3];
+    unsigned i;
+
+    cand[0] = kshim_image_runtime_base_asm();
+    cand[1] = __image_runtime_base__;
+    cand[2] = kshim_mmu_image_base();
+    for (i = 0; i < 3u; ++i)
+        kshim_gen2_derive.runtime_base[i] = cand[i];
+    kshim_gen2_derive.picked = 3u;
+    kshim_gen2_derive.adjust = 0;
+    kshim_gen2_derive.mode = 3u;
+    kshim_gen2_derive.want = 0;
+    kshim_gen2_derive.want_flags = 0;
+
+    *reason = 0u;
+    if (kshim_pack_contract.magic != KSHIM_PACK_CONTRACT_MAGIC ||
+        kshim_pack_contract.version != KSHIM_PACK_CONTRACT_VERSION) {
+        *reason = 1u;
+        return 0;
+    }
+    if (kshim_pack_contract.shim_offset == 0 ||
+        kshim_pack_contract.base_entry_offset == 0 ||
+        kshim_pack_contract.base_entry_offset >=
+            kshim_pack_contract.shim_offset ||
+        kshim_pack_contract.manifest_offset <
+            kshim_pack_contract.shim_offset ||
+        kshim_pack_contract.manifest_size == 0 ||
+        kshim_pack_contract.manifest_size >= 0x10000) {
+        *reason = 2u;
+        return 0;
+    }
+    for (i = 0; i < 3u; ++i) {
+        uint64_t want;
+
+        if (cand[i] <= kshim_pack_contract.shim_offset) {
+            *reason |= (1u << i);
+            continue;
+        }
+        want = cand[i] - kshim_pack_contract.shim_offset;
+        if (i == 0u) {
+            kshim_gen2_derive.want = want;
+            kshim_gen2_derive.want_flags = gen2_header_flags(want);
+        }
+        if (gen2_header_there(want)) {
+            kshim_gen2_derive.picked = i;
+            kshim_gen2_derive.mode = 0u;
+            return want;
+        }
+        /* The candidate is a genuine address for this runtime, so a header
+         * missing exactly shim_offset below it means the runtime is not that
+         * far behind the base image in memory.  The packer aligns the runtime
+         * slot, so the error is a small alignment difference: walk a bounded
+         * window and only believe a real ARM64 header. */
+        for (uint64_t off = GEN2_SEARCH_STEP;
+             off <= GEN2_SEARCH_SPAN; off += GEN2_SEARCH_STEP) {
+            if (want > off && gen2_header_there(want - off)) {
+                kshim_gen2_derive.picked = i;
+                kshim_gen2_derive.mode = 1u;
+                kshim_gen2_derive.adjust = (uint64_t)(-(int64_t)off);
+                return want - off;
+            }
+            if (gen2_header_there(want + off)) {
+                kshim_gen2_derive.picked = i;
+                kshim_gen2_derive.mode = 1u;
+                kshim_gen2_derive.adjust = off;
+                return want + off;
+            }
+        }
+        *reason |= (1u << i);
+    }
+    /* Nothing had a header under it.  The subtraction is still exact if the
+     * three ways of locating this runtime agree, because the packer put the
+     * runtime shim_offset bytes after the base image and the loader copies
+     * them together.  Take that address on trust: a wrong one faults into the
+     * exception catcher instead of quietly booting something else. */
+    if (cand[0] != 0 && cand[0] == cand[1] && cand[0] == cand[2] &&
+        cand[0] > kshim_pack_contract.shim_offset) {
+        const uint64_t want = cand[0] - kshim_pack_contract.shim_offset;
+
+        if (want >= GEN2_DRAM_FLOOR) {
+            kshim_gen2_derive.picked = 0u;
+            kshim_gen2_derive.mode = 2u;
+            kshim_gen2_derive.adjust = 0;
+            *reason = 0u;
+            return want;
+        }
+    }
+    return 0;
+}
+#endif
+
 int kshim_main(
     uint64_t device_tree_address,
     uint64_t kernel_arg1,
@@ -1173,6 +1478,33 @@ int kshim_main(
     uint64_t manifest_size)
 {
     kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_ENTRY);
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    /* Beacon 2: the assembly preamble (GOT fixups, BSS, stack, RELA) is done
+     * and this C frame exists, so a screen that stops at red means the fault
+     * is in that preamble rather than in anything below. */
+    kshim_diag_beacon(2u);
+#endif
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+    /* code1 entry: the base-image contract does not arrive in registers, so
+     * derive it here and keep what was worked out for the screen report. */
+    {
+        unsigned reason = 0;
+        const uint64_t image_base = gen2_image_base(&reason);
+
+        kshim_gen2_derive.reason = reason;
+        kshim_gen2_derive.image_base = image_base;
+        if (image_base != 0) {
+            linux_base = image_base + kshim_pack_contract.base_entry_offset;
+            manifest_address =
+                image_base + kshim_pack_contract.manifest_offset;
+            manifest_size = kshim_pack_contract.manifest_size;
+            kshim_gen2_derive.entry = linux_base;
+        }
+    }
+#endif
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(3u);
+#endif
 #if KSHIM_DIAGNOSTIC_DT_ONLY
     /* DT-only diagnostic: preserve the exact incoming DT pointer before the
      * shared validation below can clear device_tree_address to 0.  The
@@ -1225,6 +1557,21 @@ int kshim_main(
      * peripherals are probed.  arm64_boot_image is declared noreturn and
      * performs the existing handoff (DAIF/timer masks). */
     uint64_t handoff_fdt = device_tree_address;
+#if defined(KSHIM_DIAG_REPORT) && KSHIM_DIAG_REPORT
+    /* Paint the derived base-image contract on the panel and hold: these are
+     * the exact addresses the handoff below is about to use, and a wrong one
+     * is otherwise indistinguishable from a dead loader. */
+    kshim_diag_report_base(linux_base, manifest_address, manifest_size,
+                           device_tree_address, kernel_arg1, kernel_arg2,
+                           kernel_arg3);
+#endif
+#if defined(KSHIM_DIAG_CATCH) && KSHIM_DIAG_CATCH
+    /* Point VBAR at a vector table that lives in the loader's splash
+     * reservation, so it survives the base kernel taking over: an early fault
+     * stops here with PC/ESR/FAR on the panel instead of vanishing into a
+     * Qualcomm crashdump. */
+    kshim_diag_catch_install();
+#endif
 #if defined(KSHIM_DIAG_PAINT_BASE) && KSHIM_DIAG_PAINT_BASE
     /* Diagnostic report channel: probe the display before leaving, then hand
      * the kernel the DT that carries the report inside its bootargs. */
@@ -1248,10 +1595,48 @@ int kshim_main(
     for (;;)
         asm volatile("wfe");
 #else
-    if (linux_base)
-        arm64_boot_image(
-            linux_base + kshim_base_entry_offset(linux_base, manifest_address),
-            handoff_fdt, kernel_arg1, kernel_arg2, kernel_arg3);
+    if (linux_base) {
+        uint64_t entry =
+            linux_base + kshim_base_entry_offset(linux_base, manifest_address);
+#if defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+        /* With the header restored, the base image is entered where the
+         * loader entered it - offset zero - and the image branches to its
+         * own entry itself.  Entering mid-image skips whatever the header
+         * prologue was doing. */
+        if (kshim_gen2_derive.image_base != 0) {
+            gen2_restore_header(kshim_gen2_derive.image_base);
+#if defined(KSHIM_GEN2_ENTRY_VIA_HEADER) && KSHIM_GEN2_ENTRY_VIA_HEADER
+            entry = kshim_gen2_derive.image_base;
+#else
+            /* The TB320FC round proved the handoff works when the branch
+             * target is the kernel entry itself; entering at offset zero and
+             * re-executing the header branch instead ends in a crashdump, so
+             * follow the branch target the header now holds. */
+            entry = kshim_gen2_derive.image_base +
+                kshim_pack_contract.base_entry_offset;
+#endif
+        }
+#endif
+#if defined(KSHIM_DIAG_REPORT) && KSHIM_DIAG_REPORT
+        kshim_diag_jump_marker(entry);
+#endif
+        /* This image is 4 MiB inside the base image, and a zboot base image
+         * decompresses its payload right after itself: the stack this C code
+         * was using can be overwritten while the base kernel is still using
+         * it.  Move the stack into the loader's splash reservation, which the
+         * firmware DT marks reserved and non-executable, well above both the
+         * frame and the decompression target. */
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+        /* Beacon 3: everything the handoff needs is computed, so a screen
+         * showing this band means the fault is in the payload or in the
+         * jump itself rather than in the derivation above. */
+        kshim_diag_beacon(12u);
+#endif
+        __asm__ volatile("mov sp, %0" :: "r"(
+            (uint64_t)(KSHIM_DIAG_SPLASH_BASE) + 0x2800000ULL) : "memory");
+        arm64_boot_image(entry, handoff_fdt, kernel_arg1, kernel_arg2,
+                         kernel_arg3);
+    }
     for (;;)
         asm volatile("wfe");
 #endif
@@ -1276,6 +1661,9 @@ int kshim_main(
     };
     const int early_mmu_status = kshim_mmu_configure_early(&early_mmu);
     kshim_boot_metrics_set_mmu(kshim_mmu_is_enabled() ? 1U : 0U, early_mmu_status);
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(4u);
+#endif
     /* Read-only device info from the already validated runtime DT, collected
      * once here and handed to the menu. A NULL runtime FDT stays all-unknown;
      * there is no extra FDT probing or validation path. */
@@ -1354,6 +1742,9 @@ int kshim_main(
         runtime_fdt ? fdt_totalsize(runtime_fdt) : 0,
         RuntimeMemorySnapshot,
         sizeof(RuntimeMemorySnapshot));
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(5u);
+#endif
 #if KSHIM_DIAGNOSTIC_DT_ONLY
     /* DT-only diagnostic entry (compile-time): the runtime DT and the
      * ramoops layout were captured read-only and the memory snapshot was
@@ -1407,6 +1798,9 @@ int kshim_main(
     }
 #endif
     kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_RESOURCES);
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(6u);
+#endif
 #if KSHIM_DIAGNOSTIC_RESOURCES_ONLY
     /* Diagnostic checkpoint after DT/console/resource probing: optional
      * resources may be absent and no menu is shown.  A valid runtime FDT and
@@ -1576,6 +1970,9 @@ int kshim_main(
 #if KSHIM_STANDALONE
     return kshim_platform_main(device_tree_address, kernel_arg1, kernel_arg2, kernel_arg3);
 #endif
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    kshim_diag_beacon(7u);
+#endif
     if (linux_base != 0) {
         /* Activate optional repacker source prefixes while retaining the
          * pending/write-once values for m14/m15 and the legacy APIs. */
@@ -1591,7 +1988,12 @@ int kshim_main(
             arm64_boot_linux(linux_base, device_tree_address,
                              4); /* untrusted manifest keeps offset four */
         }
-
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+        /* Beacon 8: the manifest parsed, so the view and its entries are
+         * usable.  This sits outside the settings-store ifdef because the
+         * TB320FC menu defconfig turns that whole chain off. */
+        kshim_diag_beacon(8u);
+#endif
 #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
         const struct kshim_config_values defaults={0,0,(uint32_t)kshim_menu_get_language(), 0, 0};
         (void)storage_settings_native_open(device_info.board,&defaults);
@@ -1631,6 +2033,9 @@ int kshim_main(
         uint32_t boot_target=0;
         uint32_t selected_index = select_image(&view, device_tree_address, linux_base,
                                                &device_info,&boot_target);
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+        kshim_diag_beacon(9u);
+#endif
 #if defined(CONFIG_KSHIM_UFS_SETTINGS) && CONFIG_KSHIM_UFS_SETTINGS
         kshim_platform_bind_settings(NULL);
         if (!storage_settings_native_handoff_safe()) {

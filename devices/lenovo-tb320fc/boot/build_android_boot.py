@@ -105,6 +105,12 @@ ARM64_FLAG_PHYS_ALIGN = 3
 RUNTIME_SIZE = 4 * 1024 * 1024
 MANIFEST_MAGIC = 0x464D504B
 MANIFEST_VERSION = (0, 1)
+# A Gen2 code1 runtime carries its own base-image contract; the repacker
+# finds it by scanning for magic+version followed by four zero quads.
+RUNTIME_CONTRACT_MAGIC = 0x5452504B  # "KPRT"
+RUNTIME_CONTRACT_VERSION = 1
+RUNTIME_CONTRACT_BYTES = 40
+ARM64_HDR_CODE1 = 0x04
 MANIFEST_HEADER_SIZE = 60
 MANIFEST_ENTRY_SIZE = 56
 MANIFEST_ENTRY_ALIGN = 4
@@ -328,7 +334,7 @@ def decode_b(word, at):
     return at + imm26 * 4
 
 
-def parse_arm64_header(kernel):
+def parse_arm64_header(kernel, code1_target=None):
     """Parse the ARM64 Linux image header at the start of the kernel blob.
 
     head.S lays the header out as the EFI signature NOP ('MZ'), a branch
@@ -352,10 +358,17 @@ def parse_arm64_header(kernel):
           ARM64_HDR_CODE1 < entry < len(kernel) and (entry & 3) == 0,
           "0x%x (blob 0x%x)" % (entry, len(kernel)))
     entry_word = le32(kernel, entry)
-    # primary_entry opens with a call that saves the boot arguments, so a
-    # BL as the first word confirms this is the entry and not data.
-    check("arm64:entry-is-call", is_bl(entry_word),
-          "entry word 0x%08x at 0x%x is not a call" % (entry_word, entry))
+    if code1_target is None:
+        # primary_entry opens with a call that saves the boot arguments, so a
+        # BL as the first word confirms this is the entry and not data.
+        check("arm64:entry-is-call", is_bl(entry_word),
+              "entry word 0x%08x at 0x%x is not a call" % (entry_word, entry))
+    else:
+        # code1 protocol: the header branch now leads to the runtime, and the
+        # kernel entry keeps its own instructions untouched.
+        check("arm64:code1-to-runtime", entry == code1_target,
+              "code1 leads to 0x%x expected the runtime at 0x%x"
+              % (entry, code1_target))
     text_offset = le64(kernel, ARM64_HDR_TEXT_OFFSET)
     image_size = le64(kernel, ARM64_HDR_IMAGE_SIZE)
     flags = le64(kernel, ARM64_HDR_FLAGS)
@@ -613,10 +626,106 @@ def patch_stage1_probe(kernel, entry_off, stub_off, shim_off, magic_word):
 
 
 # ---------------------------------------------------------------------------
+# Gen2 code1 entry: no self-modifying base kernel
+# ---------------------------------------------------------------------------
+
+def encode_b(from_off, to_off):
+    imm = to_off - from_off
+    check("b:range", -BL_RANGE < imm < BL_RANGE,
+          "distance 0x%x out of B range" % imm)
+    imm26 = (imm >> 2) & 0x03FFFFFF
+    return 0x14000000 | imm26
+
+
+def patch_code1(kernel, entry_off, shim_off):
+    """Divert the loader at the ARM64 header instead of inside the kernel.
+
+    code1 is the branch the bootloader executes when it enters the image, and
+    it runs exactly once - by the loader, before the kernel exists.  Pointing
+    it at the runtime hands the shim control with the same register state the
+    kernel would have had, while primary_entry keeps every one of its
+    original instructions.  Nothing then has to be written back into the base
+    kernel at runtime: no self-modifying code, no instruction-cache
+    maintenance, and no assumption that the kernel image is mapped writable.
+    """
+    out = bytearray(kernel)
+    code1 = le32(out, ARM64_HDR_CODE1)
+    check("code1:is-b", is_branch(code1), "code1=0x%08x" % code1)
+    target = decode_b(code1, ARM64_HDR_CODE1)
+    check("code1:target-is-entry", target == entry_off,
+          "code1 targets 0x%x, expected the entry 0x%x" % (target, entry_off))
+    word = encode_b(ARM64_HDR_CODE1, shim_off)
+    struct.pack_into("<I", out, ARM64_HDR_CODE1, word)
+    return bytes(out), {"code1_word": "0x%08x" % word, "bl_target": shim_off,
+                        "original_word": "0x%08x" % code1,
+                        "patch_words": [ARM64_HDR_CODE1]}
+
+
+def patch_runtime_contract(runtime, shim_off, entry_off, manifest_off,
+                           manifest_size):
+    """Fill in the contract block the Gen2 code1 runtime carries.
+
+    Entered from a branch rather than a call, the runtime cannot recover the
+    base image from a link register, and its own link address tells it only
+    where it was loaded.  The repacker writes the offsets it knows instead:
+    the runtime subtracts shim_offset from its own load address to find the
+    base image and reads the manifest from there.
+    """
+    needle = struct.pack("<II", RUNTIME_CONTRACT_MAGIC,
+                         RUNTIME_CONTRACT_VERSION) + b"\x00" * 32
+    at = runtime.find(needle)
+    check("contract:found", at >= 0,
+          "no %d-byte contract block in the runtime" % RUNTIME_CONTRACT_BYTES)
+    check("contract:unique", runtime.find(needle, at + 1) < 0,
+          "contract block appears more than once")
+    check("contract:aligned", at % 8 == 0, "0x%x" % at)
+    out = bytearray(runtime)
+    struct.pack_into("<QQQQ", out, at + 8, shim_off, entry_off, manifest_off,
+                     manifest_size)
+    return bytes(out), at
+
+
+def replay_code1_contract(kernel, runtime_blob, runtime_at, manifest_off,
+                          manifest_size, contract_off, entry_off):
+    """Replay the runtime code1 self-location on the packed image."""
+    magic, version, shim, base_entry, mf_off, mf_size = struct.unpack_from(
+        "<IIQQQQ", runtime_blob, contract_off)
+    check("replay:contract-magic", magic == RUNTIME_CONTRACT_MAGIC,
+          "0x%08x" % magic)
+    check("replay:contract-version", version == RUNTIME_CONTRACT_VERSION,
+          "%d" % version)
+    check("replay:contract-shim", shim == runtime_at,
+          "0x%x expected 0x%x" % (shim, runtime_at))
+    check("replay:contract-entry", base_entry == entry_off,
+          "0x%x expected 0x%x" % (base_entry, entry_off))
+    check("replay:contract-manifest",
+          mf_off == manifest_off and mf_size == manifest_size,
+          "off=0x%x size=0x%x expected off=0x%x size=0x%x"
+          % (mf_off, mf_size, manifest_off, manifest_size))
+    # The runtime computes image_base = own_load_address - shim_offset, then
+    # entry = image_base + base_entry_offset and manifest = image_base +
+    # manifest_offset, so both have to land inside the packed image.
+    image_base = runtime_at - shim
+    check("replay:contract-image-base", image_base == 0, "0x%x" % image_base)
+    check("replay:contract-entry-in-image",
+          0 < image_base + base_entry < len(kernel),
+          "0x%x" % (image_base + base_entry))
+    check("replay:contract-manifest-in-image",
+          image_base + mf_off + mf_size <= len(kernel),
+          "0x%x+0x%x vs image 0x%x" % (image_base + mf_off, mf_size,
+                                       len(kernel)))
+    magic, vmaj, vmin = struct.unpack_from("<IHH", kernel, image_base + mf_off)
+    check("replay:contract-manifest-header",
+          magic == MANIFEST_MAGIC and (vmaj, vmin) == MANIFEST_VERSION,
+          "magic=0x%08x version=%r" % (magic, (vmaj, vmin)))
+
+
+# ---------------------------------------------------------------------------
 # Packing
 # ---------------------------------------------------------------------------
 
-def pack(stock_boot, runtime, base_name, shim_name, stage1_probe=False):
+def pack(stock_boot, runtime, base_name, shim_name, stage1_probe=False,
+         entry_code1=False):
     hdr = parse_boot_header(stock_boot)
     check("pack:magic", hdr["magic"] == MAGIC, repr(hdr["magic"]))
     check("pack:version", hdr["version"] == 4, "version=%d" % hdr["version"])
@@ -668,10 +777,28 @@ def pack(stock_boot, runtime, base_name, shim_name, stage1_probe=False):
     manifest_size = len(build_manifest([0] * 5, base_entry, shim_entry))
     size_of_image = align_up(shim_off + RUNTIME_SIZE + manifest_size,
                              pe["section_align"])
-    patched_kernel, backup, layout = patch_entry_site(
-        stock_kernel, entry_off, shim_off, manifest_size)
+    manifest_off = shim_off + RUNTIME_SIZE
+    if entry_code1:
+        # The loader is diverted at the ARM64 header, so no base kernel
+        # instruction is displaced: the manifest backup records code that is
+        # never moved and is informative only.
+        backup = [le64(stock_kernel, entry_off + off)
+                  for off in (0x00, 0x10, 0x20, 0x28, 0x30)]
+        patched_kernel, code1 = patch_code1(stock_kernel, entry_off, shim_off)
+        layout = {
+            "linux_base": entry_off,
+            "shim_off": shim_off,
+            "manifest_off": manifest_off,
+            "packed_size": manifest_off + manifest_size - entry_off,
+            "code1": code1,
+        }
+    else:
+        patched_kernel, backup, layout = patch_entry_site(
+            stock_kernel, entry_off, shim_off, manifest_size)
     patched_kernel, bounds = patch_loader_bounds(
         patched_kernel, pe, arm, shim_off, RUNTIME_SIZE, manifest_size)
+    if entry_code1 and stage1_probe:
+        raise StageError("pack", "--entry-code1 and --stage1-probe are mutually exclusive")
     if stage1_probe:
         # The payload is only useful if the loader carried it into memory.
         # Relay the entry BL through a stub that lives in the header padding
@@ -684,6 +811,11 @@ def pack(stock_boot, runtime, base_name, shim_name, stage1_probe=False):
         layout["probe"] = probe
     else:
         layout["probe"] = None
+    if entry_code1:
+        patched_runtime, contract_off = patch_runtime_contract(
+            runtime, shim_off, entry_off, manifest_off, manifest_size)
+    else:
+        patched_runtime, contract_off = runtime, None
     manifest = build_manifest(backup, base_entry, shim_entry)
     check("pack:manifest-size", len(manifest) == manifest_size,
           "0x%x expected 0x%x" % (len(manifest), manifest_size))
@@ -692,7 +824,7 @@ def pack(stock_boot, runtime, base_name, shim_name, stage1_probe=False):
     # blob to exactly image_size/SizeOfImage bytes, so kernel_size, the ARM64
     # image_size and the PE SizeOfImage are one and the same number.
     packed = patched_kernel + b"\x00" * (shim_off - len(patched_kernel))
-    packed += runtime + manifest
+    packed += patched_runtime + manifest
     packed += b"\x00" * (size_of_image - len(packed))
     check("pack:length", len(packed) == size_of_image,
           "len=0x%x size_of_image=0x%x" % (len(packed), size_of_image))
@@ -767,7 +899,10 @@ def pack(stock_boot, runtime, base_name, shim_name, stage1_probe=False):
         "stock_kernel": stock_kernel,
         "stock_kernel_sha256": sha256_bytes(stock_kernel),
         "packed_sha256": sha256_bytes(packed),
-        "runtime_sha256": sha256_bytes(runtime),
+        "runtime_sha256": sha256_bytes(patched_runtime),
+        "runtime_patched": patched_runtime,
+        "entry_mode": "code1" if entry_code1 else "entry-site",
+        "contract_off": contract_off,
     }
 
 
@@ -1083,13 +1218,17 @@ def verify_packed(final, stock_boot, runtime, info, partition_size):
     # Slot 0x00 is a u64: the new BL word plus the original word one
     # (restored from the backup, so unchanged there).  The other four
     # slots are new u64s, so nine words change in total.
-    expected_diffs = {
-        linux_base + 0x00,
-        linux_base + 0x10, linux_base + 0x14,
-        linux_base + 0x20, linux_base + 0x24,
-        linux_base + 0x28, linux_base + 0x2C,
-        linux_base + 0x30, linux_base + 0x34,
-    } | set(info["layout"]["bounds"]["patch_words"])
+    expected_diffs = set(info["layout"]["bounds"]["patch_words"])
+    if info.get("entry_mode") == "code1":
+        expected_diffs |= set(info["layout"]["code1"]["patch_words"])
+    else:
+        expected_diffs |= {
+            linux_base + 0x00,
+            linux_base + 0x10, linux_base + 0x14,
+            linux_base + 0x20, linux_base + 0x24,
+            linux_base + 0x28, linux_base + 0x2C,
+            linux_base + 0x30, linux_base + 0x34,
+        }
     if layout.get("probe") is not None:
         expected_diffs |= set(layout["probe"]["patch_words"])
     diff_words = set(word_diff_offsets(stock_kernel, kernel))
@@ -1098,15 +1237,32 @@ def verify_packed(final, stock_boot, runtime, info, partition_size):
               [hex(w) for w in sorted(diff_words - expected_diffs)],
               [hex(w) for w in sorted(expected_diffs - diff_words)]))
 
-    bl = le32(kernel, linux_base)
-    bl_target = decode_bl(bl, linux_base)
-    expected_bl = encode_bl(linux_base, layout.get("probe")
-                            and layout["probe"]["bl_target"] or shim_off)
-    check("verify:bl-word", bl == expected_bl,
-          "0x%08x expected 0x%08x" % (bl, expected_bl))
-    check("verify:bl-target", bl_target == (layout.get("probe")
-          and layout["probe"]["bl_target"] or shim_off),
-          "0x%x" % bl_target)
+    if info.get("entry_mode") == "code1":
+        code1 = layout["code1"]
+        word = le32(kernel, ARM64_HDR_CODE1)
+        check("verify:code1-word", word == int(code1["code1_word"], 16),
+              "0x%08x expected %s" % (word, code1["code1_word"]))
+        redirected = decode_b(word, ARM64_HDR_CODE1)
+        check("verify:code1-target", redirected == shim_off,
+              "0x%x expected 0x%x" % (redirected, shim_off))
+        # The base kernel entry has to be byte identical to stock: that is
+        # the entire point of the code1 protocol.
+        check("verify:entry-untouched",
+              kernel[linux_base:linux_base + 0x40]
+              == stock_kernel[linux_base:linux_base + 0x40],
+              "first diff at 0x%x"
+              % first_diff(kernel[linux_base:linux_base + 0x40],
+                           stock_kernel[linux_base:linux_base + 0x40]))
+    else:
+        bl = le32(kernel, linux_base)
+        bl_target = decode_bl(bl, linux_base)
+        expected_bl = encode_bl(linux_base, layout.get("probe")
+                                and layout["probe"]["bl_target"] or shim_off)
+        check("verify:bl-word", bl == expected_bl,
+              "0x%08x expected 0x%08x" % (bl, expected_bl))
+        check("verify:bl-target", bl_target == (layout.get("probe")
+              and layout["probe"]["bl_target"] or shim_off),
+              "0x%x" % bl_target)
 
     probe = layout.get("probe")
     if probe is not None:
@@ -1131,22 +1287,24 @@ def verify_packed(final, stock_boot, runtime, info, partition_size):
         check("verify:probe-magic", encoded == magic,
               "stub compares against 0x%08x, runtime first word 0x%08x"
               % (encoded, magic))
-    check("verify:packed-size-slot", le64(kernel, linux_base + 0x10) ==
-          packed_size, "0x%x" % le64(kernel, linux_base + 0x10))
-    check("verify:manifest-offset-slot",
-          le64(kernel, linux_base + 0x20) == manifest_off - linux_base,
-          "0x%x" % le64(kernel, linux_base + 0x20))
-    check("verify:manifest-size-slot",
-          le64(kernel, linux_base + 0x28) == len(manifest),
-          "0x%x" % le64(kernel, linux_base + 0x28))
-    check("verify:shim-offset-slot",
-          le64(kernel, linux_base + 0x30) == shim_off - linux_base,
-          "0x%x" % le64(kernel, linux_base + 0x30))
+    if info.get("entry_mode") != "code1":
+        check("verify:packed-size-slot", le64(kernel, linux_base + 0x10) ==
+              packed_size, "0x%x" % le64(kernel, linux_base + 0x10))
+        check("verify:manifest-offset-slot",
+              le64(kernel, linux_base + 0x20) == manifest_off - linux_base,
+              "0x%x" % le64(kernel, linux_base + 0x20))
+        check("verify:manifest-size-slot",
+              le64(kernel, linux_base + 0x28) == len(manifest),
+              "0x%x" % le64(kernel, linux_base + 0x28))
+        check("verify:shim-offset-slot",
+              le64(kernel, linux_base + 0x30) == shim_off - linux_base,
+              "0x%x" % le64(kernel, linux_base + 0x30))
 
+    runtime_blob = info["runtime_patched"]
     check("verify:runtime-region",
-          kernel[shim_off:shim_off + RUNTIME_SIZE] == runtime,
+          kernel[shim_off:shim_off + RUNTIME_SIZE] == runtime_blob,
           "first diff at 0x%x" % first_diff(
-              kernel[shim_off:shim_off + RUNTIME_SIZE], runtime))
+              kernel[shim_off:shim_off + RUNTIME_SIZE], runtime_blob))
     check("verify:manifest-bytes",
           kernel[manifest_off:manifest_off + len(manifest)] == manifest,
           "first diff at 0x%x" % first_diff(
@@ -1156,7 +1314,9 @@ def verify_packed(final, stock_boot, runtime, info, partition_size):
     # runtime is declared as a real section with VA == PointerToRawData, so a
     # section-mapping loader and a flat-copying loader agree on one address.
     pe_packed = parse_pe(kernel)
-    arm_packed = parse_arm64_header(kernel)
+    arm_packed = parse_arm64_header(
+        kernel, code1_target=(shim_off if info.get("entry_mode") == "code1"
+                               else None))
     check("verify:bounds-unified",
           len(packed) == le32(final, HDR_KERN_SIZE_OFF)
           == arm_packed["image_size"] == pe_packed["size_of_image"],
@@ -1177,13 +1337,19 @@ def verify_packed(final, stock_boot, runtime, info, partition_size):
                     % (sec["name"], sec["virtual_address"],
                        sec["raw_pointer"], sec["raw_size"])
                     for sec in pe_packed["sections"]))
-    check("verify:header-contract-kept",
-          arm_packed["text_offset"] == info["arm64"]["text_offset"]
-          and arm_packed["flags"] == info["arm64"]["flags"]
-          and arm_packed["code0"] == info["arm64"]["code0"]
-          and arm_packed["code1"] == info["arm64"]["code1"]
-          and pe_packed["entry_rva"] == info["pe"]["entry_rva"],
-          "text_offset/flags/code0/code1/PE entry must stay intact")
+    header_kept = (arm_packed["text_offset"] == info["arm64"]["text_offset"]
+                   and arm_packed["flags"] == info["arm64"]["flags"]
+                   and arm_packed["code0"] == info["arm64"]["code0"]
+                   and pe_packed["entry_rva"] == info["pe"]["entry_rva"])
+    if info.get("entry_mode") == "code1":
+        # code1 is the one header field the code1 protocol redirects, and
+        # verify:code1-word plus verify:entry-untouched pin down where it goes.
+        header_kept = header_kept and is_branch(arm_packed["code1"])
+    else:
+        header_kept = (header_kept
+                       and arm_packed["code1"] == info["arm64"]["code1"])
+    check("verify:header-contract-kept", header_kept,
+          "text_offset/flags/code0/PE entry must stay intact")
     check("verify:runtime-gap-zero",
           kernel[info["kernel_size"]:shim_off]
           == b"\x00" * (shim_off - info["kernel_size"]),
@@ -1215,8 +1381,12 @@ def verify_packed(final, stock_boot, runtime, info, partition_size):
           tail_off + len(tail) + 4096 <= partition_size,
           "tail_end=0x%x" % (tail_off + len(tail)))
 
-    replay_get_manifest(kernel, stock_kernel, linux_base, manifest_off,
-                        len(manifest), info["backup"])
+    if info.get("entry_mode") == "code1":
+        replay_code1_contract(kernel, runtime_blob, shim_off, manifest_off,
+                              len(manifest), info["contract_off"], linux_base)
+    else:
+        replay_get_manifest(kernel, stock_kernel, linux_base, manifest_off,
+                            len(manifest), info["backup"])
 
     check("verify:entry-in-payload",
           linux_base + 0x38 <= info["pe"]["last_nonzero"],
@@ -1447,6 +1617,11 @@ def main(argv=None):
                          "in the header padding that only enters the attached "
                          "runtime when its first word is resident, and spins "
                          "forever otherwise")
+    ap.add_argument("--entry-code1", action="store_true",
+                    help="Gen2: divert the loader at the ARM64 image header "
+                         "branch (code1) instead of patching instructions "
+                         "inside the base kernel entry, so the base kernel "
+                         "text is never written at runtime")
     ap.add_argument("--round-trip-only", action="store_true",
                     help="validate the stock image model only; no runtime "
                          "or avbtool needed")
@@ -1486,7 +1661,8 @@ def main(argv=None):
     else:
         set_stage("pack")
         raw, footer, info = pack(stock_boot, runtime, args.base_name,
-                                 args.shim_name, args.stage1_probe)
+                                 args.shim_name, args.stage1_probe,
+                                 args.entry_code1)
         if footer is None:
             check("pack:no-footer-pad", len(raw) <= args.partition_size,
                   "0x%x" % len(raw))

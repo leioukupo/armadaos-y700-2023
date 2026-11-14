@@ -1,0 +1,46 @@
+# Gen2 hardware bring-up round 1: the same TB320FC profile with the whole
+# native UFS chain off.  Nothing in this profile touches UFS registers, so the
+# only variables are the Gen2 entry handoff, the SDE scan-out discovery and the
+# PON/SPMI volume keys.  The stock SM8475 device tree says the UFS host sits
+# behind apps-smmu@15000000 with stream id 0xe0, not the 0x60 the Gen4/Gen5
+# storage probe hardcodes, so the UFS chain stays off until that is resolved.
+CONFIG_QCOM_KEYS=y
+CONFIG_QCOM_SPMI=y
+CONFIG_QCOM_KEY_DEBOUNCE_SAMPLES=2
+# CONFIG_KSHIM_QEMU_PLATFORM is not set
+CONFIG_KSHIM_FRAMEBUFFER=y
+CONFIG_KSHIM_LVGL=y
+# UI pixels rotate CCW into the native scanout. The TB320FC panel is
+# 1600x2560 portrait; the tablet is held landscape like the TB322FC, so the
+# menu uses the same 270-degree rotation the Gen4 profile uses.
+CONFIG_KSHIM_UI_ROTATION_CCW=270
+CONFIG_KSHIM_MENU_ENTRY_DURATION_MS=0
+# 20 logical 2560-pixel rows of the rotated landscape UI, within the
+# existing 4 MiB runtime slot (2560 * 20 * 4 + 512 LVGL alignment).
+CONFIG_KSHIM_LVGL_BUFFER_BYTES=205312
+# CONFIG_KSHIM_TOUCH is not set
+# CONFIG_KSHIM_SMP is not set
+# CONFIG_KSHIM_UEFI_TEST_MENU is not set
+# CONFIG_ENABLE_BANNER is not set
+CONFIG_DEBUG_LEVEL_NONE=y
+# CONFIG_KSHIM_DEBUG_CONSOLE is not set
+CONFIG_ASSERT_HALT=y
+CONFIG_KSHIM_MENU_STYLE_STAR_CHART=y
+CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=y
+CONFIG_KSHIM_MENU_SESSION_SETTINGS=y
+
+CONFIG_KSHIM_MENU_CHINESE=y
+CONFIG_KSHIM_MENU_ENTRY_DETAILS=y
+CONFIG_KSHIM_MENU_BASE_ANDROID=y
+CONFIG_KSHIM_MENU_POWER_ACTIONS=y
+CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=y
+CONFIG_KSHIM_QCOM_REBOOT=y
+CONFIG_KSHIM_EDL_DISABLE_SDI=y
+# CONFIG_KSHIM_BOOT_TIMING is not set
+
+# No settings store in this profile: nothing is written to storage, and boot
+# diagnostics stay off.
+# Gen2 entry protocol: the repacker patches the kernel entry prologue itself,
+# so the manifest header backup is written back and the base image is entered
+# at offset zero instead of the Gen4 offset four.
+CONFIG_KSHIM_GEN2_ENTRY_RESTORE=y

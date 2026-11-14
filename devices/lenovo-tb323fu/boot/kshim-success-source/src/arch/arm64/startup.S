@@ -33,6 +33,23 @@ _KernelSize:
     .long   0           // reserve5
 
 _platform_init:
+#if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+    /* Beacon 1: the ABL splash is what the panel scans out while this runtime
+     * runs, so flooding the reservation with one solid colour proves the
+     * attached shim was entered at all.  Only x8..x15 are used, so x0..x3
+     * stay intact for the payload.  Later beacons repaint the top half, then
+     * the top quarter, so a frozen screen reads bottom-up: red = entered,
+     * green = reached kshim_main, blue = reached the base-image handoff. */
+    mov     x8, KSHIM_DIAG_SPLASH_BASE
+    mov     x9, #(KSHIM_DIAG_SPLASH_BYTES / 16)
+    mov     x10, #0xffff0000
+    movk    x10, #0xffff, lsl #48
+1:  stp     x10, x10, [x8], #16
+    subs    x9, x9, #1
+    b.ne    1b
+    dsb     sy
+    isb
+#endif
     /* Store linux kernel params */
     mov x19, x0
     mov x20, x1
@@ -41,6 +58,15 @@ _platform_init:
 
 #if defined(KSHIM_STANDALONE) && KSHIM_STANDALONE
     // A directly loaded standalone image has no base-image manifest metadata.
+    mov x23, xzr
+    mov x24, xzr
+    mov x25, xzr
+#elif defined(KSHIM_GEN2_CODE1_ENTRY) && KSHIM_GEN2_CODE1_ENTRY
+    /* Entered by the B that the base image keeps in ARM64 header code1, so
+     * there is no call site: x30 is still the loader's own link value and
+     * must not be used as an entry address.  The base-image contract lives
+     * inside this image instead (kshim_pack_contract), which the packer
+     * filled in, and the base kernel text stays untouched. */
     mov x23, xzr
     mov x24, xzr
     mov x25, xzr
@@ -174,6 +200,16 @@ _start_kshim:
     add  x7, x7, :lo12:kshim_main
     br   x7
 
+/* An independent answer to where this image actually runs from: it is
+ * computed from the program counter, so it cannot be stale the way a
+ * stored value can. */
+.global kshim_image_runtime_base_asm
+kshim_image_runtime_base_asm:
+    adrp x9, _start
+    add  x9, x9, :lo12:_start
+    mov  x0, x9
+    ret
+
 .global arm64_boot_linux
 arm64_boot_linux:
     mov  x8, x0
@@ -183,11 +219,18 @@ arm64_boot_linux:
     mov  x2, xzr
     mov  x3, xzr
     msr  daifset, #0xf
+#if defined(KSHIM_QUIRK_CNTPCT_DISABLE) && KSHIM_QUIRK_CNTPCT_DISABLE
+    /* Some firmware leaves the EL1 physical counter in a state the payload
+     * cannot use; disabling EL1PCTEN here worked around that.  Gen2 (SM847C)
+     * needs the counter alive: with EL1PCTEN cleared the arch timer stops,
+     * RCU stalls and the Android kernel panics into a Qualcomm crashdump
+     * (kernel.panic_on_rcu_stall=1). */
     mrs  x9, cntp_ctl_el0
     bic  x9, x9, #1
     msr  cntp_ctl_el0, x9
     dsb  sy
     isb
+#endif
     add  x8, x8, x10
     br   x8
 
@@ -199,11 +242,18 @@ arm64_boot_image:
     mov  x2, x3
     mov  x3, x4
     msr  daifset, #0xf
+#if defined(KSHIM_QUIRK_CNTPCT_DISABLE) && KSHIM_QUIRK_CNTPCT_DISABLE
+    /* Some firmware leaves the EL1 physical counter in a state the payload
+     * cannot use; disabling EL1PCTEN here worked around that.  Gen2 (SM847C)
+     * needs the counter alive: with EL1PCTEN cleared the arch timer stops,
+     * RCU stalls and the Android kernel panics into a Qualcomm crashdump
+     * (kernel.panic_on_rcu_stall=1). */
     mrs  x9, cntp_ctl_el0
     bic  x9, x9, #1
     msr  cntp_ctl_el0, x9
     dsb  sy
     isb
+#endif
     br   x8
 
 /* Should never get here */

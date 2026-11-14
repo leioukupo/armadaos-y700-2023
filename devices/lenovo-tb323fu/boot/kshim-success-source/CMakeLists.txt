@@ -54,12 +54,26 @@ option(KSHIM_STANDALONE "Boot directly as an ARM64 Image instead of an attached 
 option(KSHIM_DIAGNOSTIC_BASE_ONLY "Diagnostic only: hand off to the packed Linux base image before any DT/console/peripheral work; no menu and no peripheral probes; incompatible with KSHIM_STANDALONE" OFF)
 option(KSHIM_DIAGNOSTIC_RESOURCES_ONLY "Diagnostic only: probe DT/console/resources, then hand off to the packed Linux base image after quiescing the console; no menu and no post-checkpoint peripheral probes; incompatible with KSHIM_STANDALONE and KSHIM_DIAGNOSTIC_BASE_ONLY" OFF)
 option(KSHIM_RAMOOPS_RECOVERY_ONLY "Recovery only: read-only ramoops recovery entry after runtime DT validation; no console/resources/UI/Linux; incompatible with KSHIM_STANDALONE and the diagnostic handoff switches" OFF)
+option(KSHIM_GEN2_CODE1_ENTRY "Gen2 only: reach the shim from the ARM64 image-header branch (code1) of the base image instead of patching instructions inside the base kernel entry, so the base kernel text is never written and the handoff needs no self-modifying-code cache maintenance" OFF)
 option(KSHIM_DIAG_PAINT_BASE "Diagnostic only: paint a banded test pattern over the TB320FC splash reservation immediately before every base-image handoff" OFF)
 option(KSHIM_DIAG_PAINT_SPLASH "Diagnostic only: fill the TB320FC splash reservation with black/white bars immediately before the base-image handoff, so the panel itself proves the attached shim was entered" OFF)
 set(KSHIM_DIAG_SPLASH_BASE "0xb8000000" CACHE STRING "Splash scanout base used by KSHIM_DIAG_PAINT_SPLASH")
 set(KSHIM_DIAG_SPLASH_BYTES "0x2b00000" CACHE STRING "Splash bytes painted by KSHIM_DIAG_PAINT_SPLASH")
 option(KSHIM_DIAG_PAINT_CANDIDATES "Diagnostic only: with KSHIM_DIAG_PAINT_BASE, also paint over SDE register values that look like a splash framebuffer; once the shim really runs those pointers can be ordinary kernel DRAM, so this stays off unless explicitly wanted" OFF)
 option(KSHIM_DIAG_HALT_BEFORE_HANDOFF "Diagnostic only: after the TB320FC diagnostic probe, stop instead of handing off to the packed Linux base image, so a device that never leaves the boot splash proves the attached shim was entered; requires KSHIM_DIAGNOSTIC_BASE_ONLY" OFF)
+
+option(KSHIM_DIAG_BEACON "Diagnostic only: paint cumulative solid colour bands over the TB320FC splash at runtime milestones, so a frozen panel shows how far the attached shim got" OFF)
+set(KSHIM_DIAG_BEACON_FRAME_BYTES "0xfa0000" CACHE STRING "Scanout frame bytes covered by the stage beacons (1600x2560 RGBA for TB320FC)")
+option(KSHIM_GEN2_ENTRY_VIA_HEADER "Gen2 only: hand off at offset zero of the base image and let the restored ARM64 header branch reach the kernel entry; off means branch to image_base + base_entry_offset directly" OFF)
+option(KSHIM_QUIRK_CNTPCT_DISABLE "Handoff quirk: clear CNTCTL_EL0.EL1PCTEN before entering the payload; Gen2 must keep the EL1 physical counter enabled so this stays off for TB320FC" ON)
+option(KSHIM_DIAG_REPORT "Diagnostic only: paint the base-image contract on the ABL splash immediately before the base-image handoff, and hold, so the addresses the handoff uses can be read off the panel" OFF)
+option(KSHIM_DIAG_CATCH "Diagnostic only: install an exception vector table inside the ABL splash reservation immediately before the base-image handoff, so an early fault in the base kernel is reported on the panel instead of ending in a crashdump" OFF)
+set(KSHIM_DIAG_FB_WIDTH "1600" CACHE STRING "Splash scanout width used by the screen reports")
+set(KSHIM_DIAG_FB_HEIGHT "2560" CACHE STRING "Splash scanout height used by the screen reports")
+set(KSHIM_DIAG_FB_STRIDE "6400" CACHE STRING "Splash scanout stride in bytes used by the screen reports")
+set(KSHIM_DIAG_FB_SCALE "3" CACHE STRING "Pixel scale of the report font")
+set(KSHIM_DIAG_SCRATCH_OFF "0x01000000" CACHE STRING "Offset inside the splash reservation used by the catcher vector table and stack")
+set(KSHIM_DIAG_REPORT_HOLD_MS "6000" CACHE STRING "Milliseconds the handoff report stays on the panel")
 option(KSHIM_DIAGNOSTIC_DT_ONLY "Diagnostic only: pure DT parsing (validation, device info, layout-only ramoops capture, memory snapshot) then an immediate handoff to the packed Linux base image; no console, resources, peripherals, MMU or UI; incompatible with KSHIM_STANDALONE and the other diagnostic/recovery switches" OFF)
 if(KSHIM_DIAGNOSTIC_BASE_ONLY AND KSHIM_STANDALONE)
     message(FATAL_ERROR "KSHIM_DIAGNOSTIC_BASE_ONLY is forbidden together with KSHIM_STANDALONE")
@@ -82,6 +96,9 @@ endif()
 if(KSHIM_DIAGNOSTIC_DT_ONLY AND (KSHIM_STANDALONE OR KSHIM_DIAGNOSTIC_BASE_ONLY OR KSHIM_DIAGNOSTIC_RESOURCES_ONLY OR KSHIM_RAMOOPS_RECOVERY_ONLY))
     message(FATAL_ERROR "KSHIM_DIAGNOSTIC_DT_ONLY is forbidden together with KSHIM_STANDALONE, KSHIM_DIAGNOSTIC_BASE_ONLY, KSHIM_DIAGNOSTIC_RESOURCES_ONLY or KSHIM_RAMOOPS_RECOVERY_ONLY")
 endif()
+if(KSHIM_GEN2_CODE1_ENTRY AND KSHIM_STANDALONE)
+    message(FATAL_ERROR "KSHIM_GEN2_CODE1_ENTRY is forbidden together with KSHIM_STANDALONE")
+endif()
 if(KSHIM_DIAG_PAINT_CANDIDATES AND NOT KSHIM_DIAG_PAINT_BASE)
     message(FATAL_ERROR "KSHIM_DIAG_PAINT_CANDIDATES requires KSHIM_DIAG_PAINT_BASE")
 endif()
@@ -92,6 +109,7 @@ set(KSHIM_LINK_ADDRESS "0x40200000" CACHE STRING "Runtime link address")
 set(KSHIM_RUNTIME_SLOT_SIZE "0x400000" CACHE STRING "Reserved runtime bytes (4 MiB for manifest protocol)")
 set(KSHIM_UEFI_PAYLOAD "" CACHE FILEPATH "Optional raw UEFI FD for standalone test menu")
 add_compile_definitions(KSHIM_STANDALONE=$<BOOL:${KSHIM_STANDALONE}>
+    KSHIM_GEN2_CODE1_ENTRY=$<BOOL:${KSHIM_GEN2_CODE1_ENTRY}>
     KSHIM_DIAGNOSTIC_BASE_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_BASE_ONLY}>
     KSHIM_DIAGNOSTIC_RESOURCES_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_RESOURCES_ONLY}>
     KSHIM_DIAGNOSTIC_DT_ONLY=$<BOOL:${KSHIM_DIAGNOSTIC_DT_ONLY}>
@@ -101,6 +119,18 @@ add_compile_definitions(KSHIM_STANDALONE=$<BOOL:${KSHIM_STANDALONE}>
     KSHIM_DIAG_SPLASH_BYTES=${KSHIM_DIAG_SPLASH_BYTES}
     KSHIM_DIAG_PAINT_CANDIDATES=$<BOOL:${KSHIM_DIAG_PAINT_CANDIDATES}>
     KSHIM_DIAG_HALT_BEFORE_HANDOFF=$<BOOL:${KSHIM_DIAG_HALT_BEFORE_HANDOFF}>
+    KSHIM_DIAG_REPORT=$<BOOL:${KSHIM_DIAG_REPORT}>
+    KSHIM_DIAG_CATCH=$<BOOL:${KSHIM_DIAG_CATCH}>
+    KSHIM_DIAG_FB_WIDTH=${KSHIM_DIAG_FB_WIDTH}
+    KSHIM_DIAG_FB_HEIGHT=${KSHIM_DIAG_FB_HEIGHT}
+    KSHIM_DIAG_FB_STRIDE=${KSHIM_DIAG_FB_STRIDE}
+    KSHIM_DIAG_FB_SCALE=${KSHIM_DIAG_FB_SCALE}
+    KSHIM_DIAG_SCRATCH_OFF=${KSHIM_DIAG_SCRATCH_OFF}
+    KSHIM_DIAG_REPORT_HOLD_MS=${KSHIM_DIAG_REPORT_HOLD_MS}
+    KSHIM_QUIRK_CNTPCT_DISABLE=$<BOOL:${KSHIM_QUIRK_CNTPCT_DISABLE}>
+    KSHIM_DIAG_BEACON=$<BOOL:${KSHIM_DIAG_BEACON}>
+    KSHIM_DIAG_BEACON_FRAME_BYTES=${KSHIM_DIAG_BEACON_FRAME_BYTES}
+    KSHIM_GEN2_ENTRY_VIA_HEADER=$<BOOL:${KSHIM_GEN2_ENTRY_VIA_HEADER}>
     KSHIM_RAMOOPS_RECOVERY_ONLY=$<BOOL:${KSHIM_RAMOOPS_RECOVERY_ONLY}>
     KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL=$<BOOL:${KSHIM_TB323FU_ANDROID_TOUCH_4M8_TRIAL}>
     KSHIM_LINK_ADDRESS=${KSHIM_LINK_ADDRESS} KSHIM_RUNTIME_SLOT_SIZE=${KSHIM_RUNTIME_SLOT_SIZE})
@@ -283,6 +313,11 @@ add_custom_command(
     DEPENDS ${LINKER_SCRIPT} ${LINKER_HEADERS}
     COMMENT "Preprocessing linker script"
 )
+
+if(KSHIM_DIAG_REPORT OR KSHIM_DIAG_CATCH)
+    list(APPEND SRC_FILES src/core/diag_fb.c src/core/diag_catch.c
+        src/arch/arm64/diag_catch.S)
+endif()
 
 add_custom_target(preprocess_linker_script ALL DEPENDS ${PROCESSED_LINKER_SCRIPT})
 add_executable(${OUTPUT_NAME}.elf ${SRC_FILES})

@@ -106,3 +106,32 @@ python3 build_android_boot.py --stock-boot boot_a.img --round-trip-only
 ## kShimC 补丁
 
 [kshim-gen2-entry-protocol.patch](../patches/boot/kshim-gen2-entry-protocol.patch) 对 `src/core/main.c` 做 5 处编辑：新增布局自适应 helper（`word_is_branch` + `base_image_entry_offset`），并在 m30 reject/ok、内存 handoff 失败、正常 Linux 四条 handoff 路径改用该 helper 计算入口偏移。已用 `git apply --check` 验证，round-trip 字节一致。
+
+## 二代实机打通（k150/k151 轮）
+
+runtime 在 comfyui（Ubuntu 24.04，交叉工具链在 /usr/bin）构建，依赖按 [DEPENDENCIES.md](../../lenovo-tb323fu/boot/kshim-success-source/DEPENDENCIES.md) 的固定提交：
+
+| profile | kShimC.bin sha256 | 用途 |
+|---|---|---|
+| tb320fc_android_defconfig | 9a6b92b5ce5c14479ef7f39c8edabc80edf1631f5552b0df12718e9ae10264c0 | 全功能（含 UFS 原生 IO 链） |
+| tb320fc_menu_defconfig | 24d3d85f257fb4e058a648dec2874a5c3a3736b078816d06c708f6df7557281f | 关掉整条 UFS 链，只留入口协议 + SDE 显示 + PON/SPMI 音量键 |
+
+以 device-backup-20261029/boot_b.img 为基座：--round-trip-only 37/37，真打包 125/125 通过，产物 packtest/boot-b-k151.img（sha256 bd623c65f5effea70bed7b600f5168a2037d128f8b3be16fe411f81ad9b4ceab，归档在 comfyui /root/y700-artifacts/）。
+
+### 二代存储事实（原厂 DT vb_02.dts）
+
+| 事实 | 值 | 与源码 |
+|---|---|---|
+| UFS host | ufshc@1d84000，reg = 0x1d84000/0x3000（另有 ice 0x1d88000、ice_hwkm 0x1d90000） | 与 storage_probe.c 的 UFS_BASE/UFS_SIZE 一致 |
+| IOMMU | apps-smmu@15000000，reg = 0x15000000/0x100000，qcom,qsmmu-v500，SMR 覆盖 0x78、CB 覆盖 0x4e | 与 SMMU_BASE/SMMU_SIZE 一致 |
+| UFS stream id | iommus = <&apps_smmu 0xe0 0x0> | 源码硬编码 UFS_SID/UFS_STREAM_ID = 0x60 只匹配 SM8750/Kaanapali，二代需要 0xe0 |
+
+所以 UFS 原生 IO（设置存储、从存储读载荷）在二代上是已知坏的；tb320fc_menu_defconfig 先把 KSHIM_UFS_NATIVE_IO/LINK_WAKE/DEVICE_WAKE/SETTINGS 全关，把这一轮的不确定性限制在入口回写、SDE scan-out 发现、音量键三件事上。
+
+### 刷写与回滚
+
+- 刷：.work/flash-kshim.ps1（fastboot flash boot_b + set_active b + reboot）。
+- 回：.work/flash-kshim.ps1 -Restore 放回 ArmadaOS 的 boot（comfyui /root/y700-artifacts/boot-b-a150.img）。
+- boot_a 全程不动：fastboot --set-active=a 就是原厂 Android，任何一轮都能退出。
+
+观察顺序：菜单是否画出来（STAR_CHART 彩色界面）→ 音量上下能否移动光标 → Power 确认 → 安卓是否真从 b 槽起来（这一步才证明 CONFIG_KSHIM_GEN2_ENTRY_RESTORE 的五字回写与 offset-0 入口是对的）。
