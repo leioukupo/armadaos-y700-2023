@@ -68,16 +68,45 @@ dnf5 -y install --setopt=install_weak_deps=False \
 rm -f /usr/share/wireplumber/wireplumber.conf.d/media-role-nodes.conf
 
 # Patched KWin lets devices pin Plasma's virtual keyboard to a configured output.
-dnf5 -y install --setopt=install_weak_deps=False \
-    /packages/kwin/kwin-[0-9]*.rpm \
-    /packages/kwin/kwin-common-[0-9]*.rpm \
-    /packages/kwin/kwin-libs-[0-9]*.rpm
+#
+# Fedora 44 split kglobalacceld and kdecoration out of the kwin SRPM. A locally
+# pinned kwin drags the rest of Plasma back to its own era, but those two
+# split-out libraries only exist in the repository at the newer version, so the
+# image ends up with e.g. kwin 6.7.5 against kglobalacceld 6.8.2 and
+# kwin_wayland dies on an undefined KGlobalAccelD symbol the moment a session
+# starts. Builds that do not need Armada's KWin/PowerDevil patches take the
+# whole Plasma set from the repository instead, so every piece agrees.
+if [[ "${ARMADA_PLASMA_FROM_REPO:-0}" = 1 ]]; then
+    dnf5 -y install --setopt=install_weak_deps=False \
+        kwin kwin-common kwin-libs kglobalacceld kdecoration powerdevil
+else
+    dnf5 -y install --setopt=install_weak_deps=False \
+        /packages/kwin/kwin-[0-9]*.rpm \
+        /packages/kwin/kwin-common-[0-9]*.rpm \
+        /packages/kwin/kwin-libs-[0-9]*.rpm
 
-# Carry Plasma Mobile's input-region crash fix until Fedora backports it.
-dnf5 -y install --setopt=install_weak_deps=False \
-    /packages/plasma-mobile/plasma-mobile-[0-9]*.rpm \
-    /packages/plasma-mobile/plasma-lookandfeel-fedora-mobile-[0-9]*.rpm
+    # PowerDevil's KWin backend treats 0 as safe; reserve 5% for internal panels.
+    dnf5 -y install --setopt=install_weak_deps=False /packages/powerdevil/powerdevil-*.fc44.armada.*.rpm
+fi
 
-# PowerDevil's KWin backend treats 0 as safe; reserve 5% for internal panels.
-dnf5 -y install --setopt=install_weak_deps=False /packages/powerdevil/powerdevil-*.fc44.armada.*.rpm
+# Gate: the Plasma core set must agree on one version, and KWin must resolve.
+verify_plasma_set() {
+    local pkgs versions unresolved
+    pkgs=(kwin kwin-libs kglobalacceld kdecoration plasma-workspace
+          plasma-workspace-libs plasma-desktop plasma-mobile powerdevil)
+    versions=$(LC_ALL=C rpm -q --qf '%{version}\n' "${pkgs[@]}" | sort -u)
+    if [[ $(wc -l <<< "${versions}") -ne 1 ]]; then
+        echo "PLASMA_VERSION_SPREAD:"
+        LC_ALL=C rpm -q --qf '%{name} %{version}\n' "${pkgs[@]}" | sort -k2
+        return 1
+    fi
+    unresolved=$(LD_BIND_NOW=1 ldd -r /usr/bin/kwin_wayland 2>&1 | grep -c 'undefined symbol')
+    if [[ "${unresolved}" != 0 ]]; then
+        echo "KWIN_UNRESOLVED_SYMBOLS=${unresolved}"
+        LD_BIND_NOW=1 ldd -r /usr/bin/kwin_wayland 2>&1 | grep 'undefined symbol' | head -6
+        return 1
+    fi
+    echo "PLASMA_SET_OK version=${versions} unresolved=0"
+}
+verify_plasma_set
 
