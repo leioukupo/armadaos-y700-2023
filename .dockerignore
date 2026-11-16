@@ -6,3 +6,7 @@ decky/freedom-control/decky/armada-control/dist
 # Package sources build in packages/Containerfile with packages/ as their own
 # context. The image build consumes only their published images.
 packages
+# Build artifacts land here. Letting them into the context makes every attempt
+# copy a multi-gigabyte .img.gz into the buildah temp dir, which fills the disk.
+output
+output/*

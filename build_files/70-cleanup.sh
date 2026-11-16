@@ -47,22 +47,30 @@ if rpm -q plymouth >/dev/null 2>&1; then
     exit 1
 fi
 
-for package in \
-    armada-jupiter-hw-support \
-    armada-splash \
-    fex-emu-utils \
-    terra-gamescope \
-    terra-gamescope-libs \
-    gamescope-session \
-    gamescope-session-steam \
-    inputplumber \
-    mangohud \
-    mesa-vulkan-drivers \
-    NetworkManager \
-    powerdevil \
-    protontricks \
-    steamos-manager \
-    umtp-responder; do
+# Only locally rebuilt packages carry an ".armada" release. PowerDevil does not
+# when the build takes the Plasma set from Fedora (ARMADA_PLASMA_FROM_REPO=1),
+# where 10b-desktop.sh's version gate covers it instead.
+armada_pkgs=(
+    armada-jupiter-hw-support
+    armada-splash
+    fex-emu-utils
+    terra-gamescope
+    terra-gamescope-libs
+    gamescope-session
+    gamescope-session-steam
+    inputplumber
+    mangohud
+    mesa-vulkan-drivers
+    NetworkManager
+    powerdevil
+    protontricks
+    steamos-manager
+    umtp-responder
+)
+for package in "${armada_pkgs[@]}"; do
+    if [[ "${package}" = powerdevil && "${ARMADA_PLASMA_FROM_REPO:-0}" = 1 ]]; then
+        continue
+    fi
     case "$(rpm -q --qf '%{release}' "$package" 2>/dev/null)" in
         *armada*) ;;
         *) echo "ERROR: patched .armada package not installed: $package"; exit 1 ;;
