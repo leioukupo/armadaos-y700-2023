@@ -5,6 +5,7 @@
 # reach GitHub, then the public GitHub mirrors, and keep the origin as the
 # last resort. Callers still verify sha256/sha512 themselves.
 GH_PROXIES=(
+    "https://jiasu.20010327.xyz/"
     "https://gh-proxy.com/"
     "https://ghfast.top/"
     "https://gh-proxy.org/"
