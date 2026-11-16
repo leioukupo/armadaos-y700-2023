@@ -100,7 +100,9 @@ verify_plasma_set() {
         LC_ALL=C rpm -q --qf '%{name} %{version}\n' "${pkgs[@]}" | sort -k2
         return 1
     fi
-    unresolved=$(LD_BIND_NOW=1 ldd -r /usr/bin/kwin_wayland 2>&1 | grep -c 'undefined symbol')
+    # grep -c exits 1 when nothing matches, which under set -e -o pipefail would
+    # fail the build for the passing case, so let the zero-count path through.
+    unresolved=$(LD_BIND_NOW=1 ldd -r /usr/bin/kwin_wayland 2>&1 | grep -c 'undefined symbol' || true)
     if [[ "${unresolved}" != 0 ]]; then
         echo "KWIN_UNRESOLVED_SYMBOLS=${unresolved}"
         LD_BIND_NOW=1 ldd -r /usr/bin/kwin_wayland 2>&1 | grep 'undefined symbol' | head -6
