@@ -157,6 +157,7 @@ check "the wifi helper pins the NetworkManager default as well" grep -q '90-tb32
 check "the wifi helper applies that pin from the resolved address" grep -q 'nm_conf "${want_mac}"' "$EXEC/wifi"
 check "the wifi helper drops the pin when mac is keep" grep -q 'nm_conf off' "$EXEC/wifi"
 check "the sync clears address bindings the way nmcli accepts" grep -q '802-11-wireless.mac-address ""' "$EXEC/wifi-mac-sync"
+check "the sync re-enables a connection whose IPv6 was switched off" grep -q 'ipv6.method auto' "$EXEC/wifi-mac-sync"
 check "the wifi conf carries mac_nm" grep -q "^mac_nm=on$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
 check "the wifi conf turns address bindings off" grep -q "^mac_bind=off$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
 check "the wifi conf documents the pin" grep -q "^mac=auto$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
@@ -301,6 +302,10 @@ if [ "$1" = -g ] && [ "$2" = 802-11-wireless.mac-address ]; then
     sed 's/:/\\:/g' "$st/$5.bind" 2>/dev/null || true
     exit 0
 fi
+if [ "$1" = -g ] && [ "$2" = ipv6.method ]; then
+    cat "$st/$5.v6" 2>/dev/null || true
+    exit 0
+fi
 if [ "$1" = connection ] && [ "$2" = modify ]; then
     # NetworkManager 1.58 rejects "-<setting>.<property>" for a scalar ("value ... is
     # missing"); a scalar is cleared by giving it an empty value. Refuse the dash form here
@@ -308,6 +313,8 @@ if [ "$1" = connection ] && [ "$2" = modify ]; then
     case "$4" in -*) printf 'Error: value for '%s' is missing.\n' "$4" >&2; exit 2 ;; esac
     if [ "$4" = 802-11-wireless.mac-address ]; then
         if [ "$5" = "" ]; then rm -f "$st/$3.bind"; else echo "$5" > "$st/$3.bind"; fi
+    elif [ "$4" = ipv6.method ]; then
+        echo "$5" > "$st/$3.v6"
     else
         echo "$5" > "$st/$3"
     fi
@@ -353,6 +360,30 @@ printf 'mac=auto\nmac_nm=on\nmac_bind=on\n' > "$work/sync.conf"
 printf '00:03:7F:12:AA:BB\n' > "$work/nmstate/aa11.bind"
 out="$(run_sync)"
 check "mac_bind=on leaves the address binding alone" grep -q 'unbound=0' <<<"$out"
+
+# IPv6: [ipv6] method=disabled is not "no global address" - NetworkManager sets
+# net.ipv6.conf.<iface>.disable_ipv6=1, which also takes the link-local address away, so the
+# interface never sees a router advertisement at all (PROGRESS.md A196).
+printf 'disabled\n' > "$work/nmstate/aa11.v6"
+printf 'auto\n' > "$work/nmstate/cc33.v6"
+: > "$work/nmstate/log"
+printf 'mac=auto\nmac_nm=on\n' > "$work/sync.conf"
+out="$(run_sync)"
+printf '%s\n' "$out"
+check "the sync re-enables a connection that lost IPv6" grep -q 'ipv6=1' <<<"$out"
+check "the sync writes only the connection that needed it" bash -c "grep -q 'modify aa11 ipv6.method' '$work/nmstate/log' && ! grep -q 'modify cc33 ipv6.method' '$work/nmstate/log'"
+out="$(run_sync)"
+check "an already-enabled IPv6 method is left alone" grep -q 'ipv6=0' <<<"$out"
+printf 'mac=auto\nmac_nm=on\nipv6=keep\n' > "$work/sync.conf"
+printf 'ignore\n' > "$work/nmstate/cc33.v6"
+: > "$work/nmstate/log"
+out="$(run_sync)"
+check "ipv6=keep reports nothing to do" grep -q 'ipv6=0' <<<"$out"
+check "ipv6=keep never touches the method" bash -c "! grep -q 'modify cc33 ipv6.method' '$work/nmstate/log'"
+printf 'mac=auto\nmac_nm=on\n' > "$work/sync.conf"
+printf 'manual\n' > "$work/nmstate/aa11.v6"
+out="$(run_sync)"
+check "a manual IPv6 method is never overridden" grep -q 'ipv6=0' <<<"$out"
 
 printf 'mac=keep\nmac_nm=on\n' > "$work/sync.conf"
 out="$(run_sync)"
