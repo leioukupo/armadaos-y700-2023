@@ -15,3 +15,22 @@ PowerButtonAction=128
 
 [LowBattery][SuspendAndShutdown]
 PowerButtonAction=128
+
+# Screen energy saving is switched off for every plan. On a tablet panel PowerDevil
+# is the only thing that idles the display, and on the Y700 Gen 2 that idle blank is
+# not recoverable: the DSI link drops, the panel keeps whatever frame it was last
+# given and the ktz8866 lamp stays lit, so the tablet looks like it froze on the
+# boot logo (PROGRESS.md A172/A144). kscreen refuses to re-enable the only output,
+# so the single way back was a compositor restart - which is exactly what made a
+# healthy boot look dead for this port.
+[AC][DisplayEnergy]
+DPMSDisable=true
+DisplayTimeout=0
+
+[Battery][DisplayEnergy]
+DPMSDisable=true
+DisplayTimeout=0
+
+[LowBattery][DisplayEnergy]
+DPMSDisable=true
+DisplayTimeout=0

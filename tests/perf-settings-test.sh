@@ -514,6 +514,18 @@ check("device-env Gen4 explicit-empty little survives",
       gen4_override.get("ARMADA_LITTLE_CORES") == "''")
 check("device-env Gen4 explicit-empty irq survives",
       gen4_override.get("ARMADA_IRQ_CORES") == "''")
+gen2 = run_device_env("Lenovo Legion Y700 2nd gen")
+check("device-env Gen2 lamp follows the panel",
+      gen2.get("ARMADA_BACKLIGHT_FOLLOWS_PANEL") == "1")
+# SM8475 core topology: 4x A510 + 3x A710 + 1x X2, which is also the shape of the
+# three EPSS freq-domains (cpufreq policy0/4/7).
+check("device-env SM8475 Gen2 little", gen2.get("ARMADA_LITTLE_CORES") == "0-3")
+check("device-env SM8475 Gen2 big", gen2.get("ARMADA_BIG_CORES") == "4-7")
+check("device-env SM8475 Gen2 prime", gen2.get("ARMADA_PRIME_CORES") == "7")
+check("device-env SM8475 Gen2 irq littles", gen2.get("ARMADA_IRQ_CORES") == "0-3")
+check("device-env Gen4 keeps driver blanking",
+      gen4.get("ARMADA_BACKLIGHT_FOLLOWS_PANEL") == "0")
+
 # TB710FU: cpu1 and cpu2 never come online, so the profile replaces the
 # SM8650 defaults (which name them) - as defaults, so overrides still win.
 tb710fu = run_device_env("Lenovo Xiaoxin Pad Pro GT (TB710FU)")
@@ -578,7 +590,12 @@ check("factory default profile", default_profile == "balanced")
 check("factory has 3 fan curves", len(fan_curves) == 3)
 check("profiles keep governor", profile_config["performance"]["cpu_governor"] == "performance")
 check("no [system] -> irq auto", system_config["irq_cores"] == "auto")
-check("underclock tables parsed", "SM8550" in underclocks and "SM8750" in underclocks)
+check("underclock tables parsed",
+      all(soc in underclocks for soc in ("SM8475", "SM8550", "SM8650", "SM8750")))
+check("SM8475 underclock caps use policy0/4/7",
+      set(underclocks["SM8475"]["medium"]) == {"cpu_max_policy0",
+                                               "cpu_max_policy4",
+                                               "cpu_max_policy7"})
 
 etc = os.path.join(WORK, "etc-power.conf")
 with open(etc, "w") as f:
@@ -594,6 +611,122 @@ full_mask = sum(1 << c for c in ALL)
 check("irq auto empty = all", power.irq_mask() == full_mask)
 power.system_config = {"irq_cores": "garbage!"}
 check("irq bad falls back to all", power.irq_mask() == full_mask)
+
+# --- armada-powerd: the lamp follows the panel's power state -----------------
+lamp_sysfs = os.path.join(WORK, "lamp-sysfs")
+lamp_backlight = os.path.join(lamp_sysfs, "backlight", "ktz8866-backlight")
+lamp_connector = os.path.join(lamp_sysfs, "drm", "card1-DSI-1")
+os.makedirs(lamp_backlight)
+os.makedirs(lamp_connector)
+lamp_brightness = os.path.join(lamp_backlight, "brightness")
+lamp_power = os.path.join(lamp_backlight, "bl_power")
+lamp_dpms = os.path.join(lamp_connector, "dpms")
+
+def lamp_write(path, value):
+    with open(path, "w") as handle:
+        handle.write(f"{value}\n")
+
+def lamp_read(path):
+    with open(path) as handle:
+        return handle.read().strip()
+
+lamp_write(lamp_brightness, 461)
+lamp_write(lamp_power, 0)
+lamp_write(lamp_dpms, "On")
+powerd.BACKLIGHT_ROOT = powerd.Path(os.path.join(lamp_sysfs, "backlight"))
+powerd.DRM_ROOT = powerd.Path(os.path.join(lamp_sysfs, "drm"))
+powerd.STATE_FILE = powerd.Path(os.path.join(WORK, "powerd.state"))
+
+
+def lamp_powerd():
+    # A powerd that only carries the panel-lamp state, as if it had just started.
+    fresh = powerd.ArmadaPower.__new__(powerd.ArmadaPower)
+    fresh.env = {"ARMADA_PRIMARY_CONNECTOR": "DSI-1", "ARMADA_PRIMARY_BACKLIGHT": ""}
+    fresh.profile = "balanced"
+    fresh.gpu_level = "auto"
+    fresh.manual_gpu_clock = 0
+    fresh.panel_brightness = 0
+    fresh.panel_lamp_saved = None
+    fresh.panel_lamp_blanked = False
+    fresh.panel_lamp_state_warned = False
+    return fresh
+
+
+lamp = lamp_powerd()
+
+def lamp_state(dpms, bl_power, brightness):
+    lamp_write(lamp_dpms, dpms)
+    lamp_write(lamp_power, bl_power)
+    lamp_write(lamp_brightness, brightness)
+
+lamp_state("On", 0, 461)
+lamp.apply_panel_lamp()
+check("lit panel leaves the lamp alone", lamp_read(lamp_brightness) == "461")
+
+lamp_state("Off", 0, 461)
+lamp.apply_panel_lamp()
+check("powered-down panel kills the lamp", lamp_read(lamp_brightness) == "0")
+check("lamp level remembered for the restore", lamp.panel_lamp_saved == 461)
+
+# The desktop raises brightness again while the panel is still down.
+lamp_write(lamp_brightness, 1535)
+lamp.apply_panel_lamp()
+check("lamp stays dark while the panel is down", lamp_read(lamp_brightness) == "0")
+
+lamp_state("On", 0, 0)
+lamp.apply_panel_lamp()
+check("the last requested lamp level comes back", lamp_read(lamp_brightness) == "1535")
+
+# fake-suspend blanks through bl_power without touching the connector.
+lamp_state("On", 4, 461)
+lamp.apply_panel_lamp()
+check("bl_power blanking kills the lamp too", lamp_read(lamp_brightness) == "0")
+lamp_state("On", 0, 0)
+lamp.apply_panel_lamp()
+check("bl_power wake restores the lamp", lamp_read(lamp_brightness) == "461")
+
+# A connector state that cannot be read must never darken the display.
+os.remove(lamp_dpms)
+lamp.panel_lamp_blanked = False
+lamp.panel_lamp_saved = None
+lamp_write(lamp_power, 0)
+lamp.apply_panel_lamp()
+check("unreadable panel state leaves the lamp lit", lamp_read(lamp_brightness) == "461")
+
+# powerd restarted while the panel was already dark: RAM holds nothing to
+# restore, so the level written to the state file has to carry the wake.
+lamp_state("Off", 4, 0)
+lamp.panel_lamp_saved = None
+lamp.panel_lamp_blanked = False
+lamp.apply_panel_lamp()
+check("a dark lamp behind a dark panel stays dark", lamp_read(lamp_brightness) == "0")
+with open(os.path.join(WORK, "powerd.state")) as handle:
+    stored = handle.read()
+check("the lamp level is persisted for the next boot", "panel_brightness=461" in stored)
+boot = lamp_powerd()
+boot.load_state()
+check("the state file carries the level across restarts", boot.panel_brightness == 461)
+lamp_state("On", 0, 0)
+boot.apply_panel_lamp()
+check("a powerd that booted in the dark still lights the panel",
+      lamp_read(lamp_brightness) == "461")
+
+# No state file, no saved level: wake has to invent a safe brightness.
+lamp_max = os.path.join(lamp_backlight, "max_brightness")
+lamp_write(lamp_max, 2047)
+cold = lamp_powerd()
+lamp_state("On", 0, 0)
+cold.apply_panel_lamp()
+check("a cold powerd lifts the lamp to a safe level", lamp_read(lamp_brightness) == "511")
+lamp_write(lamp_max, 256)
+cold.panel_brightness = 461
+lamp_write(lamp_brightness, 0)
+cold.apply_panel_lamp()
+check("the restored level is clamped to the lamp range", lamp_read(lamp_brightness) == "256")
+
+powerd.BACKLIGHT_ROOT = powerd.Path("/sys/class/backlight")
+powerd.DRM_ROOT = powerd.Path("/sys/class/drm")
+powerd.STATE_FILE = powerd.Path("/var/lib/armada/powerd.state")
 
 # --- armada-control: PerfManager lifecycle ----------------------------------
 control = load_script("armada-control")

@@ -30,6 +30,14 @@ STATE_FILE = Path("/var/lib/armada/powerd.state")
 FACTORY_CONFIG_FILE = Path("/usr/share/armada/power-profiles.conf")
 CONFIG_FILE = Path("/etc/armada/power-profiles.conf")
 FAN_SAFE_PWM = 128
+BACKLIGHT_ROOT = Path("/sys/class/backlight")
+DRM_ROOT = Path("/sys/class/drm")
+PANEL_LAMP_SECONDS = 1
+PANEL_LAMP_FALLBACK_DIVISOR = 4
+
+
+def flag_enabled(value):
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def normalize_profile(profile):
@@ -278,6 +286,7 @@ class ArmadaPower:
         self.scx_spec = None
         self.scx_failed = None
         self.scx_warned = set()
+        self.panel_brightness = 0
         self.load_config()
         self.profile = self.default_profile
         self.discover()
@@ -291,6 +300,7 @@ class ArmadaPower:
             self.set_gpu_manual_clock(self.manual_gpu_clock)
         self.apply_irq_affinity()
         self.apply_sleep_charging_pwm()
+        self.setup_panel_lamp()
         self.fan_tick()
         GLib.timeout_add_seconds(3, self.fan_tick)
 
@@ -605,6 +615,8 @@ class ArmadaPower:
                 self.gpu_level = value
             elif key == "manual_gpu_clock" and value.isdigit():
                 self.manual_gpu_clock = int(value)
+            elif key == "panel_brightness" and value.isdigit():
+                self.panel_brightness = int(value)
 
     def save_state(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -612,6 +624,7 @@ class ArmadaPower:
             f"profile={self.profile}\n"
             f"gpu_level={self.gpu_level}\n"
             f"manual_gpu_clock={self.manual_gpu_clock}\n"
+            f"panel_brightness={getattr(self, "panel_brightness", 0)}\n"
         )
 
     def gpu_freqs(self):
@@ -864,6 +877,118 @@ class ArmadaPower:
     def charging_floor(self, target):
         floor = self.fan_config["charging_pwm"]
         return max(target, floor) if floor and external_power_online() else target
+
+    def setup_panel_lamp(self):
+        self.panel_lamp_saved = None
+        self.panel_lamp_blanked = False
+        self.panel_lamp_state_warned = False
+        if not flag_enabled(self.env.get("ARMADA_BACKLIGHT_FOLLOWS_PANEL", "")):
+            return
+        GLib.timeout_add_seconds(PANEL_LAMP_SECONDS, self.panel_lamp_tick)
+
+    def panel_lamp_tick(self):
+        try:
+            self.apply_panel_lamp()
+        except Exception as exc:
+            print(f"armada-powerd: panel lamp tick failed: {exc}", file=sys.stderr)
+        return True
+
+    def panel_lamp_paths(self):
+        lamp_name = self.env.get("ARMADA_PRIMARY_BACKLIGHT", "").strip()
+        if lamp_name:
+            lamp = BACKLIGHT_ROOT / lamp_name
+            if not (lamp / "brightness").exists():
+                return None, None
+        else:
+            found = sorted(path.parent for path in BACKLIGHT_ROOT.glob("*/brightness"))
+            if len(found) != 1:
+                return None, None
+            lamp = found[0]
+        connector = self.env.get("ARMADA_PRIMARY_CONNECTOR", "").strip()
+        if connector:
+            for card in sorted(DRM_ROOT.glob(f"card*-{connector}")):
+                if (card / "dpms").exists():
+                    return lamp, card / "dpms"
+        return lamp, None
+
+    def panel_lamp_blank(self, lamp, dpms_path):
+        # True = the panel is powered down, False = it is lit, None = unknown.
+        if dpms_path is not None:
+            dpms = read_text(dpms_path).strip()
+            if not dpms:
+                return None
+            if dpms.lower() != "on":
+                return True
+        power = read_text(lamp / "bl_power").strip()
+        return int(power) != 0 if power.isdigit() else None
+
+    def panel_lamp_max(self, lamp):
+        value = read_text(lamp / "max_brightness").strip()
+        return int(value) if value.isdigit() and int(value) > 0 else 0
+
+    def remember_panel_level(self, level):
+        # The lamp level the desktop last wanted while the panel was lit. Keeping
+        # it across restarts is what lets powerd light a panel it never saw lit.
+        if level <= 0 or level == self.panel_brightness:
+            return
+        self.panel_brightness = level
+        try:
+            self.save_state()
+        except OSError as exc:
+            if not self.panel_lamp_state_warned:
+                self.panel_lamp_state_warned = True
+                print(f"armada-powerd: cannot store the lamp level: {exc}", file=sys.stderr)
+
+    def panel_lamp_wake_level(self, lamp, saved):
+        # A lit panel with a dark lamp: powerd restarted while the panel was
+        # already down, or the desktop never came back. Fall back to the level
+        # from before the panel went dark, then to the last one used, then to a
+        # safe slice of the range, so the screen can never stay black.
+        level = saved or self.panel_brightness
+        if level <= 0:
+            level = self.panel_lamp_max(lamp) // PANEL_LAMP_FALLBACK_DIVISOR
+        ceiling = self.panel_lamp_max(lamp)
+        if ceiling:
+            level = min(level, ceiling)
+        return level
+
+    def apply_panel_lamp(self):
+        lamp, dpms_path = self.panel_lamp_paths()
+        if lamp is None:
+            return
+        blank = self.panel_lamp_blank(lamp, dpms_path)
+        if blank is None:
+            return
+        brightness = lamp / "brightness"
+        current_text = read_text(brightness).strip()
+        current = int(current_text) if current_text.isdigit() else 0
+        if blank:
+            if current > 0:
+                self.remember_panel_level(current)
+                self.panel_lamp_saved = current
+                write_text(brightness, 0)
+                if not self.panel_lamp_blanked:
+                    state = read_text(dpms_path).strip() if dpms_path else ""
+                    print(f"armada-powerd: {lamp.name} dark for a powered-down panel "
+                          f"(dpms={state or 'n/a'} bl_power={read_text(lamp / 'bl_power').strip() or 'n/a'})",
+                          file=sys.stderr)
+            self.panel_lamp_blanked = True
+            return
+        was_blanked = self.panel_lamp_blanked
+        self.panel_lamp_blanked = False
+        saved, self.panel_lamp_saved = self.panel_lamp_saved, None
+        if current > 0:
+            # The desktop restores its own brightness on wake; just follow along.
+            self.remember_panel_level(current)
+            return
+        level = self.panel_lamp_wake_level(lamp, saved)
+        if level <= 0:
+            return
+        write_text(brightness, level)
+        self.remember_panel_level(level)
+        print(f"armada-powerd: {lamp.name} back to {level} with the panel lit "
+              f"({'saved' if saved else 'restored'}{', first lamp tick' if not was_blanked else ''})",
+              file=sys.stderr)
 
     def fan_tick(self):
         self.perf_tick()
