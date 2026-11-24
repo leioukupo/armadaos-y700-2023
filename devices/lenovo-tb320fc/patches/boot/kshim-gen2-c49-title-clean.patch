@@ -1,0 +1,96 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] kshim-gen2: c49, keep the launcher title free of the UFS report
+
+The menu title was replaced by the one-shot UFS read report
+("UFS Read 10 s.. rc.. rel.. p........") as a side effect of enabling
+CONFIG_KSHIM_UFS_READ_PROBE, but that symbol is the boot path itself: route A's
+storage_ufs_read_native/storage_ufs_read_probe/storage_ufs_payload all hang off
+it in CMakeLists.txt, so it cannot be turned off. Split the paint from the
+feature with a new KSHIM_UFS_TITLE_REPORT (default n); nothing is lost, because
+main.c already prints the same report ("kshim: ufs st ...") into the ramlog ring
+that the payload kernel replays into dmesg.
+
+Applied to the kShimC Gen2 tree at comfyui:/srv/y700/kshim-gen2/src (originals
+backed up in /srv/y700/g4/a149/c49-orig/). Built as c49: 4194304 bytes, no
+unresolved symbols, kShimC.bin sha256
+d53b20b4d4ee183f056c23bd21a95267084bd2bec9aa74d0fed58e2cc85b687a.
+
+diff --git a/src/Kconfig b/src/Kconfig
+--- a/src/Kconfig
++++ b/src/Kconfig
+@@ -43,6 +43,18 @@
+         disk and stores nothing outside that strip. The storage IO order,
+         report layout and unsafe-release halt are unchanged.
+ 
++config KSHIM_UFS_TITLE_REPORT
++    bool "Show the one-shot UFS read report in the launcher title"
++    depends on KSHIM_UFS_READ_PROBE
++    default n
++    help
++        Diagnostic only. Replaces the launcher title with the last one-shot
++        read-only UFS report (stage, status, release plus the payload probe
++        bits) because the title is the one frame of the menu anyone reliably
++        photographs. The same report is already written into the ramlog ring
++        that the payload kernel replays, so a production profile can keep the
++        real title and still read the numbers afterwards.
++
+ config KSHIM_UFS_LINK_WAKE
+     bool "Manage inherited UFS link power"
+     depends on KSHIM_UFS_NATIVE_IO
+diff --git a/src/core/menu_locale.c b/src/core/menu_locale.c
+--- a/src/core/menu_locale.c
++++ b/src/core/menu_locale.c
+@@ -315,7 +315,12 @@
+     if ((unsigned)id >= (unsigned)KSHIM_TEXT_COUNT) {
+         return "";
+     }
+-#if defined(CONFIG_KSHIM_UFS_READ_PROBE) && CONFIG_KSHIM_UFS_READ_PROBE
++    /* The probe itself is load-bearing for route A; painting its report over the
++     * launcher title is not, and it is what users complained about. Keep the
++     * report in the ramlog (main.c prints "kshim: ufs st ...") and put the title
++     * behind its own diagnostic switch. */
++#if defined(CONFIG_KSHIM_UFS_READ_PROBE) && CONFIG_KSHIM_UFS_READ_PROBE && \
++    defined(CONFIG_KSHIM_UFS_TITLE_REPORT) && CONFIG_KSHIM_UFS_TITLE_REPORT
+     if (id == KSHIM_TEXT_TITLE) {
+         static char probe_title[80];
+         const struct kshim_ufs_read_report *read_report = storage_ufs_read_entry_report();
+@@ -344,7 +349,8 @@
+ #endif
+         return probe_title;
+     }
+-#elif defined(CONFIG_KSHIM_STORAGE_ENTRY_PROBE) && CONFIG_KSHIM_STORAGE_ENTRY_PROBE
++#elif defined(CONFIG_KSHIM_STORAGE_ENTRY_PROBE) && CONFIG_KSHIM_STORAGE_ENTRY_PROBE && \
++    defined(CONFIG_KSHIM_UFS_TITLE_REPORT) && CONFIG_KSHIM_UFS_TITLE_REPORT
+     if (id == KSHIM_TEXT_TITLE) {
+         static char probe_title[80];
+         const struct storage_probe_snapshot *probe = storage_probe_entry_snapshot();
+diff --git a/src/core/main.c b/src/core/main.c
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -1988,9 +1988,9 @@
+     /* One line that can never be mistaken for another round: the
+      * replay window is small and the images look alike. */
+ #if defined(CONFIG_KSHIM_UFS_PAYLOAD_BOOT) && CONFIG_KSHIM_UFS_PAYLOAD_BOOT
+-    printf("kshim: build c48 diag-off routeA on\n");
++    printf("kshim: build c49 title-clean routeA on\n");
+ #else
+-    printf("kshim: build c48 diag-off routeA off\n");
++    printf("kshim: build c49 title-clean routeA off\n");
+ #endif
+ #endif
+ #if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+diff --git a/configs/tb320fc_ufs_b_defconfig b/configs/tb320fc_ufs_b_defconfig
+--- a/configs/tb320fc_ufs_b_defconfig
++++ b/configs/tb320fc_ufs_b_defconfig
+@@ -76,6 +76,9 @@
+ CONFIG_KSHIM_UFS_LINK_WAKE=y
+ CONFIG_KSHIM_UFS_DEVICE_WAKE=y
+ CONFIG_KSHIM_UFS_READ_PROBE=y
++# c49: the title is the user's frame, not a debug readout. The report stays
++# in the ramlog ring, which the payload kernel replays into dmesg.
++# CONFIG_KSHIM_UFS_TITLE_REPORT is not set
+ CONFIG_KSHIM_UFS_READ_SCREEN=y
+ CONFIG_KSHIM_UFS_AB_SCAN=y
+ CONFIG_KSHIM_UFS_PAYLOAD_PROBE=y
+-- 
+2.47.0

@@ -101,6 +101,7 @@ ARM64_HDR_FLAGS = 0x18
 ARM64_HDR_MAGIC = 0x38
 ARM64_HDR_PE_OFF = 0x3C
 ARM64_EFI_SIG_NOP = 0x91005A4D
+ARM64_EFI_SIG_MZ = 0x5A4D
 ARM64_FLAG_PHYS_ALIGN = 3
 RUNTIME_SIZE = 4 * 1024 * 1024
 MANIFEST_MAGIC = 0x464D504B
@@ -351,7 +352,13 @@ def parse_arm64_header(kernel, code1_target=None):
           repr(kernel[ARM64_HDR_MAGIC:ARM64_HDR_MAGIC + 4]))
     code0 = le32(kernel, ARM64_HDR_CODE0)
     code1 = le32(kernel, ARM64_HDR_CODE1)
-    check("arm64:code0-efi-nop", code0 == ARM64_EFI_SIG_NOP, "0x%08x" % code0)
+    # Only the 'MZ' half of code0 is load-bearing: it is what makes the PE
+    # header at 0x40 legal for the loader.  head.S pairs it with mov x0,x0 (the
+    # EFI signature NOP) in the zboot builds this model was first unpacked
+    # from, while our own kernel build leaves other DOS-stub bytes in the high
+    # half.  The packer never writes code0, so both are packable.
+    check("arm64:code0-efi-sig", (code0 & 0xFFFF) == ARM64_EFI_SIG_MZ,
+          "0x%08x" % code0)
     check("arm64:code1-is-b", is_branch(code1), "code1=0x%08x" % code1)
     entry = decode_b(code1, ARM64_HDR_CODE1)
     check("arm64:entry-in-blob",
@@ -359,10 +366,14 @@ def parse_arm64_header(kernel, code1_target=None):
           "0x%x (blob 0x%x)" % (entry, len(kernel)))
     entry_word = le32(kernel, entry)
     if code1_target is None:
-        # primary_entry opens with a call that saves the boot arguments, so a
-        # BL as the first word confirms this is the entry and not data.
-        check("arm64:entry-is-call", is_bl(entry_word),
-              "entry word 0x%08x at 0x%x is not a call" % (entry_word, entry))
+        # The entry has to be code rather than data: primary_entry opens with a
+        # call that saves the boot arguments, and a zboot trampoline entry opens
+        # with a further branch.  Neither site is ever written under the code1
+        # protocol, so both words only have to prove the target is real.
+        check("arm64:entry-is-code",
+              is_bl(entry_word) or is_branch(entry_word),
+              "entry word 0x%08x at 0x%x is neither a call nor a branch"
+              % (entry_word, entry))
     else:
         # code1 protocol: the header branch now leads to the runtime, and the
         # kernel entry keeps its own instructions untouched.

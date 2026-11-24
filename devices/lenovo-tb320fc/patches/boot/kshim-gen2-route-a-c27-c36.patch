@@ -1,0 +1,1171 @@
+# kShimC / TB320FC route A: read the other boot slot's container out of
+# UFS, stage it in loader-owned DRAM and hand off to it.
+# 
+# Rounds c22..c36.  Per-file base is the oldest snapshot kept on the
+# build host (comfyui:/srv/y700/g4/a149/c27-orig, c29-orig, c31-orig,
+# c25-orig), so this is cumulative for everything we changed after c21;
+# two headers changed without a kept base and are described in PROGRESS
+# A150: src/include/kshim_ramlog.h gained kshim_ramlog_echo_previous().
+# 
+# Fixes that took four rounds to find, all of them silent:
+#   1 board identity: the runtime DT root is "lenovo,asphalt","qcom,sm8475"
+#      with msm-id 0x213 / board-id 0x10008 and no lenovo,tb320fc, and the
+#      tree has no qcom,dsi-display-primary node, so both former TB320FC
+#      tests failed and the capture bailed without a word.
+#   2 this UFS LUN answers READ(16) with sense 5/24/00; READ(10) works.
+#   3 GPT entry first/last LBA sit at +32/+40, not +16/+24 (that is the
+#      unique GUID), so the boot pair printed GUID halves.
+#   4 the pre-copy DTB probe reads one page near the arm64 image_size and
+#      finds nothing; the DTB is found on the staged copy instead.
+# 
+--- a/src/dt/device_info.c
++++ b/src/dt/device_info.c
+@@ -109,6 +109,36 @@
+     return 0;
+ }
+ 
++/* Two big-endian u32 cells, exactly as a Qualcomm root writes qcom,msm-id and
++ * qcom,board-id.  Returns 0 and fills both cells only for a present property
++ * with exactly two cells. */
++static int root_id_pair(const void *fdt, const char *property,
++                        uint32_t *first, uint32_t *second)
++{
++    int len;
++    const fdt32_t *p = fdt_getprop(fdt, 0, property, &len);
++
++    if (!p || len != 8)
++        return -1;
++    *first = fdt32_to_cpu(p[0]);
++    *second = fdt32_to_cpu(p[1]);
++    return 0;
++}
++
++/* True when the root carries the SM8475 hardware id pair this Lenovo board was
++ * measured with: qcom,msm-id 0x213 and qcom,board-id 0x10008.  The second cell
++ * (hardware revision / variant) is deliberately not constrained. */
++static int root_is_sm8475_10008(const void *fdt)
++{
++    uint32_t msm0, msm1, board0, board1;
++
++    if (root_id_pair(fdt, "qcom,msm-id", &msm0, &msm1))
++        return 0;
++    if (root_id_pair(fdt, "qcom,board-id", &board0, &board1))
++        return 0;
++    return msm0 == 0x213U && board0 == 0x10008U;
++}
++
+ /* The measured stock active-reference fingerprint shared by the two stock
+  * board callers: the .096 TB322FC (Elden, CPHY) and the DTB12+DTBO47 TB323FU
+  * (Baldur, DPHY). Only this exact shape has evidence; the .259 BL runtime FDT
+@@ -248,8 +278,18 @@
+          * Novatek NT36523N 1600x2560 C-PHY video-mode module. The plain 144Hz
+          * node spelling carries the same panel name and is accepted as well;
+          * no other SM8475 board ships that panel. */
++        /* A stock TB320FC root names itself with the Lenovo board marker
++         * "lenovo,asphalt" and the SoC marker, and pins the hardware with
++         * qcom,msm-id <0x213 0x10000> plus qcom,board-id <0x10008 0x0>.  The
++         * measured runtime tree of this machine carries no
++         * qcom,dsi-display-primary node at all, so the panel fingerprint below
++         * can never fire here; the exact id pairing above is the honest
++         * substitute and says TB320FC. */
+         tb320 = list_contains(compatible, compat_len, "lenovo,tb320fc") ||
+                 (soc8475 && !soc8750 && !soc8850 &&
++                 list_contains(compatible, compat_len, "lenovo,asphalt") &&
++                 root_is_sm8475_10008(validated_fdt)) ||
++                (soc8475 && !soc8750 && !soc8850 &&
+                  (stock_active_panel(validated_fdt,
+                       "qcom,mdss_dsi_nt36523n_fhd_plus_cphy_144hz_vid",
+                       "nt36523n lcd video mode dsi tcl panel with DSC") ||
+--- a/src/include/device_info.h
++++ b/src/include/device_info.h
+@@ -25,7 +25,9 @@
+  *     "qcom,sm8750" (the trusted Linux TB322FC reference), or the alternate
+  *     strict stock fingerprint described below.
+  *   - DEVICE_BOARD_TB323FU: exact "lenovo,tb323fu" or exact "lenovo,baldur".
+- *   - DEVICE_BOARD_TB320FC: exact "lenovo,tb320fc" (Gen 2), or the measured
++ *   - DEVICE_BOARD_TB320FC: exact "lenovo,tb320fc" (Gen 2), the measured
++ *     stock root pair "lenovo,asphalt" + "qcom,sm8475" together with
++ *     qcom,msm-id 0x213 and qcom,board-id 0x10008, or the measured
+  *     stock fingerprint: an SM8475 root carrying "qcom,cape", "qcom,cape-mtp"
+  *     or "qcom,capep" with no SM8750/SM8850 marker, whose enabled
+  *     "/soc/qcom,dsi-display-primary" resolves qcom,dsi-default-panel to the
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -1521,6 +1521,21 @@
+             sizeof(MemoryOverlay));
+     }
+     if (status == 0) {
++        /* The staged copy sits in ordinary DRAM that the merged tree still
++         * advertises as usable, so the handoff tree has to mark it taken:
++         * otherwise the payload allocates over the image it is running
++         * from.  A failure here is not fatal on its own, and is printed.
++         */
++        int opened = fdt_open_into(HandoffDtb, HandoffDtb,
++                                   sizeof(HandoffDtb));
++        int rsv = opened ? opened
++                        : fdt_add_mem_rsv(HandoffDtb, pay->base,
++                                          pay->ksize);
++
++        printf("pay: dt reserve 0x%lx+0x%x open %d rsv %d\n",
++               (unsigned long)pay->base, pay->ksize, opened, rsv);
++    }
++    if (status == 0) {
+         const struct kshim_initrd_context initrd_context = {
+             .entries = pay->entries,
+             .entry_count = pay->entry_count,
+@@ -1822,6 +1837,13 @@
+      * replays, so a runtime that never reaches a shell still reports itself. */
+     (void)kshim_ramlog_open();
+     printf("kshim: runtime up, mmu %d\n", early_mmu_status);
++    /* One line that can never be mistaken for another round: the
++     * replay window is small and the images look alike. */
++#if defined(CONFIG_KSHIM_UFS_PAYLOAD_BOOT) && CONFIG_KSHIM_UFS_PAYLOAD_BOOT
++    printf("kshim: build c36 routeA on\n");
++#else
++    printf("kshim: build c36 routeA off\n");
++#endif
+ #endif
+ #if defined(KSHIM_DIAG_BEACON) && KSHIM_DIAG_BEACON
+     kshim_diag_beacon(4u);
+@@ -1832,6 +1854,13 @@
+     struct device_info device_info = {0};
+     if (runtime_fdt)
+         device_info_read(runtime_fdt, &device_info);
++#if defined(CONFIG_KSHIM_RAMLOG) && CONFIG_KSHIM_RAMLOG
++    /* Identity drives the storage, display and key paths; when it is
++     * UNKNOWN every board-gated driver refuses silently, so say the
++     * numbers here. 3 = DEVICE_BOARD_TB320FC, 1 = DEVICE_SOC_SM8475. */
++    printf("kshim: board %u soc %u\n", (unsigned)device_info.board,
++           (unsigned)device_info.soc);
++#endif
+ #if defined(CONFIG_KSHIM_STORAGE_ENTRY_PROBE) && CONFIG_KSHIM_STORAGE_ENTRY_PROBE
+ #if defined(CONFIG_KSHIM_UFS_READ_PROBE) && CONFIG_KSHIM_UFS_READ_PROBE
+ #if defined(CONFIG_KSHIM_UFS_READ_SCREEN) && CONFIG_KSHIM_UFS_READ_SCREEN
+@@ -2222,6 +2251,33 @@
+         }
+ #endif
+         kshim_boot_metrics_record_once(KSHIM_BOOT_STAGE_HANDOFF);
++#if defined(CONFIG_KSHIM_UFS_READ_PROBE) && CONFIG_KSHIM_UFS_READ_PROBE
++        /* Short on purpose: the kernel replays at most 14 lines of at most 60
++         * characters, so one compact line here buys the whole UFS decision.
++         */
++        {
++            const struct kshim_ufs_read_report *rr =
++                storage_ufs_read_entry_report();
++
++            printf("kshim: ufs st %u s %d rel %d safe %u ab %x nent %u\n",
++                   rr->stage, rr->status, rr->release_status,
++                   rr->handoff_safe, rr->ab_seen, rr->ab_nent);
++        }
++#endif
++#if defined(CONFIG_KSHIM_UFS_PAYLOAD_BOOT) && CONFIG_KSHIM_UFS_PAYLOAD_BOOT
++        {
++            const struct kshim_pay_image *pay = kshim_pay_result();
++
++            printf("kshim: pay valid %u step %u slot %u base 0x%lx blk %u\n",
++                   pay->valid, pay->status, pay->slot,
++                   (unsigned long)pay->base, pay->blocks);
++        }
++#endif
++#if defined(CONFIG_KSHIM_RAMLOG) && CONFIG_KSHIM_RAMLOG
++        /* Last, so it is the newest content and stays inside the replay
++         * window even when the staging read was chatty. */
++        kshim_ramlog_echo_previous();
++#endif
+ #if defined(CONFIG_KSHIM_UFS_PAYLOAD_BOOT) && CONFIG_KSHIM_UFS_PAYLOAD_BOOT
+         if (selected_index == KSHIM_PAY_ROW)
+             boot_ufs_payload(device_tree_address, linux_base, manifest_address,
+--- a/src/arch/arm64/storage_ufs_read_native.c
++++ b/src/arch/arm64/storage_ufs_read_native.c
+@@ -200,6 +200,10 @@
+     ReadReport.release_status = KSHIM_STORAGE_OK;
+     ReadReport.restore_verified = 1;
+     ReadReport.handoff_safe = 1;
++    /* Whether the board gate below accepts this machine is the single fact
++     * that decides whether any UFS work happens at all, so it is stated
++     * before anything can be refused. 0 = DEVICE_BOARD_UNKNOWN. */
++    printf("ufs: capture board %u\n", (unsigned)actual_board);
+ #if KSHIM_UFS_SCREEN
+     ScreenStage = ScreenEvent = ScreenOffset = ScreenValue = ScreenPhase = ScreenPowerPhase = 0;
+     screen_show(KSHIM_UFS_READ_SCREEN_ENTRY, 0, 0);
+@@ -220,6 +224,8 @@
+     if (actual_board != DEVICE_BOARD_TB322FC &&
+         actual_board != DEVICE_BOARD_TB323FU &&
+         actual_board != DEVICE_BOARD_TB320FC) {
++        printf("ufs: board %u has no native UFS path, nothing probed\n",
++               (unsigned)actual_board);
+         ReadReport.status = KSHIM_UFS_UNSUPPORTED;
+         fresh->status = STORAGE_PROBE_BOARD_UNSUPPORTED;
+ #if KSHIM_UFS_SCREEN
+@@ -279,11 +285,19 @@
+ #if defined(CONFIG_KSHIM_UFS_AB_SCAN) && CONFIG_KSHIM_UFS_AB_SCAN
+     (void)kshim_ufs_ab_scan_probe(&ReadHost, &ReadOps, ReadArena, physical,
+                                   ReadScratch, sizeof(ReadScratch), &ReadReport);
+-    printf("ufs: ab seen %x lun %u nent %u stage %u status %d release %d "
+-           "safe %u pay %x ka %x kb %x\n", ReadReport.ab_seen, ReadReport.ab_lun,
+-           ReadReport.ab_nent, ReadReport.stage, ReadReport.status,
+-           ReadReport.release_status, ReadReport.handoff_safe,
+-           ReadReport.pay_seen, ReadReport.pay_a_ksize, ReadReport.pay_b_ksize);
++    printf("ufs: ab lun %d nent %u stage %u rc %d rel %d\n",
++           ReadReport.ab_lun == KSHIM_UFS_AB_LUN_NONE ? -1 :
++               (int)ReadReport.ab_lun, ReadReport.ab_nent, ReadReport.stage,
++           ReadReport.status, ReadReport.release_status);
++    printf("ufs: seen %x safe %u pay %x ka %x kb %x\n", ReadReport.ab_seen,
++           ReadReport.handoff_safe, ReadReport.pay_seen,
++           ReadReport.pay_a_ksize, ReadReport.pay_b_ksize);
++    /* Controller side of the same story, all of it read back after the
++     * session closed: HCS/IS/doorbell plus the link FSM that was in use.
++     */
++    printf("ufs: hcs %x is %x db %x dv %x lnk %x\n", ReadReport.hcs,
++           ReadReport.is, ReadReport.doorbell, ReadReport.debug_valid,
++           ReadReport.link_before_release.phase);
+ #else
+     (void)kshim_ufs_read_probe(&ReadHost, &ReadOps, ReadArena, physical,
+                               ReadScratch, sizeof(ReadScratch), &ReadReport);
+--- a/src/drivers/storage_ufs_payload.c
++++ b/src/drivers/storage_ufs_payload.c
+@@ -26,6 +26,7 @@
+ #include <storage_ufs_read_probe.h>
+ 
+ #define PAY_PAGE 4096U
++#define PAY_ALIGN 0x200000U /* the loader places images 2 MiB aligned */
+ #define PAY_RUNTIME_SCAN 0x400000U
+ #define PAY_RESERVATION_MAX 64U
+ 
+@@ -36,6 +37,7 @@
+ static uint32_t CtxKsize;
+ static struct dt_range Ranges[PAY_RESERVATION_MAX];
+ static bool NoMap[PAY_RESERVATION_MAX];
++static size_t ResCount; /* valid after pay_pick_window() enumerates */
+ 
+ void kshim_pay_context(const void *runtime_fdt, uint64_t image_base,
+                        uint32_t image_ksize)
+@@ -57,6 +59,12 @@
+            (uint32_t)p[3] << 24;
+ }
+ 
++static uint32_t pay_be32(const uint8_t *p)
++{
++    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
++           (uint32_t)p[2] << 8 | (uint32_t)p[3];
++}
++
+ static uint64_t pay_le64(const uint8_t *p)
+ {
+     return (uint64_t)pay_le32(p) | (uint64_t)pay_le32(p + 4) << 32;
+@@ -72,13 +80,124 @@
+     return a > b ? a - b : b - a;
+ }
+ 
++static uint64_t pay_align_up(uint64_t value, uint64_t align)
++{
++    return (value + align - 1U) & ~(align - 1U);
++}
++
++static int pay_root_cells(const void *fdt, const char *property, int fallback)
++{
++    int len;
++    const fdt32_t *p = fdt_getprop(fdt, 0, property, &len);
++
++    if (!p)
++        return len == -FDT_ERR_NOTFOUND ? fallback : -1;
++    if (len != 4)
++        return -1;
++    return (int)fdt32_to_cpu(*p);
++}
++
++/* A root child is a memory bank when it says so with device_type, exactly as
++ * device_info.c decides, or when only its node name says so. */
++static bool pay_is_memory(const void *fdt, int node)
++{
++    const char *type = dt_string(fdt, node, "device_type");
++    const char *name;
++
++    if (type)
++        return strcmp(type, "memory") == 0;
++    name = fdt_get_name(fdt, node, NULL);
++    return name && (strcmp(name, "memory") == 0 ||
++                    strncmp(name, "memory@", 7) == 0);
++}
++
++/* True when an interval touches anything that is already spoken for: the
++ * reservations the loader published (mapped or not), this runtime's own
++ * image, or the device tree it was handed. */
++static bool pay_taken(uint64_t base, uint64_t size)
++{
++    size_t i;
++
++    if (pay_overlaps(base, size, CtxImage, (uint64_t)CtxKsize + PAY_PAGE))
++        return true;
++    if (CtxFdt && pay_overlaps(base, size, (uint64_t)(uintptr_t)CtxFdt,
++                              (uint64_t)fdt_totalsize((const void *)CtxFdt)))
++        return true;
++    for (i = 0; i < ResCount; ++i)
++        if (pay_overlaps(base, size, Ranges[i].base, Ranges[i].size))
++            return true;
++    return false;
++}
++
++/* Preferred destination: ordinary DRAM the loader declared in /memory, which
++ * is the same pool it was willing to place this image in.  The first attempt
++ * in every bank is the aligned space right above this runtime, because that
++ * is the part of the pool nothing has claimed yet; the aligned start of the
++ * bank is the second attempt.  Candidates are measured against the whole
++ * reservation list, so the scan-out frame, the console rings and the firmware
++ * carveouts all stay untouched. */
++static uint64_t pay_pick_usable(uint64_t need, uint32_t *available)
++{
++    uint64_t best = 0, best_score = UINT64_MAX;
++    int ac = pay_root_cells(CtxFdt, "#address-cells", 2);
++    int sc = pay_root_cells(CtxFdt, "#size-cells", 2);
++    uint64_t span_end = CtxImage + (uint64_t)CtxKsize;
++    int node;
++
++    *available = 0U;
++    if (!CtxFdt || ac < 1 || sc < 1) {
++        printf("pay: /memory cells unusable (%d/%d)\n", ac, sc);
++        return 0;
++    }
++    fdt_for_each_subnode(node, CtxFdt, 0) {
++        int len, banks, i;
++        const fdt32_t *reg;
++
++        if (!pay_is_memory(CtxFdt, node))
++            continue;
++        reg = fdt_getprop(CtxFdt, node, "reg", &len);
++        if (!reg || len <= 0 || len % (4 * (ac + sc)))
++            continue;
++        banks = len / (4 * (ac + sc));
++        for (i = 0; i < banks; ++i) {
++            uint64_t base, size;
++
++            if (dt_raw_reg(CtxFdt, node, (unsigned)i, &base, &size))
++                continue;
++            if (!size || size < need || base + size < base)
++                continue;
++            for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
++                uint64_t cand = attempt == 0U
++                    ? pay_align_up(span_end + PAY_PAGE, PAY_ALIGN)
++                    : pay_align_up(base, PAY_ALIGN);
++
++                if (cand < base)
++                    cand = pay_align_up(base, PAY_ALIGN);
++                if (cand + need < cand || cand + need > base + size)
++                    continue;
++                if (pay_taken(cand, need))
++                    continue;
++                if (pay_dist(cand, CtxImage) < best_score) {
++                    best_score = pay_dist(cand, CtxImage);
++                    best = cand;
++                    *available = (uint32_t)(base + size - cand);
++                }
++            }
++        }
++    }
++    if (best)
++        printf("pay: DRAM window 0x%lx+0x%x for 0x%lx bytes\n",
++               (unsigned long)best, *available, (unsigned long)need);
++    return best;
++}
++
+ /* The loader keeps its own allocations, the display, and every processor
+  * carveout in the device tree it handed over.  A mapped reservation is live
+  * memory (the scan-out frame, the console rings) so it is never a candidate;
+  * an unmapped one is DRAM the firmware deliberately withheld from the
+- * operating system, which is exactly where a second boot image may sit.
+- * Nearest to where this image itself was loaded wins: that is the pool the
+- * loader is already willing to place a boot image in. */
++ * operating system, which is a second-best place for a boot image and is
++ * tried only when no ordinary DRAM window was free.
++ */
+ static uint64_t pay_pick_window(uint64_t need, uint32_t *available)
+ {
+     size_t count = 0, i;
+@@ -93,6 +212,11 @@
+         printf("pay: reservations refused\n");
+         return 0;
+     }
++    ResCount = count;
++    best = pay_pick_usable(need, available);
++    if (best)
++        return best;
++    printf("pay: no free DRAM, trying firmware holes\n");
+     for (i = 0; i < count; ++i) {
+         if (!NoMap[i] || Ranges[i].size < need)
+             continue;
+@@ -140,6 +264,47 @@
+     return 1;
+ }
+ 
++/* An appended device tree is the payload's own description of its hardware,
++ * and the only copy worth trusting is the one inside the bytes that slot was
++ * shipped with.  The pre-copy probe can only read one page near the arm64
++ * image_size, which is not where either of these two containers keeps it, so
++ * the search happens here, on the staged copy: every 8-byte offset (a DTB is
++ * 8-byte aligned) that opens with the DTB magic, declares a plausible length,
++ * stays inside the copy and validates.  The last candidate before the
++ * attached runtime wins, because that is the tree the Image was shipped with;
++ * a vendor image with several trees still ends with the appended one.
++ */
++static uint64_t pay_find_dtb(uint64_t base, uint32_t ksize,
++                             uint32_t runtime_off, uint32_t *size,
++                             unsigned *cand)
++{
++    const uint8_t *img = (const uint8_t *)(uintptr_t)base;
++    uint64_t best = 0;
++    uint32_t best_sz = 0U, limit = runtime_off ? runtime_off : ksize;
++
++    *size = 0U;
++    *cand = 0U;
++    if (limit < 4096U)
++        limit = ksize;
++    for (uint32_t off = 0U; off + 8U <= limit; off += 8U) {
++        uint32_t magic, totalsize;
++
++        if (pay_be32(img + off) != 0xD00DFEEDU)
++            continue;
++        totalsize = pay_be32(img + off + 4U);
++        if (totalsize < 4096U || totalsize > 0x800000U ||
++            (uint64_t)off + totalsize > ksize)
++            continue;
++        ++*cand;
++        if (dt_validate(img + off, (size_t)totalsize) != 0)
++            continue;
++        best = off;
++        best_sz = totalsize;
++    }
++    *size = best_sz;
++    return best;
++}
++
+ /* The attached runtime is entered from the ARM64 header branch, and the
+  * packer wrote the packing contract into that runtime: its own offset, the
+  * base image entry, and where the manifest sits.  Checking the contract's shim
+@@ -258,6 +423,9 @@
+         return;
+     printf("pay: stage seen %x ka %x kb %x\n", report->pay_seen,
+            report->pay_a_ksize, report->pay_b_ksize);
++    printf("pay: probe t a 0x%x+0x%x b 0x%x+0x%x\n",
++           report->pay_a_dtb, report->pay_a_dtbsz,
++           report->pay_b_dtb, report->pay_b_dtbsz);
+     if (!CtxFdt) {
+         Pay.status = KSHIM_PAY_NO_CONTEXT;
+         printf("pay: context was never set\n");
+@@ -341,6 +509,17 @@
+         printf("pay: parse rejected, step %u\n", Pay.status);
+         return;
+     }
++    if (Pay.dtb_sz == 0U) {
++        uint32_t sz = 0U;
++        unsigned cand = 0U;
++        uint64_t off = pay_find_dtb(window, Pay.ksize, Pay.runtime_off,
++                                    &sz, &cand);
++
++        printf("pay: copy dtb 0x%lx+0x%x cand %u\n",
++               (unsigned long)off, sz, cand);
++        Pay.dtb_off = (uint32_t)off;
++        Pay.dtb_sz = sz;
++    }
+     if (Pay.dtb_sz == 0U ||
+         dt_validate((const void *)(uintptr_t)(window + Pay.dtb_off),
+                     (size_t)Pay.dtb_sz) != 0) {
+--- /dev/null	2026-11-21 01:27:58.619159237 +0000
++++ /srv/y700/kshim-gen2/src/src/include/storage_ufs_payload.h	2026-11-22 16:17:16.803218460 +0000
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++#pragma once
++
++#include <stdint.h>
++
++#include <manifest.h>
++#include <storage_block.h>
++#include <storage_ufs_read_probe.h>
++
++/* Route A: read the other A/B slot's boot container out of UFS and keep it as
++ * a flat, byte-identical image in DRAM, so the runtime can enter that slot's
++ * base kernel without ever writing to the disk or swapping the active slot.
++ *
++ * Everything the handoff needs is inside the copied bytes: the ARM64 header
++ * branch says where the attached runtime sits, that runtime carries the
++ * packing contract (its own offset, the base image entry, and the manifest
++ * location), and the manifest names the base image.  Nothing here is derived
++ * from the partition table beyond the LBA range of the partition itself, and
++ * the entry descriptions point into the copy, so the payload describes itself
++ * with the bytes the other slot was packed with rather than with assumptions
++ * made in this slot.
++ */
++struct kshim_pay_image {
++    uint32_t valid;              /* 1 once a verified copy is resident */
++    uint32_t status;             /* 0 ok, otherwise the first failing step */
++    uint32_t slot;               /* 0 = boot_a, 1 = boot_b */
++    uint64_t base;               /* physical = virtual: identity mapped */
++    uint32_t ksize;              /* bytes of the kernel section copied */
++    uint32_t runtime_off;        /* attached runtime, from the header branch */
++    uint32_t entry_off;          /* base image entry, from the contract */
++    uint32_t manifest_off, manifest_size;
++    uint32_t dtb_off, dtb_sz;    /* appended device tree inside the copy */
++    uint32_t blocks, read_fail;
++    const MANIFEST_ENTRY *entries[MANIFEST_MAX_ENTRIES];
++    uint32_t entry_count;
++    const MANIFEST_ENTRY *base_entry;
++    uint32_t name_len;
++    char name[64];               /* manifest name of the base entry, UTF-8 */
++};
++
++/* Failure steps, kept small on purpose: the panel and the console mirror both
++ * print this single number. */
++enum kshim_pay_step {
++    KSHIM_PAY_OK = 0,
++    KSHIM_PAY_NO_CONTEXT = 1,
++    KSHIM_PAY_NO_WINDOW = 2,
++    KSHIM_PAY_MAP = 3,
++    KSHIM_PAY_READ = 4,
++    KSHIM_PAY_HEADER = 5,
++    KSHIM_PAY_CONTRACT = 6,
++    KSHIM_PAY_MANIFEST = 7,
++    KSHIM_PAY_DEVICE_TREE = 8,
++    KSHIM_PAY_RANGE = 9,
++};
++
++/* Menu index that means "the staged copy of the other slot" rather than a
++ * manifest entry. No real entry can reach it. */
++#define KSHIM_PAY_ROW 0xFFFFFFFFU
++
++/* What the caller knows when the storage probe runs: the runtime device tree
++ * (the only source of honest memory reservations) and where the loader put
++ * the image this runtime is executing from. */
++void kshim_pay_context(const void *runtime_fdt, uint64_t image_base,
++                       uint32_t image_ksize);
++
++/* Copy the slot the running image is not. The block device must belong to the
++ * LUN that carries boot_a / boot_b, and the call runs inside the already
++ * claimed controller session. */
++void kshim_pay_stage(const struct kshim_blockdev *block,
++                     struct kshim_ufs_read_report *report);
++
++const struct kshim_pay_image *kshim_pay_result(void);
++/* One-line summary for the read screen; empty until the stage has run. */
++const char *kshim_pay_text(void);
+--- a/src/drivers/storage_ufs.c
++++ b/src/drivers/storage_ufs.c
+@@ -1,5 +1,6 @@
+ /* SPDX-License-Identifier: GPL-3.0-only */
+ #include <storage_ufs.h>
++#include <stdio.h>
+ #include <string.h>
+ 
+ /* Original freestanding implementation. Wire/register definitions checked
+@@ -376,6 +377,17 @@
+     h->power.restore_mode=0;h->power.phase=7;
+     return 0;
+ }
++/* READ(10): opcode, 32-bit LBA at 2..5, 16-bit transfer length at 7..8.
++ * The CDB field is always 16 bytes wide on the wire, so the trailing six
++ * bytes are padding the device ignores because the opcode says ten.
++ */
++static int read10_transfer(struct kshim_ufs_lun *l,uint64_t lba,uint8_t *p)
++{
++    uint8_t cdb[16]={0};
++
++    cdb[0]=0x28;be32(cdb+2,(uint32_t)lba);cdb[8]=1;
++    return scsi(l->host,l->number,cdb,p,l->block.block_size,2);
++}
+ static int block_transfer(struct kshim_ufs_lun *l,uint64_t lba,uint32_t count,
+                            void *data,bool write)
+ {
+@@ -384,9 +396,26 @@
+        (uint64_t)count*l->block.block_size>SIZE_MAX)return KSHIM_STORAGE_RANGE;
+     uint8_t *p=data;
+     for(uint32_t i=0;i<count;++i){
+-        uint8_t cdb[16]={0};cdb[0]=write?0x8a:0x88;cdb[1]=write?8:0;
+-        be64(cdb+2,lba+i);be32(cdb+10,1);
+-        int rc=scsi(l->host,l->number,cdb,p,l->block.block_size,write?1:2);
++        int rc;
++        if(!write&&l->host->read10==2){
++            rc=read10_transfer(l,lba+i,p);
++        }else{
++            uint8_t cdb[16]={0};cdb[0]=write?0x8a:0x88;cdb[1]=write?8:0;
++            be64(cdb+2,lba+i);be32(cdb+10,1);
++            rc=scsi(l->host,l->number,cdb,p,l->block.block_size,write?1:2);
++            if(!write&&rc==KSHIM_UFS_SCSI&&l->host->last_sense_key==5&&
++               l->host->read10==0&&lba+i<0x100000000ULL){
++                uint8_t sk=l->host->last_sense_key;
++                uint8_t sa=l->host->last_sense_asc;
++                uint8_t sq=l->host->last_sense_ascq;
++                int fb=read10_transfer(l,lba+i,p);
++
++                printf("ufs: LU%u READ16 %x/%x.%x READ10 %d\n",l->number,
++                       sk,sa,sq,fb);
++                l->host->read10=fb?1:2;
++                if(!fb)rc=0;
++            }
++        }
+         if(rc)return rc;
+         p+=l->block.block_size;
+     }
+--- a/src/include/storage_ufs.h
++++ b/src/include/storage_ufs.h
+@@ -67,6 +67,12 @@
+      * bit1 means the ASC/ASCQ pair is valid. */
+     uint8_t last_scsi_opcode, last_scsi_lun, last_sense_asc, last_sense_ascq,
+             last_sense_valid;
++    /* Measured read-command shape for this device: 0 undecided, 1 a
++     * READ(10) fallback was tried and also refused, 2 use READ(10).
++     * Gen2 (SM8475 + UFS3.0) refuses READ(16) with sense key 5 / ASC 0x24
++     * while TEST UNIT READY and READ CAPACITY(16) succeed.
++     */
++    uint8_t read10;
+     struct kshim_ufs_link_state link;
+     struct kshim_ufs_power_state power;
+ };
+--- a/src/drivers/storage_ufs_read_probe.c
++++ b/src/drivers/storage_ufs_read_probe.c
+@@ -359,6 +359,11 @@
+     return n[2 * i] == 0U && n[2 * i + 1] == 0U;
+ }
+ 
++/* Zero when LBA 1 is a GPT header this scan can use, otherwise the number
++ * of the test that rejected it: 1 signature, 2 revision / header length /
++ * reserved field, 3 entry size, 4 entry count, 5 header CRC, 6 block size,
++ * 7 header read, 8 array too large, 9 array outside the LUN, 10 array read,
++ * 11 array CRC, 12 no boot_a/boot_b pair. */
+ static int ab_header_ok(const uint8_t *block, uint32_t *nent, uint64_t *ent_lba,
+                         uint32_t *ent_crc)
+ {
+@@ -366,21 +371,21 @@
+     uint32_t stored;
+ 
+     if (memcmp(block, "EFI PART", 8) != 0)
+-        return 0;
++        return 1;
+     if (ab_le32(block + 8) != 0x10000U || ab_le32(block + 12) != 92U ||
+         ab_le32(block + 20) != 0U)
+-        return 0;
++        return 2;
+     if (ab_le32(block + 84) != 128U)
+-        return 0;
++        return 3;
+     *nent = ab_le32(block + 80);
+     if (*nent == 0U || *nent > AB_MAX_ENTRIES)
+-        return 0;
++        return 4;
+     *ent_lba = ab_le64(block + 72);
+     *ent_crc = ab_le32(block + 88);
+     memcpy(head, block, 92);
+     memset(head + 16, 0, 4);
+     stored = ab_le32(block + 16);
+-    return kshim_crc32(head, 92) == stored;
++    return kshim_crc32(head, 92) == stored ? 0 : 5;
+ }
+ 
+ /* One LUN, one GPT header block, at most KSHIM_UFS_AB_ENTRY_BLOCKS of entry
+@@ -392,48 +397,87 @@
+     uint32_t nent = 0U, ent_crc = 0U, array_blocks, used;
+     uint64_t ent_lba = 0U, attrs_a = 0U, attrs_b = 0U;
+     uint64_t first_a = 0U, last_a = 0U, first_b = 0U, last_b = 0U;
+-    int found_a = 0, found_b = 0, i;
++    int found_a = 0, found_b = 0, i, reason = 0, rrc = 0;
++    uint32_t sig = 0U;
+ 
+     if (kshim_ufs_open_lun(host, number, false, &lun))
+         return 0;
+     report->ab_seen |= 1U << 0;
+-    if (lun.block.block_size != AB_BLOCK)
+-        return 0;
+-    if (kshim_block_read(&lun.block, AB_HEADER_LBA, 1, AbHeader))
+-        return 0;
+-    if (!ab_header_ok(AbHeader, &nent, &ent_lba, &ent_crc))
+-        return 0;
+-    report->ab_seen |= 1U << 1;
+-    array_blocks = (nent * 128U + AB_BLOCK - 1U) / AB_BLOCK;
+-    if (array_blocks > KSHIM_UFS_AB_ENTRY_BLOCKS)
+-        return 0;
+-    if (ent_lba + array_blocks > lun.block.block_count)
+-        return 0;
+-    if (kshim_block_read(&lun.block, ent_lba, array_blocks, AbEntries))
+-        return 0;
+-    used = nent * 128U;
+-    if (kshim_crc32(AbEntries, used) != ent_crc)
++    used = 0U;
++    if (lun.block.block_size != AB_BLOCK) {
++        reason = 6;
++    } else if ((rrc = kshim_block_read(&lun.block, AB_HEADER_LBA, 1,
++                                       AbHeader))) {
++        reason = 7;
++    } else {
++        sig = ab_le32(AbHeader);
++        reason = ab_header_ok(AbHeader, &nent, &ent_lba, &ent_crc);
++        if (!reason)
++            report->ab_seen |= 1U << 1;
++    }
++    if (!reason) {
++        array_blocks = (nent * 128U + AB_BLOCK - 1U) / AB_BLOCK;
++        used = nent * 128U;
++        if (array_blocks > KSHIM_UFS_AB_ENTRY_BLOCKS)
++            reason = 8;
++        else if (ent_lba + array_blocks > lun.block.block_count)
++            reason = 9;
++        else if ((rrc = kshim_block_read(&lun.block, ent_lba, array_blocks,
++                                         AbEntries)))
++            reason = 10;
++        else if (kshim_crc32(AbEntries, used) != ent_crc)
++            reason = 11;
++    }
++    /* One line per LUN that answered the INQUIRY.  ab is the LUN, rej is the
++     * test that stopped it (see ab_header_ok), sig is the first four bytes of
++     * LBA 1, and n/ent say how far a real GPT got.
++     */
++    if (reason) {
++        /* op/st/sk/asc come from the last submitted command, oc is the
++         * OCS bits of the UTP response, and po says the host had to be
++         * marked poisoned.  bc stays in the line because a LUN that reads
++         * no GPT at all and a LUN of the wrong size are different
++         * questions.
++         */
++        printf("ab %u rej %d bc %lx st %x s %x/%x.%x oc %x po %d\n",
++               number, reason, (unsigned long)lun.block.block_count,
++               host->last_scsi_status, host->last_sense_key,
++               host->last_sense_asc, host->last_sense_ascq,
++               host->arena ? (unsigned)(host->arena[8] & 15U) : 0xF0U,
++               host->poisoned);
+         return 0;
++    }
+     report->ab_seen |= 1U << 2;
++    printf("ab %u GPT n %u ent %lx\n", number, nent,
++           (unsigned long)ent_lba);
+     for (i = 0; (uint32_t)i < nent; ++i) {
+         const uint8_t *e = AbEntries + (uint32_t)i * 128U;
++        /* first/last LBA live at 32 and 40; 16 and 24 are the unique
++         * GUID, which is what an earlier round mistook for a range.
++         */
+         if (ab_name_is(e, "boot_a")) {
+             attrs_a = ab_le64(e + 48);
+-            first_a = ab_le64(e + 16);
+-            last_a = ab_le64(e + 24);
++            first_a = ab_le64(e + 32);
++            last_a = ab_le64(e + 40);
+             found_a = 1;
+             report->ab_seen |= 1U << 3;
+         } else if (ab_name_is(e, "boot_b")) {
+             attrs_b = ab_le64(e + 48);
+-            first_b = ab_le64(e + 16);
+-            last_b = ab_le64(e + 24);
++            first_b = ab_le64(e + 32);
++            last_b = ab_le64(e + 40);
+             found_b = 1;
+             report->ab_seen |= 1U << 4;
+         }
+     }
+-    if (!found_a || !found_b)
++    if (!found_a || !found_b) {
++        printf("ab %u GPT has no boot pair a %d b %d\n", number, found_a,
++               found_b);
+         return 0;
++    }
+     report->ab_seen |= 1U << 5;
++    printf("ab %u pair a %lx+%lx b %lx+%lx\n", number,
++           (unsigned long)first_a, (unsigned long)(last_a - first_a + 1ULL),
++           (unsigned long)first_b, (unsigned long)(last_b - first_b + 1ULL));
+     report->ab_lun = number;
+     report->ab_nent = nent;
+     report->ab_ent_lba = ent_lba;
+--- a/src/include/storage_ufs_read_probe.h
++++ b/src/include/storage_ufs_read_probe.h
+@@ -48,7 +48,7 @@
+  * 4 boot_b found, 5 the pair sits on this LUN. Only the LUN that carries both
+  * names is described; other LUNs are opened and closed without reads. */
+ #define KSHIM_UFS_AB_LUN_NONE 0xffffffffu
+-#define KSHIM_UFS_AB_MAX_LUNS 6u
++#define KSHIM_UFS_AB_MAX_LUNS 16u /* Gen2 carries boot_a/boot_b on LU7 */
+ #define KSHIM_UFS_AB_ENTRY_BLOCKS 4u
+ /* Explicit field types and natural alignment (no packing) so the native
+  * wrapper and the FDT export's v1 record can consume the same prefix layout.
+--- /dev/null	2026-11-21 01:27:58.619159237 +0000
++++ /srv/y700/kshim-gen2/src/src/core/ramlog.c	2026-11-22 17:38:51.249271730 +0000
+@@ -0,0 +1,194 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++#include <config.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++#include <kshim_mmu.h>
++#include <kshim_ramlog.h>
++
++#if defined(CONFIG_KSHIM_RAMLOG) && CONFIG_KSHIM_RAMLOG
++
++#define Y7L_TOTAL 0x00100000U
++#define Y7L_HDR   0x00001000U
++#define Y7L_DATA  (Y7L_TOTAL - Y7L_HDR)
++#define Y7L_MAGIC 0x59374c32U /* "Y7L2", the layout the kernel driver expects */
++
++struct y7l_header {
++    uint32_t magic, boot, head, spare;
++};
++
++#define Y7L_PREV_MAX 400U
++#define Y7L_PREV_LINE 58U /* y700_ramlog.c truncates each line at 60 */
++
++static volatile struct y7l_header *Header;
++static uint8_t *Data;
++static char PrevTail[Y7L_PREV_MAX + 1];
++static uint32_t PrevBoot, PrevHead;
++static bool PrevValid;
++static void capture_previous(void);
++static uint32_t Head;      /* bytes written by this boot, wraps over Data */
++static uint32_t Boot;
++static bool Ready;
++
++/* The kernel driver replays the first ring it finds valid, in its own array
++ * order: 0x9f500000, then this one, then 0xf0200000.  A previous kernel boot
++ * leaves a valid ring at the first address, which would hide everything this
++ * runtime wrote.  Clearing four bytes there is exactly what that driver does
++ * to every ring at init, so the location is already known to tolerate it. */
++static void suppress_preferred_ring(void)
++{
++#if defined(CONFIG_KSHIM_RAMLOG_FIRST_RING) && CONFIG_KSHIM_RAMLOG_FIRST_RING
++    const uint64_t other = CONFIG_KSHIM_RAMLOG_FIRST_RING;
++
++    volatile uint32_t *magic = (volatile uint32_t *)(uintptr_t)other;
++
++    if (*magic != Y7L_MAGIC)
++        return;
++    *magic = 0U;
++    __asm__ volatile("dc cvac, %0" :: "r"((uint64_t)(uintptr_t)magic)
++                     : "memory");
++    __asm__ volatile("dsb sy" ::: "memory");
++#endif
++}
++
++static void publish_header(void)
++{
++    if (!Header)
++        return;
++    Header->head = Head;
++    Header->spare = Y7L_MAGIC ^ Boot;
++    Header->magic = Y7L_MAGIC;
++    __asm__ volatile("dc cvac, %0"
++                     :: "r"((uint64_t)(uintptr_t)Header) : "memory");
++    __asm__ volatile("dsb sy" ::: "memory");
++}
++
++int kshim_ramlog_open(void)
++{
++    const uint64_t base = CONFIG_KSHIM_RAMLOG_ADDRESS;
++    int map = 0;
++
++    if (Ready)
++        return 0;
++    /* The ring is plain DRAM inside a bank the runtime device tree declares,
++     * so translation, when the runtime turned it on, already covers it.  With
++     * the MMU still off the address is identity by definition, and asking the
++     * page tables for a mapping there is refused rather than needed. */
++    if (kshim_mmu_is_enabled())
++        map = kshim_mmu_add_region(base, Y7L_TOTAL, KSHIM_MMU_NORMAL_WB,
++                                   KSHIM_MMU_READ | KSHIM_MMU_WRITE);
++    Header = (volatile struct y7l_header *)(uintptr_t)base;
++    Data = (uint8_t *)(uintptr_t)(base + Y7L_HDR);
++    PrevValid = (Header->magic == Y7L_MAGIC);
++    PrevBoot = PrevValid ? Header->boot : 0U;
++    PrevHead = PrevValid ? Header->head : 0U;
++    Boot = PrevValid ? Header->boot + 1U : 1U;
++    Head = 0U;
++    /* Before this boot writes a single byte: a kernel that dies mirrors
++     * its own console into the ring, and the ring is the only thing that
++     * reaches the next boot.
++     */
++    capture_previous();
++    suppress_preferred_ring();
++    Header->magic = 0U;
++    Header->boot = Boot;
++    Header->head = 0U;
++    Header->spare = Y7L_MAGIC ^ Boot;
++    __asm__ volatile("dc cvac, %0"
++                     :: "r"((uint64_t)(uintptr_t)Header) : "memory");
++    Ready = true;
++    printf("ramlog: boot %u mmu %d map %d\n", Boot, kshim_mmu_is_enabled(),
++           map);
++    return map;
++}
++
++void kshim_ramlog_write(const char *buffer, uint32_t length)
++{
++    if (!Ready || !buffer || !length)
++        return;
++
++    uint32_t off = Head % Y7L_DATA;
++    while (length) {
++        uint32_t chunk = Y7L_DATA - off;
++
++        if (chunk > length)
++            chunk = length;
++        memcpy(Data + off, buffer, chunk);
++        for (uint32_t at = off; at < off + chunk; at += 64U)
++            __asm__ volatile("dc cvac, %0"
++                             :: "r"((uint64_t)(uintptr_t)(Data + at))
++                             : "memory");
++        Head += chunk;
++        length -= chunk;
++        buffer += chunk;
++        off = 0U;
++    }
++    publish_header();
++}
++
++/* The last Y7L_PREV_MAX bytes of the previous boot, newest byte last,
++ * with anything not printable folded to a space, so one captured boot
++ * stays readable as text on the next one. */
++static void capture_previous(void)
++{
++    uint32_t take, endpos, i, out = 0U;
++
++    PrevTail[0] = 0;
++    if (!PrevValid || PrevHead == 0U)
++        return;
++    take = PrevHead;
++    if (take > Y7L_DATA - 1U)
++        take = Y7L_DATA - 1U;
++    if (take > Y7L_PREV_MAX)
++        take = Y7L_PREV_MAX;
++    endpos = PrevHead % Y7L_DATA; /* one past the last stored byte */
++    for (i = 0U; i < take; ++i) {
++        uint32_t at = (endpos + Y7L_DATA - take + i) % Y7L_DATA;
++        unsigned char c = Data[at];
++
++        PrevTail[out++] = (c >= 32U && c < 127U) ? (char)c : ' ';
++    }
++    PrevTail[out] = 0;
++}
++
++/* Oldest first, so the newest - and therefore most interesting - bytes
++ * land in the last replayed lines. */
++void kshim_ramlog_echo_previous(void)
++{
++    uint32_t i, line = 0U;
++
++    if (!Ready)
++        return;
++    if (!PrevValid || PrevHead == 0U) {
++        printf("prev boot %u: nothing carried over\n", PrevBoot);
++        return;
++    }
++    for (i = 0U; i < sizeof(PrevTail) && PrevTail[i];
++         i += Y7L_PREV_LINE, ++line)
++        printf("prev %u %02u %s\n", PrevBoot, line, PrevTail + i);
++}
++
++void kshim_ramlog_flush(void)
++{
++    publish_header();
++}
++
++uint32_t kshim_ramlog_bytes(void)
++{
++    return Head;
++}
++
++#else /* !CONFIG_KSHIM_RAMLOG */
++
++int kshim_ramlog_open(void) { return -1; }
++void kshim_ramlog_write(const char *buffer, uint32_t length)
++{
++    (void)buffer;
++    (void)length;
++}
++void kshim_ramlog_flush(void) {}
++void kshim_ramlog_echo_previous(void) {}
++uint32_t kshim_ramlog_bytes(void) { return 0U; }
++
++#endif
+--- a/configs/tb320fc_ufs_a_defconfig
++++ b/configs/tb320fc_ufs_a_defconfig
+@@ -77,3 +77,9 @@
+ CONFIG_KSHIM_UFS_READ_SCREEN=y
+ CONFIG_KSHIM_UFS_AB_SCAN=y
+ CONFIG_KSHIM_UFS_PAYLOAD_PROBE=y
++# c25: route A. The other slot's container is copied into a loader-owned DRAM
++# window and entered from its own packing contract; nothing is written to disk.
++CONFIG_KSHIM_UFS_PAYLOAD_BOOT=y
++# c25: the runtime console mirror, read back by the payload kernel's
++# y700_ramlog driver. This profile has no UART console, so it is the log.
++CONFIG_KSHIM_RAMLOG=y
+--- /dev/null	2026-11-21 01:27:58.619159237 +0000
++++ /srv/y700/kshim-gen2/src/configs/tb320fc_ufs_a2_defconfig	2026-11-22 17:38:51.249271730 +0000
+@@ -0,0 +1,87 @@
++# Gen2 hardware bring-up round 1: the same TB320FC profile with the whole
++# native UFS chain off.  Nothing in this profile touches UFS registers, so the
++# only variables are the Gen2 entry handoff, the SDE scan-out discovery and the
++# PON/SPMI volume keys.  The stock SM8475 device tree says the UFS host sits
++# behind apps-smmu@15000000 with stream id 0xe0, not the 0x60 the Gen4/Gen5
++# storage probe hardcodes, so the UFS chain stays off until that is resolved.
++CONFIG_QCOM_KEYS=y
++CONFIG_QCOM_SPMI=y
++CONFIG_QCOM_KEY_DEBOUNCE_SAMPLES=2
++# CONFIG_KSHIM_QEMU_PLATFORM is not set
++CONFIG_KSHIM_FRAMEBUFFER=y
++CONFIG_KSHIM_LVGL=y
++# UI pixels rotate CCW into the native scanout. The TB320FC panel is
++# 1600x2560 portrait; the tablet is held landscape like the TB322FC, so the
++# menu uses the same 270-degree rotation the Gen4 profile uses.
++CONFIG_KSHIM_UI_ROTATION_CCW=270
++CONFIG_KSHIM_MENU_ENTRY_DURATION_MS=0
++# 20 logical 2560-pixel rows of the rotated landscape UI, within the
++# existing 4 MiB runtime slot (2560 * 20 * 4 + 512 LVGL alignment).
++CONFIG_KSHIM_LVGL_BUFFER_BYTES=205312
++# CONFIG_KSHIM_TOUCH is not set
++# CONFIG_KSHIM_SMP is not set
++# CONFIG_KSHIM_UEFI_TEST_MENU is not set
++# CONFIG_ENABLE_BANNER is not set
++CONFIG_DEBUG_LEVEL_NONE=y
++# CONFIG_KSHIM_DEBUG_CONSOLE is not set
++CONFIG_ASSERT_HALT=y
++CONFIG_KSHIM_MENU_STYLE_STAR_CHART=y
++CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=y
++# No settings store on Gen 2 yet: with the session-settings pages on, an
++# unresolved persisted default silently cancels the menu countdown
++# (platform_select(): settings && !default_ok -> timeout = 0), which leaves the
++# panel showing a menu that never boots anything. The manifest default (Android)
++# owns the countdown instead.
++# CONFIG_KSHIM_MENU_SESSION_SETTINGS is not set
++
++CONFIG_KSHIM_MENU_CHINESE=y
++CONFIG_KSHIM_MENU_ENTRY_DETAILS=y
++# CONFIG_KSHIM_MENU_BASE_ANDROID is not set
++# A-slot build: the base image IS our ArmadaOS, so the menu must not
++# describe it as the stock Android; the manifest entry name owns the label.
++CONFIG_KSHIM_MENU_POWER_ACTIONS=y
++CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=y
++CONFIG_KSHIM_QCOM_REBOOT=y
++CONFIG_KSHIM_EDL_DISABLE_SDI=y
++# CONFIG_KSHIM_BOOT_TIMING is not set
++
++# Measured TB320FC scanout. This firmware DT has no cont_splash_region, so the
++# SDE lookup rejects; the loader still leaves a live RGBA frame here.
++CONFIG_KSHIM_FB_MEASURED_SPLASH=y
++CONFIG_KSHIM_FB_MEASURED_RENDER_ADDRESS=0xB8000000
++CONFIG_KSHIM_FB_MEASURED_WIDTH=1600
++CONFIG_KSHIM_FB_MEASURED_HEIGHT=2560
++CONFIG_KSHIM_FB_MEASURED_STRIDE=6400
++# UI scratch from the same display reservation: past the 0xfa0000 frame, below
++# the stack the handoff uses at splash+0x2800000.
++CONFIG_KSHIM_UI_SCRATCH_BASE=0xB9000000
++CONFIG_KSHIM_UI_SCRATCH_SIZE=0x400000
++
++# No settings store in this profile: nothing is written to storage, and boot
++# diagnostics stay off.
++# Gen2 entry protocol: the repacker patches the kernel entry prologue itself,
++# so the manifest header backup is written back and the base image is entered
++# at offset zero instead of the Gen4 offset four.
++CONFIG_KSHIM_GEN2_ENTRY_RESTORE=y
++
++# c21: the same Gen2 menu profile with the native UFS chain enabled and the
++# read-only A/B GPT scan in place of the Gen4 backup-partition probe. The
++# SM8475 UFS stream id (0xe0) is now a per-board fact, so the SMMU identity
++# proof and the claim/release path are the remaining unknowns this round
++# measures. Nothing here writes the disk.
++CONFIG_KSHIM_STORAGE_ENTRY_PROBE=y
++CONFIG_KSHIM_UFS_NATIVE_IO=y
++CONFIG_KSHIM_UFS_LINK_WAKE=y
++CONFIG_KSHIM_UFS_DEVICE_WAKE=y
++CONFIG_KSHIM_UFS_READ_PROBE=y
++CONFIG_KSHIM_UFS_READ_SCREEN=y
++CONFIG_KSHIM_UFS_AB_SCAN=y
++CONFIG_KSHIM_UFS_PAYLOAD_PROBE=y
++# c25: route A. The other slot's container is copied into a loader-owned DRAM
++# window and entered from its own packing contract; nothing is written to disk.
++# CONFIG_KSHIM_UFS_PAYLOAD_BOOT is not set
++# c29: identity plus the read-only A/B scan stay on, the 51 MiB copy is
++# held back, so exactly one variable moves this round.
++# c25: the runtime console mirror, read back by the payload kernel's
++# y700_ramlog driver. This profile has no UART console, so it is the log.
++CONFIG_KSHIM_RAMLOG=y
+--- /dev/null	2026-11-21 01:27:58.619159237 +0000
++++ /srv/y700/kshim-gen2/src/configs/tb320fc_ufs_b_defconfig	2026-11-22 18:15:25.396122002 +0000
+@@ -0,0 +1,87 @@
++# Gen2 hardware bring-up round 1: the same TB320FC profile with the whole
++# native UFS chain off.  Nothing in this profile touches UFS registers, so the
++# only variables are the Gen2 entry handoff, the SDE scan-out discovery and the
++# PON/SPMI volume keys.  The stock SM8475 device tree says the UFS host sits
++# behind apps-smmu@15000000 with stream id 0xe0, not the 0x60 the Gen4/Gen5
++# storage probe hardcodes, so the UFS chain stays off until that is resolved.
++CONFIG_QCOM_KEYS=y
++CONFIG_QCOM_SPMI=y
++CONFIG_QCOM_KEY_DEBOUNCE_SAMPLES=2
++# CONFIG_KSHIM_QEMU_PLATFORM is not set
++CONFIG_KSHIM_FRAMEBUFFER=y
++CONFIG_KSHIM_LVGL=y
++# UI pixels rotate CCW into the native scanout. The TB320FC panel is
++# 1600x2560 portrait; the tablet is held landscape like the TB322FC, so the
++# menu uses the same 270-degree rotation the Gen4 profile uses.
++CONFIG_KSHIM_UI_ROTATION_CCW=270
++CONFIG_KSHIM_MENU_ENTRY_DURATION_MS=0
++# 20 logical 2560-pixel rows of the rotated landscape UI, within the
++# existing 4 MiB runtime slot (2560 * 20 * 4 + 512 LVGL alignment).
++CONFIG_KSHIM_LVGL_BUFFER_BYTES=205312
++# CONFIG_KSHIM_TOUCH is not set
++# CONFIG_KSHIM_SMP is not set
++# CONFIG_KSHIM_UEFI_TEST_MENU is not set
++# CONFIG_ENABLE_BANNER is not set
++CONFIG_DEBUG_LEVEL_NONE=y
++# CONFIG_KSHIM_DEBUG_CONSOLE is not set
++CONFIG_ASSERT_HALT=y
++CONFIG_KSHIM_MENU_STYLE_STAR_CHART=y
++CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=y
++# No settings store on Gen 2 yet: with the session-settings pages on, an
++# unresolved persisted default silently cancels the menu countdown
++# (platform_select(): settings && !default_ok -> timeout = 0), which leaves the
++# panel showing a menu that never boots anything. The manifest default (Android)
++# owns the countdown instead.
++# CONFIG_KSHIM_MENU_SESSION_SETTINGS is not set
++
++CONFIG_KSHIM_MENU_CHINESE=y
++CONFIG_KSHIM_MENU_ENTRY_DETAILS=y
++# B slot: the base image is the stock Android, so the menu describes it
++# that way and the manifest entry name owns the label.
++CONFIG_KSHIM_MENU_BASE_ANDROID=y
++# A-slot build: the base image IS our ArmadaOS, so the menu must not
++# describe it as the stock Android; the manifest entry name owns the label.
++CONFIG_KSHIM_MENU_POWER_ACTIONS=y
++CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=y
++CONFIG_KSHIM_QCOM_REBOOT=y
++CONFIG_KSHIM_EDL_DISABLE_SDI=y
++# CONFIG_KSHIM_BOOT_TIMING is not set
++
++# Measured TB320FC scanout. This firmware DT has no cont_splash_region, so the
++# SDE lookup rejects; the loader still leaves a live RGBA frame here.
++CONFIG_KSHIM_FB_MEASURED_SPLASH=y
++CONFIG_KSHIM_FB_MEASURED_RENDER_ADDRESS=0xB8000000
++CONFIG_KSHIM_FB_MEASURED_WIDTH=1600
++CONFIG_KSHIM_FB_MEASURED_HEIGHT=2560
++CONFIG_KSHIM_FB_MEASURED_STRIDE=6400
++# UI scratch from the same display reservation: past the 0xfa0000 frame, below
++# the stack the handoff uses at splash+0x2800000.
++CONFIG_KSHIM_UI_SCRATCH_BASE=0xB9000000
++CONFIG_KSHIM_UI_SCRATCH_SIZE=0x400000
++
++# No settings store in this profile: nothing is written to storage, and boot
++# diagnostics stay off.
++# Gen2 entry protocol: the repacker patches the kernel entry prologue itself,
++# so the manifest header backup is written back and the base image is entered
++# at offset zero instead of the Gen4 offset four.
++CONFIG_KSHIM_GEN2_ENTRY_RESTORE=y
++
++# c21: the same Gen2 menu profile with the native UFS chain enabled and the
++# read-only A/B GPT scan in place of the Gen4 backup-partition probe. The
++# SM8475 UFS stream id (0xe0) is now a per-board fact, so the SMMU identity
++# proof and the claim/release path are the remaining unknowns this round
++# measures. Nothing here writes the disk.
++CONFIG_KSHIM_STORAGE_ENTRY_PROBE=y
++CONFIG_KSHIM_UFS_NATIVE_IO=y
++CONFIG_KSHIM_UFS_LINK_WAKE=y
++CONFIG_KSHIM_UFS_DEVICE_WAKE=y
++CONFIG_KSHIM_UFS_READ_PROBE=y
++CONFIG_KSHIM_UFS_READ_SCREEN=y
++CONFIG_KSHIM_UFS_AB_SCAN=y
++CONFIG_KSHIM_UFS_PAYLOAD_PROBE=y
++# c25: route A. The other slot's container is copied into a loader-owned DRAM
++# window and entered from its own packing contract; nothing is written to disk.
++CONFIG_KSHIM_UFS_PAYLOAD_BOOT=y
++# c25: the runtime console mirror, read back by the payload kernel's
++# y700_ramlog driver. This profile has no UART console, so it is the log.
++CONFIG_KSHIM_RAMLOG=y

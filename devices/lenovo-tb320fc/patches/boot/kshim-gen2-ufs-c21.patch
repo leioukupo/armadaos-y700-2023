@@ -1,0 +1,530 @@
+--- a/src/drivers/storage_probe.c
++++ b/src/drivers/storage_probe.c
+@@ -8,13 +8,21 @@
+ /* Original read-only collector. Register semantics were checked against
+  * UFSHCI and the MIT SMMUv2 interface in Project-Aloha/CrDK at
+  * b6c3335136b7f6b28271917de11e8f11982975fc. No kernel driver code is imported.
+- * These windows match the TB322FC/SM8750 and TB323FU/Kaanapali profiles, not a generic
+- * Qualcomm fallback. No driver initialization or SmmuProbe call is made. */
++ * These windows match the TB320FC/SM8475, TB322FC/SM8750 and TB323FU/Kaanapali
++ * profiles, not a generic Qualcomm fallback. No driver initialization or SmmuProbe call is made. */
+ #define UFS_BASE UINT64_C(0x01d84000)
+ #define UFS_SIZE UINT64_C(0x3000)
+ #define SMMU_BASE UINT64_C(0x15000000)
+ #define SMMU_SIZE UINT64_C(0x100000)
+-#define UFS_SID UINT32_C(0x60)
++
++/* The UFS stream id is a per-board fact, not a constant. The measured SM8475
++ * (TB320FC) stock tree binds ufshc@1d84000 to apps_smmu with stream id 0xe0,
++ * while the SM8750/SM8850 profiles use 0x60; the controller and SMMU windows
++ * themselves are identical across all three. */
++static uint32_t ufs_sid_for(enum device_board board)
++{
++    return board == DEVICE_BOARD_TB320FC ? UINT32_C(0xe0) : UINT32_C(0x60);
++}
+ 
+ struct probe_reader {
+     storage_probe_read32_fn read32;
+@@ -119,7 +127,8 @@
+     return true;
+ }
+ 
+-static enum storage_probe_status capture_smmu(struct probe_reader *p)
++static enum storage_probe_status capture_smmu(struct probe_reader *p,
++                                            uint32_t sid)
+ {
+     uint32_t control, id0, id1, id2;
+     uint32_t stream_count, bank_count, stage2_banks;
+@@ -173,7 +182,7 @@
+         if ((smr & UINT32_C(0x80000000)) == 0U)
+             continue;
+         mask = (smr >> 16U) & 0x7fffU;
+-        if (((UFS_SID ^ (smr & 0x7fffU)) & (~mask & 0x7fffU)) != 0U)
++        if (((sid ^ (smr & 0x7fffU)) & (~mask & 0x7fffU)) != 0U)
+             continue;
+         append_value(p, smr_address, smr);
+         ++p->out->matching_streams;
+@@ -208,11 +217,13 @@
+     out->version = STORAGE_PROBE_VERSION;
+     out->board = actual_board;
+     out->status = STORAGE_PROBE_NOT_RUN;
+-    if (actual_board != DEVICE_BOARD_TB323FU && actual_board != DEVICE_BOARD_TB322FC)
++    if (actual_board != DEVICE_BOARD_TB323FU &&
++        actual_board != DEVICE_BOARD_TB322FC &&
++        actual_board != DEVICE_BOARD_TB320FC)
+         return finish(&reader, STORAGE_PROBE_BOARD_UNSUPPORTED, 0U, 0);
+     if (read32 == NULL)
+         return finish(&reader, STORAGE_PROBE_INVALID_ARGUMENT, 0U, 0);
+     if (!capture_ufs(&reader))
+         return out->status;
+-    return capture_smmu(&reader);
++    return capture_smmu(&reader, ufs_sid_for(actual_board));
+ }
+--- a/src/drivers/storage_ufs_dma.c
++++ b/src/drivers/storage_ufs_dma.c
+@@ -47,7 +47,11 @@
+ #define CBA2R_VA64 (UINT32_C(1) << 0)
+ #define SCTLR_M (UINT32_C(1) << 0)
+ 
+-#define UFS_STREAM_ID UINT32_C(0x60)
++/* Per-board UFS stream id; see ufs_sid_for() in storage_probe.c. */
++static uint32_t ufs_stream_id(uint32_t board)
++{
++    return board == (uint32_t)DEVICE_BOARD_TB320FC ? UINT32_C(0xe0) : UINT32_C(0x60);
++}
+ #define PAGE_4K UINT64_C(0x1000)
+ #define PAGE_64K UINT64_C(0x10000)
+ 
+@@ -185,8 +189,9 @@
+         (STORAGE_PROBE_VALID_UFS | STORAGE_PROBE_VALID_SMMU_IDS |
+          STORAGE_PROBE_VALID_SMMU_LAYOUT))
+         return false;
+-    if (snapshot->board != DEVICE_BOARD_TB323FU &&
+-        snapshot->board != DEVICE_BOARD_TB322FC)
++    if (snapshot->board != (uint32_t)DEVICE_BOARD_TB323FU &&
++        snapshot->board != (uint32_t)DEVICE_BOARD_TB322FC &&
++        snapshot->board != (uint32_t)DEVICE_BOARD_TB320FC)
+         return false;
+     if (snapshot->entry_count > STORAGE_PROBE_MAX_ENTRIES)
+         return false;
+@@ -240,7 +245,7 @@
+ 
+     if (!matching_stream(snapshot, base, stream_count, &smr, &s2cr))
+         return false;
+-    if ((smr & SMR_ID) != UFS_STREAM_ID || (smr & SMR_MASK) != 0U)
++    if ((smr & SMR_ID) != ufs_stream_id(snapshot->board) || (smr & SMR_MASK) != 0U)
+         return false;
+ 
+     type = (s2cr & S2CR_TYPE) >> 16U;
+--- a/src/arch/arm64/storage_probe_io.c
++++ b/src/arch/arm64/storage_probe_io.c
+@@ -62,7 +62,9 @@
+                                    struct storage_probe_snapshot *out)
+ {
+     if (!out) return;
+-    if (actual_board != DEVICE_BOARD_TB323FU && actual_board != DEVICE_BOARD_TB322FC) {
++    if (actual_board != DEVICE_BOARD_TB323FU &&
++        actual_board != DEVICE_BOARD_TB322FC &&
++        actual_board != DEVICE_BOARD_TB320FC) {
+         (void)storage_probe_collect(actual_board, storage_probe_native_read32, NULL, out);
+         return;
+     }
+--- a/src/arch/arm64/storage_ufs_read_native.c
++++ b/src/arch/arm64/storage_ufs_read_native.c
+@@ -217,7 +217,8 @@
+     fresh->status = STORAGE_PROBE_ENV_UNAVAILABLE;
+ 
+     if (actual_board != DEVICE_BOARD_TB322FC &&
+-        actual_board != DEVICE_BOARD_TB323FU) {
++        actual_board != DEVICE_BOARD_TB323FU &&
++        actual_board != DEVICE_BOARD_TB320FC) {
+         ReadReport.status = KSHIM_UFS_UNSUPPORTED;
+         fresh->status = STORAGE_PROBE_BOARD_UNSUPPORTED;
+ #if KSHIM_UFS_SCREEN
+@@ -270,8 +271,13 @@
+ #if KSHIM_UFS_SCREEN
+     screen_show(KSHIM_UFS_READ_SCREEN_SMMU_DONE, 0, 0);
+ #endif
++#if defined(CONFIG_KSHIM_UFS_AB_SCAN) && CONFIG_KSHIM_UFS_AB_SCAN
++    (void)kshim_ufs_ab_scan_probe(&ReadHost, &ReadOps, ReadArena, physical,
++                                  ReadScratch, sizeof(ReadScratch), &ReadReport);
++#else
+     (void)kshim_ufs_read_probe(&ReadHost, &ReadOps, ReadArena, physical,
+                               ReadScratch, sizeof(ReadScratch), &ReadReport);
++#endif
+ #if KSHIM_UFS_SCREEN
+     /* Final report, including an unsafe release: the caller's DAIF+WFE halt
+      * below then leaves it on screen. */
+--- a/src/drivers/storage_ufs_read_probe.c
++++ b/src/drivers/storage_ufs_read_probe.c
+@@ -193,3 +193,203 @@
+     report->handoff_safe = 1;
+     return true;
+ }
++
++/* ------------------------------------------------------------------------ */
++/* Bounded read-only Qualcomm A/B GPT scan.
++ *
++ * This is the observation half of the slot work: it opens each LUN the
++ * controller reports, reads only the GPT header block and its entry array,
++ * verifies both CRCs the way ABL does, and records the boot_a / boot_b
++ * partition attributes. It never opens a LUN for writing, never issues a
++ * WRITE, SYNC or UNMAP, and never touches a controller register outside the
++ * shared claim/release path. The whole scan fits a fixed 16 KiB entry buffer:
++ * a TB320FC LUN declares 96 entries (12 KiB), so the cap also proves the
++ * entry array cannot overflow into the header block.
++ */
++#define AB_HEADER_LBA 1ULL
++#define AB_BLOCK 4096u
++#define AB_MAX_ENTRIES 256u
++static uint8_t AbEntries[KSHIM_UFS_AB_ENTRY_BLOCKS * AB_BLOCK];
++static uint8_t AbHeader[AB_BLOCK];
++
++static uint32_t ab_le32(const uint8_t *p)
++{
++    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
++           (uint32_t)p[3] << 24;
++}
++
++static uint64_t ab_le64(const uint8_t *p)
++{
++    return (uint64_t)ab_le32(p) | (uint64_t)ab_le32(p + 4) << 32;
++}
++
++/* UTF-16LE partition name compared against a short ASCII literal. */
++static int ab_name_is(const uint8_t *entry, const char *ascii)
++{
++    const uint8_t *n = entry + 56;
++    unsigned i;
++
++    for (i = 0; ascii[i]; ++i)
++        if (n[2 * i] != (uint8_t)ascii[i] || n[2 * i + 1] != 0U)
++            return 0;
++    return n[2 * i] == 0U && n[2 * i + 1] == 0U;
++}
++
++static int ab_header_ok(const uint8_t *block, uint32_t *nent, uint64_t *ent_lba,
++                        uint32_t *ent_crc)
++{
++    uint8_t head[92];
++    uint32_t stored;
++
++    if (memcmp(block, "EFI PART", 8) != 0)
++        return 0;
++    if (ab_le32(block + 8) != 0x10000U || ab_le32(block + 12) != 92U ||
++        ab_le32(block + 20) != 0U)
++        return 0;
++    if (ab_le32(block + 84) != 128U)
++        return 0;
++    *nent = ab_le32(block + 80);
++    if (*nent == 0U || *nent > AB_MAX_ENTRIES)
++        return 0;
++    *ent_lba = ab_le64(block + 72);
++    *ent_crc = ab_le32(block + 88);
++    memcpy(head, block, 92);
++    memset(head + 16, 0, 4);
++    stored = ab_le32(block + 16);
++    return kshim_crc32(head, 92) == stored;
++}
++
++/* One LUN, one GPT header block, at most KSHIM_UFS_AB_ENTRY_BLOCKS of entry
++ * array. Returns nonzero when this LUN carries the boot_a / boot_b pair. */
++static int ab_scan_lun(struct kshim_ufs_host *host, uint8_t number,
++                       struct kshim_ufs_read_report *report)
++{
++    struct kshim_ufs_lun lun;
++    uint32_t nent = 0U, ent_crc = 0U, array_blocks, used;
++    uint64_t ent_lba = 0U, attrs_a = 0U, attrs_b = 0U;
++    int found_a = 0, found_b = 0, i;
++
++    if (kshim_ufs_open_lun(host, number, false, &lun))
++        return 0;
++    report->ab_seen |= 1U << 0;
++    if (lun.block.block_size != AB_BLOCK)
++        return 0;
++    if (kshim_block_read(&lun.block, AB_HEADER_LBA, 1, AbHeader))
++        return 0;
++    if (!ab_header_ok(AbHeader, &nent, &ent_lba, &ent_crc))
++        return 0;
++    report->ab_seen |= 1U << 1;
++    array_blocks = (nent * 128U + AB_BLOCK - 1U) / AB_BLOCK;
++    if (array_blocks > KSHIM_UFS_AB_ENTRY_BLOCKS)
++        return 0;
++    if (ent_lba + array_blocks > lun.block.block_count)
++        return 0;
++    if (kshim_block_read(&lun.block, ent_lba, array_blocks, AbEntries))
++        return 0;
++    used = nent * 128U;
++    if (kshim_crc32(AbEntries, used) != ent_crc)
++        return 0;
++    report->ab_seen |= 1U << 2;
++    for (i = 0; (uint32_t)i < nent; ++i) {
++        const uint8_t *e = AbEntries + (uint32_t)i * 128U;
++        if (ab_name_is(e, "boot_a")) {
++            attrs_a = ab_le64(e + 48);
++            found_a = 1;
++            report->ab_seen |= 1U << 3;
++        } else if (ab_name_is(e, "boot_b")) {
++            attrs_b = ab_le64(e + 48);
++            found_b = 1;
++            report->ab_seen |= 1U << 4;
++        }
++    }
++    if (!found_a || !found_b)
++        return 0;
++    report->ab_seen |= 1U << 5;
++    report->ab_lun = number;
++    report->ab_nent = nent;
++    report->ab_ent_lba = ent_lba;
++    report->ab_block_size = lun.block.block_size;
++    report->ab_block_count = lun.block.block_count;
++    report->ab_attrs_a = attrs_a;
++    report->ab_attrs_b = attrs_b;
++    return 1;
++}
++
++bool kshim_ufs_ab_scan_probe(struct kshim_ufs_host *host,
++                             const struct kshim_ufs_ops *ops, void *arena,
++                             uint64_t physical, void *scratch,
++                             size_t scratch_bytes,
++                             struct kshim_ufs_read_report *report)
++{
++    if (!report)
++        return false;
++    report_reset(report);
++    if (!host || !ops || !arena || !physical || !scratch ||
++        scratch_bytes < KSHIM_UFS_DMA_BYTES) {
++        report->status = KSHIM_STORAGE_ARG;
++        return false;
++    }
++    report->dma_base = physical;
++    report->ab_lun = KSHIM_UFS_AB_LUN_NONE;
++    report->stage = KSHIM_UFS_READ_STAGE_CLAIM;
++    if (host->owned) {
++        report->status = KSHIM_UFS_BUSY;
++        return false;
++    }
++    int rc = kshim_ufs_claim(host, ops, arena, KSHIM_UFS_DMA_BYTES, physical);
++    if (rc && !host->owned) {
++        report->status = rc;
++        report->release_status = KSHIM_STORAGE_OK;
++        report->restore_verified = 1;
++        report->handoff_safe = 1;
++        return true;
++    }
++    if (!rc) {
++        report->stage = KSHIM_UFS_READ_STAGE_NOP;
++        rc = kshim_ufs_nop(host);
++    }
++    if (!rc) {
++#if defined(CONFIG_KSHIM_UFS_DEVICE_WAKE) && CONFIG_KSHIM_UFS_DEVICE_WAKE
++        report->stage = KSHIM_UFS_READ_STAGE_DEVICE;
++        rc = kshim_ufs_prepare_device(host);
++#endif
++    }
++    if (!rc) {
++        report->stage = KSHIM_UFS_READ_STAGE_AB;
++        for (uint8_t number = 0U; number < KSHIM_UFS_AB_MAX_LUNS; ++number) {
++            if (ab_scan_lun(host, number, report))
++                break;
++            /* A refused LUN is normal: unimplemented LUNs answer the INQUIRY
++             * with a check condition, which open_lun reports as an error. */
++            if (host->poisoned) {
++                rc = KSHIM_STORAGE_IO;
++                break;
++            }
++        }
++        rc = 0;
++    }
++    report->stage = KSHIM_UFS_READ_STAGE_DONE;
++    if (!rc)
++        rc = KSHIM_STORAGE_OK;
++    report->status = rc;
++    report_capture(host, report);
++    int release = kshim_ufs_release(host);
++    report->link_after_release = host->link;
++    report->power_after_release = host->power;
++    report->scsi_after_release = scsi_snapshot(host);
++    report->release_status = release;
++    if (release) {
++        report->restore_verified = 0;
++        report->handoff_safe = 0;
++        return false;
++    }
++    if (restore_check(host)) {
++        report->release_status = KSHIM_STORAGE_IO;
++        report->restore_verified = 0;
++        report->handoff_safe = 0;
++        return false;
++    }
++    report->restore_verified = 1;
++    report->handoff_safe = 1;
++    return true;
++}
+--- a/src/include/storage_ufs_read_probe.h
++++ b/src/include/storage_ufs_read_probe.h
+@@ -40,8 +40,16 @@
+     KSHIM_UFS_READ_STAGE_HEADER = 7,
+     KSHIM_UFS_READ_STAGE_TAIL = 8,
+     KSHIM_UFS_READ_STAGE_DONE = 9,
+-    KSHIM_UFS_READ_STAGE_DEVICE = 10
++    KSHIM_UFS_READ_STAGE_DEVICE = 10,
++    KSHIM_UFS_READ_STAGE_AB = 11
+ };
++/* Bounded A/B GPT scan evidence (read-only). ab_seen bits:
++ * 0 LUN opened, 1 header parsed, 2 entry array CRC ok, 3 boot_a found,
++ * 4 boot_b found, 5 the pair sits on this LUN. Only the LUN that carries both
++ * names is described; other LUNs are opened and closed without reads. */
++#define KSHIM_UFS_AB_LUN_NONE 0xffffffffu
++#define KSHIM_UFS_AB_MAX_LUNS 6u
++#define KSHIM_UFS_AB_ENTRY_BLOCKS 4u
+ /* Explicit field types and natural alignment (no packing) so the native
+  * wrapper and the FDT export's v1 record can consume the same prefix layout.
+  * debug_valid: bit0 HCS captured, bit1 IS captured, bit2 doorbell captured,
+@@ -73,7 +81,15 @@
+     struct kshim_ufs_link_state link_before_release, link_after_release;
+     struct kshim_ufs_power_state power_before_release, power_after_release;
+     struct kshim_ufs_scsi_state scsi_before_release, scsi_after_release;
++    /* Appended after the v1 wire prefix: never read by the existing export. */
++    uint32_t ab_seen, ab_lun, ab_nent, ab_block_size;
++    uint64_t ab_block_count, ab_ent_lba, ab_attrs_a, ab_attrs_b;
+ };
++bool kshim_ufs_ab_scan_probe(struct kshim_ufs_host *host,
++                             const struct kshim_ufs_ops *ops, void *arena,
++                             uint64_t physical, void *scratch,
++                             size_t scratch_bytes,
++                             struct kshim_ufs_read_report *report);
+ bool kshim_ufs_read_probe(struct kshim_ufs_host *host,
+                           const struct kshim_ufs_ops *ops, void *arena,
+                           uint64_t physical, void *scratch,
+--- a/src/ui/storage_ufs_read_screen.c
++++ b/src/ui/storage_ufs_read_screen.c
+@@ -13,7 +13,9 @@
+     GLYPH_SCALE = 4,
+     GLYPH_ADVANCE = 24,
+     LEGACY_LINE_COUNT = 6,
+-    LINE_COUNT = 10,
++    /* Ten status lines plus the two A/B GPT lines; the strip constant in the
++     * header grows with this count. */
++    LINE_COUNT = 12,
+     LINE_BYTES = 48,
+     LINE_COLUMNS = 40,
+     LINE_ORIGIN_X = 8,
+@@ -156,6 +158,14 @@
+                    (unsigned)(d->status & 255), (unsigned)(d->sense_key & 15),
+                    (unsigned)(d->asc & 255), (unsigned)(d->ascq & 255),
+                    (unsigned)(d->sense_valid & 3));
++    (void)snprintf(lines[10], LINE_BYTES, "AB LUN %02X ENT %08X N %04X",
++                   (unsigned)report->ab_lun, (unsigned)report->ab_ent_lba,
++                   (unsigned)report->ab_nent);
++    (void)snprintf(lines[11], LINE_BYTES, "A %08X%08X B %08X%08X",
++                   (unsigned)(uint32_t)(report->ab_attrs_a >> 32),
++                   (unsigned)(uint32_t)report->ab_attrs_a,
++                   (unsigned)(uint32_t)(report->ab_attrs_b >> 32),
++                   (unsigned)(uint32_t)report->ab_attrs_b);
+ }
+ 
+ int kshim_ufs_read_screen_render(kshim_framebuffer_t *framebuffer,
+--- a/src/include/storage_ufs_read_screen.h
++++ b/src/include/storage_ufs_read_screen.h
+@@ -26,7 +26,7 @@
+  * The event number is only a label. It is never stored in the report and
+  * never changes the sequence. */
+ #define KSHIM_UFS_READ_SCREEN_STRIP_HEIGHT 200U
+-#define KSHIM_UFS_READ_SCREEN_STRIP_HEIGHT_MAX 328U
++#define KSHIM_UFS_READ_SCREEN_STRIP_HEIGHT_MAX 392U
+ enum kshim_ufs_read_screen_event {
+     KSHIM_UFS_READ_SCREEN_ENTRY = 1,
+     KSHIM_UFS_READ_SCREEN_CPU = 2,
+--- a/src/Kconfig
++++ b/src/Kconfig
+@@ -75,6 +75,18 @@
+         Each transaction reclaims and restores the firmware controller state.
+         Old or unprovisioned backups are never formatted by the launcher.
+ 
++config KSHIM_UFS_AB_SCAN
++    bool "Read-only Qualcomm A/B GPT scan across the first LUNs"
++    depends on KSHIM_UFS_READ_PROBE
++    default n
++    help
++        Diagnostic only, and the observation step for slot work. Opens LUNs
++        0..5 read-only, reads one GPT header block plus its entry array per
++        LUN, verifies ABL's header and entry-array CRC32s, and records the
++        boot_a / boot_b partition attributes and the LUN that carries them.
++        Replaces the ARMADA backup-partition probe. No write, no reset, no
++        SMMU or clock change; the same claim/release discipline applies.
++
+ config KSHIM_SETTINGS_SAVE_TEST
+     bool "Gen4 test: seed an EMPTY provisioned settings store with internal Linux"
+     depends on KSHIM_UFS_SETTINGS
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -1677,7 +1677,8 @@
+      * and only the scanout is touched - no resources, menu, IRQ, touch or SMP
+      * initialization happens before the capture. An unavailable display
+      * leaves the existing IO behaviour byte-for-byte unchanged. */
+-    if (runtime_fdt && device_info.board == DEVICE_BOARD_TB322FC)
++    if (runtime_fdt && (device_info.board == DEVICE_BOARD_TB322FC ||
++                        device_info.board == DEVICE_BOARD_TB320FC))
+         (void)storage_ufs_read_screen_init(runtime_fdt);
+ #endif
+     /* Actual incoming board identity; the native wrapper proves the CPU/DMA
+--- a/configs/tb320fc_ufs_defconfig
++++ b/configs/tb320fc_ufs_defconfig
+@@ -0,0 +1,76 @@
++# Gen2 hardware bring-up round 1: the same TB320FC profile with the whole
++# native UFS chain off.  Nothing in this profile touches UFS registers, so the
++# only variables are the Gen2 entry handoff, the SDE scan-out discovery and the
++# PON/SPMI volume keys.  The stock SM8475 device tree says the UFS host sits
++# behind apps-smmu@15000000 with stream id 0xe0, not the 0x60 the Gen4/Gen5
++# storage probe hardcodes, so the UFS chain stays off until that is resolved.
++CONFIG_QCOM_KEYS=y
++CONFIG_QCOM_SPMI=y
++CONFIG_QCOM_KEY_DEBOUNCE_SAMPLES=2
++# CONFIG_KSHIM_QEMU_PLATFORM is not set
++CONFIG_KSHIM_FRAMEBUFFER=y
++CONFIG_KSHIM_LVGL=y
++# UI pixels rotate CCW into the native scanout. The TB320FC panel is
++# 1600x2560 portrait; the tablet is held landscape like the TB322FC, so the
++# menu uses the same 270-degree rotation the Gen4 profile uses.
++CONFIG_KSHIM_UI_ROTATION_CCW=270
++CONFIG_KSHIM_MENU_ENTRY_DURATION_MS=0
++# 20 logical 2560-pixel rows of the rotated landscape UI, within the
++# existing 4 MiB runtime slot (2560 * 20 * 4 + 512 LVGL alignment).
++CONFIG_KSHIM_LVGL_BUFFER_BYTES=205312
++# CONFIG_KSHIM_TOUCH is not set
++# CONFIG_KSHIM_SMP is not set
++# CONFIG_KSHIM_UEFI_TEST_MENU is not set
++# CONFIG_ENABLE_BANNER is not set
++CONFIG_DEBUG_LEVEL_NONE=y
++# CONFIG_KSHIM_DEBUG_CONSOLE is not set
++CONFIG_ASSERT_HALT=y
++CONFIG_KSHIM_MENU_STYLE_STAR_CHART=y
++CONFIG_KSHIM_MENU_LANGUAGE_SWITCH=y
++# No settings store on Gen 2 yet: with the session-settings pages on, an
++# unresolved persisted default silently cancels the menu countdown
++# (platform_select(): settings && !default_ok -> timeout = 0), which leaves the
++# panel showing a menu that never boots anything. The manifest default (Android)
++# owns the countdown instead.
++# CONFIG_KSHIM_MENU_SESSION_SETTINGS is not set
++
++CONFIG_KSHIM_MENU_CHINESE=y
++CONFIG_KSHIM_MENU_ENTRY_DETAILS=y
++CONFIG_KSHIM_MENU_BASE_ANDROID=y
++CONFIG_KSHIM_MENU_POWER_ACTIONS=y
++CONFIG_KSHIM_MENU_ADVANCED_ACTIONS=y
++CONFIG_KSHIM_QCOM_REBOOT=y
++CONFIG_KSHIM_EDL_DISABLE_SDI=y
++# CONFIG_KSHIM_BOOT_TIMING is not set
++
++# Measured TB320FC scanout. This firmware DT has no cont_splash_region, so the
++# SDE lookup rejects; the loader still leaves a live RGBA frame here.
++CONFIG_KSHIM_FB_MEASURED_SPLASH=y
++CONFIG_KSHIM_FB_MEASURED_RENDER_ADDRESS=0xB8000000
++CONFIG_KSHIM_FB_MEASURED_WIDTH=1600
++CONFIG_KSHIM_FB_MEASURED_HEIGHT=2560
++CONFIG_KSHIM_FB_MEASURED_STRIDE=6400
++# UI scratch from the same display reservation: past the 0xfa0000 frame, below
++# the stack the handoff uses at splash+0x2800000.
++CONFIG_KSHIM_UI_SCRATCH_BASE=0xB9000000
++CONFIG_KSHIM_UI_SCRATCH_SIZE=0x400000
++
++# No settings store in this profile: nothing is written to storage, and boot
++# diagnostics stay off.
++# Gen2 entry protocol: the repacker patches the kernel entry prologue itself,
++# so the manifest header backup is written back and the base image is entered
++# at offset zero instead of the Gen4 offset four.
++CONFIG_KSHIM_GEN2_ENTRY_RESTORE=y
++
++# c21: the same Gen2 menu profile with the native UFS chain enabled and the
++# read-only A/B GPT scan in place of the Gen4 backup-partition probe. The
++# SM8475 UFS stream id (0xe0) is now a per-board fact, so the SMMU identity
++# proof and the claim/release path are the remaining unknowns this round
++# measures. Nothing here writes the disk.
++CONFIG_KSHIM_STORAGE_ENTRY_PROBE=y
++CONFIG_KSHIM_UFS_NATIVE_IO=y
++CONFIG_KSHIM_UFS_LINK_WAKE=y
++CONFIG_KSHIM_UFS_DEVICE_WAKE=y
++CONFIG_KSHIM_UFS_READ_PROBE=y
++CONFIG_KSHIM_UFS_READ_SCREEN=y
++CONFIG_KSHIM_UFS_AB_SCAN=y

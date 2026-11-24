@@ -1,0 +1,357 @@
+#!/bin/sh
+# TB320FC slot-attrs - read and, on request, repair the A/B slot flags that this
+# bootloader keeps in the GPT partition-entry attributes of the UFS logical unit
+# carrying boot_a/boot_b (Lenovo Y700 2023 / TB320FC, SM8475).
+#
+# The mechanism is measured on device HA1WZJJ5 (PROGRESS A187), not assumed:
+#   * It is not `misc`: the whole 1 MiB holds only a stale `-bootloader` reboot
+#     request at offset 8 plus five bytes at 0x8000, and it stayed byte-identical
+#     across `fastboot --set-active` and across booting either slot.
+#   * It is not an EFI variable: neither running kernel exposes
+#     /sys/firmware/efi/efivars.
+#   * It IS the GPT entry attribute bits (bit 48-51 priority, 52 successful,
+#     53 boot-failed, 54 factory-reset, 55 dont-boot-again) on the LU that holds
+#     boot_a/boot_b: 96 entries of 128 B, 4 KiB logical blocks, primary header
+#     LBA1 with entries at LBA2..4, backup entries at LBA1572859..61 with the
+#     backup header at LBA1572863.
+#   * All 27 `_a`/`_b` pairs on that LU carry the flags, and
+#     `fastboot --set-active=b` moves the primary *and* the backup copy: boot
+#     went 7<->2 and vendor_boot/dtbo/vbmeta went 15<->11, with dont-boot-again
+#     cleared on the target.  `set` below reproduces that and is idempotent.
+#
+# Why an OS-side tool is worth having: a slot that keeps failing loses priority
+# and gains dont-boot-again, and once both slots are demoted the bootloader has
+# nothing left to try - that is what the "stuck on the fastboot screen" rounds
+# really were, and it is also why an ArmadaOS menu entry could disappear after
+# one failed selection.  Until now the only way back was hands on the device;
+# now any OS that did boot can fix the flags over SSH.
+#
+# No python and no /dev/mem: CRC32 is taken from a gzip trailer, so this runs
+# both in ArmadaOS and under Android toybox (both verified on the device).
+#
+# usage:
+#   slot-attrs report [--disk DEV] [--lba-size N]
+#   slot-attrs set --slot a|b [--disk DEV] [--lba-size N] [--commit]
+#
+# Rewriting a GPT is destructive, so the defaults are deliberately cautious:
+# nothing is written without --commit, and the tool refuses outright when either
+# copy fails its CRCs or when the two entry arrays disagree - it never "repairs"
+# a half-written table by guessing.
+set -eu
+
+VER=TB320FC-SLOTATTRS-v1
+PROG=${0##*/}
+PRIO_SHIFT=16
+PRIO_MASK=$((0xf << PRIO_SHIFT))
+BIT_SUCCESSFUL=$((1 << 20))
+BIT_FAILED=$((1 << 21))
+BIT_DONTBOOT=$((1 << 23))
+
+W=
+cleanup() { [ -n "$W" ] && rm -rf "$W"; }
+trap 'cleanup' EXIT INT TERM
+
+die() { printf '%s: %s\n' "$VER" "$1" >&2; exit 1; }
+
+usage() {
+  printf 'usage: %s report [--disk DEV] [--lba-size N]\n' "$PROG" >&2
+  printf '       %s set --slot a|b [--disk DEV] [--lba-size N] [--commit]\n' "$PROG" >&2
+  exit 2
+}
+
+# ---- little-endian byte helpers (od does the endian work, no reversal) -----
+rd_u32() { # FILE OFFSET -> decimal
+  dd if="$1" bs=1 skip="$2" count=4 2>/dev/null | od -An -v -tu4 | tr -d ' \n'
+}
+
+rd_lba() { # FILE OFFSET -> decimal, refusing values that need more than 32 bits
+  _lo=$(rd_u32 "$1" "$2")
+  _hi=$(rd_u32 "$1" $(( $2 + 4 )))
+  [ "$_hi" = 0 ] || die "64-bit field at byte offset $2 is out of range (hi=$_hi)"
+  printf '%s' "$_lo"
+}
+
+wr_u32() { # FILE OFFSET VALUE
+  printf '%b' "$(printf '\\0%03o\\0%03o\\0%03o\\0%03o' \
+      $(( $3 & 255 )) $(( $3 / 256 % 256 )) $(( $3 / 65536 % 256 )) $(( $3 / 16777216 % 256 )))" |
+    dd of="$1" bs=1 seek="$2" count=4 conv=notrunc 2>/dev/null
+}
+
+crc32() { # FILE [BYTELEN] -> CRC32, read out of the gzip trailer
+  if [ "$#" -gt 1 ]; then
+    dd if="$1" bs=1 count="$2" of="$W/_in" 2>/dev/null
+  else
+    cp "$1" "$W/_in"
+  fi
+  gzip -c < "$W/_in" > "$W/_in.gz"
+  _sz=$(wc -c < "$W/_in.gz")
+  dd if="$W/_in.gz" bs=1 skip=$(( _sz - 8 )) count=4 2>/dev/null | od -An -v -tu4 | tr -d ' \n'
+}
+
+hdr_crc_ok() { # HEADER_IMG  - the header CRC covers its own first HLEN bytes
+  cp "$1" "$W/_h"
+  wr_u32 "$W/_h" 16 0
+  [ "$(crc32 "$W/_h" "$HLEN")" = "$(rd_u32 "$1" 16)" ]
+}
+
+flags_of() { # HI32 -> readable form of the upper half of the attribute bits
+  printf 'prio=%-2d succ=%d fail=%d facres=%d dont=%d' \
+    $(( ($1 >> PRIO_SHIFT) & 0xf )) $(( ($1 >> 20) & 1 )) $(( ($1 >> 21) & 1 )) \
+    $(( ($1 >> 22) & 1 )) $(( ($1 >> 23) & 1 ))
+}
+
+# ---- arguments ------------------------------------------------------------
+# The subcommand may come before or after the options; typing
+# `slot-attrs --disk /dev/sdd report` should just work.
+CMD= DISK= LBASIZE= SLOT= COMMIT=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --disk)     [ $# -ge 2 ] || usage; DISK=$2; shift 2 ;;
+    --lba-size) [ $# -ge 2 ] || usage; LBASIZE=$2; shift 2 ;;
+    --slot)     [ $# -ge 2 ] || usage; SLOT=$2; shift 2 ;;
+    --commit)   COMMIT=1; shift ;;
+    report|set) [ -z "$CMD" ] || usage; CMD=$1; shift ;;
+    -h|--help)  usage ;;
+    *)          usage ;;
+  esac
+done
+case $CMD in report|set) ;; *) usage ;; esac
+if [ "$CMD" = set ]; then
+  case $SLOT in a|b) ;; *) die "set needs --slot a|b" ;; esac
+fi
+
+# ---- which LU carries boot_a/boot_b ---------------------------------------
+if [ -z "$DISK" ]; then
+  for cand in /dev/disk/by-partlabel/boot_a /dev/block/by-name/boot_a; do
+    if [ -e "$cand" ]; then
+      DISK=$(realpath "$cand" 2>/dev/null || readlink -f "$cand")
+      break
+    fi
+  done
+  [ -n "$DISK" ] || die "no boot_a symlink found; pass --disk"
+  DISK=$(printf '%s' "$DISK" | sed -e 's/[0-9]*$//')
+fi
+[ -b "$DISK" ] || [ -f "$DISK" ] || die "$DISK: not a block device or image file"
+
+NAME=${DISK##*/}
+SYS=/sys/block/$NAME
+if [ -z "$LBASIZE" ]; then
+  if [ -r "$SYS/queue/logical_block_size" ]; then
+    LBASIZE=$(cat "$SYS/queue/logical_block_size")
+  else
+    LBASIZE=$(blockdev --getss "$DISK" 2>/dev/null || die "cannot size $DISK; pass --lba-size")
+  fi
+fi
+case $LBASIZE in 512|1024|2048|4096) ;; *) die "unsupported logical block size $LBASIZE" ;; esac
+
+if [ -r "$SYS/size" ]; then
+  # Divide before multiplying: a 6 GiB LU overflows 32-bit shell arithmetic.
+  NLB=$(( $(cat "$SYS/size") / (LBASIZE / 512) ))
+else
+  NLB=$(( $(wc -c < "$DISK") / LBASIZE ))
+fi
+
+if [ -d "$SYS" ] && [ "$CMD" = set ] && [ "$COMMIT" = 1 ]; then
+  for part in "$SYS"/$NAME*; do
+    [ -d "$part" ] || continue
+    pn=${part##*/}
+    if grep -q "^/dev/$pn " /proc/mounts 2>/dev/null; then
+      die "$DISK has a mounted partition ($pn); refusing to rewrite its GPT"
+    fi
+  done
+fi
+
+W=$(mktemp -d 2>/dev/null || true)
+if [ -z "$W" ]; then
+  for base in "${TMPDIR:-}" /data/local/tmp /tmp; do
+    [ -n "$base" ] && [ -d "$base" ] && [ -w "$base" ] || continue
+    W=$base/$PROG.$$; mkdir -p "$W"; break
+  done
+fi
+[ -n "$W" ] || die "nowhere writable for scratch files"
+ph=$W/ph pa=$W/pa bh=$W/bh ba=$W/ba
+
+# ---- primary header -------------------------------------------------------
+dd if="$DISK" bs="$LBASIZE" skip=1 count=1 of="$ph" 2>/dev/null
+[ "$(head -c 8 "$ph")" = "EFI PART" ] || die "no GPT header at LBA1 of $DISK"
+HLEN=$(rd_u32 "$ph" 12)
+MYLBA=$(rd_lba "$ph" 24)
+ALTLBA=$(rd_lba "$ph" 32)
+EQLBA=$(rd_lba "$ph" 72)
+NUM=$(rd_u32 "$ph" 80)
+ESZ=$(rd_u32 "$ph" 84)
+ECRC=$(rd_u32 "$ph" 88)
+[ "$HLEN" -le "$LBASIZE" ] || die "header size $HLEN is larger than a block"
+[ "$ESZ" -ge 128 ] || die "unexpected entry size $ESZ"
+[ "$MYLBA" = 1 ] || die "primary header claims it lives at LBA $MYLBA, not 1"
+ARLBAS=$(( (NUM * ESZ + LBASIZE - 1) / LBASIZE ))
+dd if="$DISK" bs="$LBASIZE" skip="$EQLBA" count="$ARLBAS" of="$pa" 2>/dev/null
+[ "$(crc32 "$pa" $(( NUM * ESZ )))" = "$ECRC" ] || die "primary entry array CRC mismatch"
+hdr_crc_ok "$ph" || die "primary header CRC mismatch"
+
+# ---- backup header + array ------------------------------------------------
+dd if="$DISK" bs="$LBASIZE" skip="$ALTLBA" count=1 of="$bh" 2>/dev/null
+[ "$(head -c 8 "$bh")" = "EFI PART" ] || die "no GPT header at backup LBA $ALTLBA of $DISK"
+BEQLBA=$(rd_lba "$bh" 72)
+BECRC=$(rd_u32 "$bh" 88)
+[ "$(rd_u32 "$bh" 80)" = "$NUM" ] || die "backup table entry count differs from the primary"
+[ "$(rd_u32 "$bh" 84)" = "$ESZ" ] || die "backup table entry size differs from the primary"
+# The UEFI spec puts the backup array directly below the backup header, but this
+# bootloader leaves a reserved LBA there: the primary array ends at LBA4, the
+# backup header sits at LBA1572863 and its array starts at LBA1572859.  So only
+# insist that the two copies cannot overlap and that the backup array ends at or
+# before its header; the byte-for-byte cmp below is the check that they agree.
+[ "$BEQLBA" -gt $(( EQLBA + ARLBAS )) ] || die "backup entry array overlaps the primary one"
+[ $(( BEQLBA + ARLBAS )) -le "$ALTLBA" ] || die "backup entry array runs past the backup header"
+dd if="$DISK" bs="$LBASIZE" skip="$BEQLBA" count="$ARLBAS" of="$ba" 2>/dev/null
+[ "$(crc32 "$ba" $(( NUM * ESZ )))" = "$BECRC" ] || die "backup entry array CRC mismatch"
+hdr_crc_ok "$bh" || die "backup header CRC mismatch"
+cmp -s "$pa" "$ba" || die "primary and backup entry arrays differ; not guessing which half to trust"
+
+# ---- read the slot flags --------------------------------------------------
+: > "$W/ents"
+i=0
+while [ "$i" -lt "$NUM" ]; do
+  off=$(( i * ESZ ))
+  nm=$(dd if="$pa" bs=1 skip=$(( off + 56 )) count=72 2>/dev/null | tr -d '\000')
+  if [ -n "$nm" ]; then
+    case $nm in
+      *_a) stem=${nm%_a}; slot=a ;;
+      *_b) stem=${nm%_b}; slot=b ;;
+      *)   stem=; slot= ;;
+    esac
+    if [ -n "$stem" ]; then
+      printf '%s %s %s %s\n' "$stem" "$slot" "$i" "$(rd_u32 "$pa" $(( off + 52 )))" >> "$W/ents"
+    fi
+  fi
+  i=$(( i + 1 ))
+done
+
+PAIRS=$(cut -d' ' -f1 "$W/ents" | sort -u | wc -l | tr -d ' ')
+printf '%s %s disk=%s lba=%s entries=%s pairs=%s\n' \
+  "$VER" "$CMD" "$DISK" "$LBASIZE" "$NUM" "$PAIRS"
+
+if [ "$CMD" = report ]; then
+  cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
+    line=
+    for s in a b; do
+      hi=$(awk -v n="$stem" -v s="$s" '$1==n && $2==s {print $4}' "$W/ents")
+      [ -n "$hi" ] || continue
+      line="$line ${s}[$(flags_of "$hi")]"
+    done
+    printf '  %-16s%s\n' "$stem" "$line"
+  done
+  printf 'SLOTATTRS-OK cmd=report written=0\n'
+  exit 0
+fi
+
+# ---- make the named slot the preferred one --------------------------------
+# Each pair already carries an "active" and an "inactive" priority (15/11 for the
+# firmware partitions, 7/2 for boot on this device).  Hand the higher of the two
+# to the target and the lower to the other, which makes the command idempotent:
+# run it for the slot that is already preferred and nothing changes at all.  Only
+# the target gets its flags cleaned (dont-boot-again and boot-failed cleared,
+# successful set) - XBL and Android maintain the rest themselves.  A pair with
+# equal priorities is the demoted-brick case, so fall back to the vendor's 15/11
+# convention to give the target a real edge.  dont-boot-again is always cleared
+# on the target, and so is boot-failed (that counter is what drove the priority
+# down in the first place); successful is set because that is what
+# `fastboot --set-active` does and what the booted slot would set anyway.
+: > "$W/plan"
+cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
+  ra=$(awk -v n="$stem" '$1==n && $2=="a"' "$W/ents")
+  rb=$(awk -v n="$stem" '$1==n && $2=="b"' "$W/ents")
+  [ -n "$ra" ] && [ -n "$rb" ] || continue
+  ia=$(printf '%s' "$ra" | cut -d' ' -f3); ha=$(printf '%s' "$ra" | cut -d' ' -f4)
+  ib=$(printf '%s' "$rb" | cut -d' ' -f3); hb=$(printf '%s' "$rb" | cut -d' ' -f4)
+  p_a=$(( (ha >> PRIO_SHIFT) & 0xf )); p_b=$(( (hb >> PRIO_SHIFT) & 0xf ))
+  # Skip a pair that already prefers the target and does not carry
+  # dont-boot-again on it.  Without this guard the command would rewrite the
+  # boot-failed bit of a slot that is already fine, and "nothing to do" would
+  # never be reported.
+  if [ "$SLOT" = a ]; then
+    pt=$p_a; po=$p_b; dt=$(( (ha >> 23) & 1 ))
+  else
+    pt=$p_b; po=$p_a; dt=$(( (hb >> 23) & 1 ))
+  fi
+  if [ "$pt" -gt "$po" ] && [ "$dt" = 0 ]; then continue; fi
+  if [ "$p_a" = "$p_b" ]; then
+    want_a=15; want_b=11
+  else
+    if [ "$p_a" -gt "$p_b" ]; then hi=$p_a; lo=$p_b; else hi=$p_b; lo=$p_a; fi
+    want_a=$hi; want_b=$lo
+  fi
+  if [ "$SLOT" = a ]; then new_a=$want_a; new_b=$want_b; else new_a=$want_b; new_b=$want_a; fi
+  na=$(( (ha & ~PRIO_MASK) | (new_a << PRIO_SHIFT) ))
+  nb=$(( (hb & ~PRIO_MASK) | (new_b << PRIO_SHIFT) ))
+  if [ "$SLOT" = a ]; then
+    na=$(( (na & ~BIT_DONTBOOT & ~BIT_FAILED) | BIT_SUCCESSFUL ))
+  else
+    nb=$(( (nb & ~BIT_DONTBOOT & ~BIT_FAILED) | BIT_SUCCESSFUL ))
+  fi
+  if [ "$na" != "$ha" ] || [ "$nb" != "$hb" ]; then
+    printf '%s %s %s\n' "$stem" "$ia" "$na" >> "$W/plan"
+    printf '%s %s %s\n' "$stem" "$ib" "$nb" >> "$W/plan"
+    printf '  %-16s a[%s] -> [%s]   b[%s] -> [%s]\n' \
+      "$stem" "$(flags_of "$ha")" "$(flags_of "$na")" "$(flags_of "$hb")" "$(flags_of "$nb")"
+  fi
+done
+
+CHANGED=$(wc -l < "$W/plan" | tr -d ' ')
+if [ "$CHANGED" = 0 ]; then
+  printf 'SLOTATTRS-OK cmd=set slot=%s written=0 already_preferred=1\n' "$SLOT"
+  exit 0
+fi
+if [ "$COMMIT" != 1 ]; then
+  printf 'SLOTATTRS-OK cmd=set slot=%s entries_to_change=%s written=0 (dry run; add --commit)\n' \
+    "$SLOT" "$CHANGED"
+  exit 0
+fi
+
+while read -r stem idx hi; do
+  wr_u32 "$pa" $(( idx * ESZ + 52 )) "$hi"
+  wr_u32 "$ba" $(( idx * ESZ + 52 )) "$hi"
+done < "$W/plan"
+
+# Rebuild both CRC chains, then prove the images are self-consistent before a
+# single byte touches the device.
+NEWARR=$(crc32 "$pa" $(( NUM * ESZ )))
+[ "$(crc32 "$ba" $(( NUM * ESZ )))" = "$NEWARR" ] || die "patched copies diverged"
+for h in "$ph" "$bh"; do
+  wr_u32 "$h" 88 "$NEWARR"
+  wr_u32 "$h" 16 0
+  wr_u32 "$h" 16 "$(crc32 "$h" "$HLEN")"
+  hdr_crc_ok "$h" || die "internal error: rebuilt header CRC does not verify"
+done
+
+BACKUP_DIR=${TB320FC_BACKUP_DIR:-}
+if [ -z "$BACKUP_DIR" ]; then
+  for cand in /var/lib/tb320fc /data/local/tmp "${TMPDIR:-/tmp}"; do
+    if [ -d "$cand" ] && [ -w "$cand" ]; then BACKUP_DIR=$cand; break; fi
+  done
+fi
+[ -n "$BACKUP_DIR" ] || die "nowhere writable to keep the pre-write GPT dump"
+SAVE=$BACKUP_DIR/gpt-pre-$NAME-$(date +%s 2>/dev/null || echo pre)
+mkdir -p "$SAVE"
+cp "$ph" "$pa" "$bh" "$ba" "$SAVE/"
+
+# The backup copy goes first: if this is interrupted, the still-old primary and
+# the already-new backup each stay individually CRC-valid, so a reader that
+# distrusts one copy can still fall back to the other.
+dd if="$ba" of="$DISK" bs="$LBASIZE" seek="$BEQLBA" count="$ARLBAS" conv=notrunc 2>/dev/null
+dd if="$bh" of="$DISK" bs="$LBASIZE" seek="$ALTLBA" count=1 conv=notrunc 2>/dev/null
+dd if="$pa" of="$DISK" bs="$LBASIZE" seek="$EQLBA" count="$ARLBAS" conv=notrunc 2>/dev/null
+dd if="$ph" of="$DISK" bs="$LBASIZE" seek="$MYLBA" count=1 conv=notrunc 2>/dev/null
+sync
+
+dd if="$DISK" bs="$LBASIZE" skip="$MYLBA" count=1 of="$W/chk-ph" 2>/dev/null
+dd if="$DISK" bs="$LBASIZE" skip="$EQLBA" count="$ARLBAS" of="$W/chk-pa" 2>/dev/null
+dd if="$DISK" bs="$LBASIZE" skip="$ALTLBA" count=1 of="$W/chk-bh" 2>/dev/null
+dd if="$DISK" bs="$LBASIZE" skip="$BEQLBA" count="$ARLBAS" of="$W/chk-ba" 2>/dev/null
+for pair in "ph chk-ph" "pa chk-pa" "bh chk-bh" "ba chk-ba"; do
+  set -- $pair
+  cmp -s "$W/$1" "$W/$2" || die "read-back of $1 differs from what was written"
+done
+
+printf 'SLOTATTRS-OK cmd=set slot=%s entries_written=%s verified=1 pre_dump=%s\n' \
+  "$SLOT" "$CHANGED" "$SAVE"

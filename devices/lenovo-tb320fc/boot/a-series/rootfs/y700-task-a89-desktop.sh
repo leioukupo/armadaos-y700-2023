@@ -164,11 +164,36 @@ UNIT
 ln -sf ../y700-desktop.service "$R/etc/systemd/system/multi-user.target.wants/y700-desktop.service"
 U "desktop unit installed and wanted by multi-user.target"
 
-# binfmt_misc and rpc_pipefs are not in this kernel; they only add red lines.
-for u in proc-sys-fs-binfmt_misc.mount systemd-binfmt.service var-lib-nfs-rpc_pipefs.mount bootc-generic-growpart.service; do
-	ln -sf /dev/null "$R/etc/systemd/system/$u"
-done
-U "masked 4 known-absent units"
+# binfmt_misc (CONFIG_BINFMT_MISC=m) and rpc_pipefs (CONFIG_SUNRPC=m) are in the
+# payload kernel - just not as built-ins. Autoload needs the fs-binfmt_misc and
+# fs-rpc_pipefs aliases, and those only exist inside a module tree; A89 measured no
+# tree for the running kernel, so these units could never come up and only added red
+# lines. Same gap as CONFIG_HID_GENERIC=m: a plugged gamepad enumerates but never
+# gets an input device. Mask only what is genuinely missing, because fex-emu is
+# installed and registers x86 translation through binfmt_misc - shipping
+# /usr/lib/modules/$(kver) is the fix, the mask is not. growpart stays masked: it
+# has no job on this root.
+probe_mod() {
+	for k in $R/usr/lib/modules/*/$1; do
+		[ -e "$k" ] && return 0
+	done
+	return 1
+}
+if probe_mod kernel/fs/binfmt_misc.ko*; then
+	U "binfmt chain left enabled (binfmt_misc.ko is in the image)"
+else
+	ln -sf /dev/null "$R/etc/systemd/system/proc-sys-fs-binfmt_misc.automount"
+	ln -sf /dev/null "$R/etc/systemd/system/proc-sys-fs-binfmt_misc.mount"
+	ln -sf /dev/null "$R/etc/systemd/system/systemd-binfmt.service"
+	U "binfmt_misc.ko missing -> masked the whole binfmt chain"
+fi
+if probe_mod kernel/net/sunrpc/sunrpc.ko*; then
+	U "var-lib-nfs-rpc_pipefs.mount left enabled (sunrpc.ko is in the image)"
+else
+	ln -sf /dev/null "$R/etc/systemd/system/var-lib-nfs-rpc_pipefs.mount"
+	U "sunrpc.ko missing -> masked var-lib-nfs-rpc_pipefs.mount"
+fi
+ln -sf /dev/null "$R/etc/systemd/system/bootc-generic-growpart.service"
 
 sync
 umount /mnt/ufs 2>/dev/null || m "umount busy"

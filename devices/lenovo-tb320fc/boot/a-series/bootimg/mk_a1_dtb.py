@@ -69,10 +69,20 @@ DISABLE_NODES = ('display-subsystem@ae00000', 'display-controller@ae01000',
                  # still runs the panel through.  The screen goes black exactly
                  # there.  Keep the driver off until we own the display for real.
                  'iommu@15000000', 'iommu@3da0000',
-                 # qcom-cpufreq-hw on qcom,cpufreq-epss pokes the EPSS perf-state
-                 # LUT that ABL still owns; the CPU clock glitches and the whole
-                 # SoC dies at ~22 s (energy_model lines are the last thing seen).
-                 'cpufreq@17d91000')
+                 )
+
+# cpufreq@17d91000 (qcom,sm8450-cpufreq-epss) is deliberately NOT pinned off any
+# more.  A1m put it in DISABLE_NODES because the ~22 s boot death was blamed on
+# the EPSS perf-state writes, and A1l falsified that: with the node disabled the
+# death time did not move.  B05 read the three freq-domains from userspace on the
+# live tablet instead (read-only /dev/mem decode of the epss_soc_data offsets in
+# drivers/cpufreq/qcom-cpufreq-hw.c): every domain reports enable=3 and a
+# complete monotone LUT - silver 441.6 MHz..2.016 GHz, gold 633.6 MHz..2.7456 GHz,
+# prime 787.2 MHz..3.1872 GHz.  The block is powered and holds the table ABL
+# programmed.  Leaving the node off keeps /sys/devices/system/cpu/cpufreq empty,
+# so armada-powerd has no policy to cap, the Energy Model is never built, and
+# nothing in ArmadaOS (Armada Tools, Steam, MangoHud, lscpu) can name a CPU
+# frequency at all.
 
 # A1m "smallest boot set" (Y700_MINIMAL=1): pin off every block that is either
 # TrustZone-owned (GPU/ADSP/SLPI/camera/video/audio macros) or sitting behind a
@@ -99,7 +109,7 @@ MINIMAL_NODES = ('interrupt-controller@b220000',
                  'gpu@3d00000', 'gmu@3d6a000', 'clock-controller@3d90000',
                  'pcie@1c00000', 'phy@1c06000',
                  # A45: usb@a600000 and its HS phy come back as a
-                 # peripheral (see usb_peripheral); the SS/QMP phy stays off.
+                 # host (see usb_host); the SS/QMP phy stays off.
                  'phy@88e8000',
                  'isp@acb7000', 'cci@ac15000', 'cci@ac16000',
                  'clock-controller@aaf0000', 'clock-controller@ade0000',
@@ -532,7 +542,7 @@ def set_own_prop(text, name, prop, value, expect=1):
 
 
 
-# A45: the USB controller comes back - as a device, and with the HS phy only.
+# A45: the USB controller comes back - as a host, and with the HS phy only.
 #
 # Three edits, three reasons:
 # 1. The PDC stays pinned off (A1m/A1r), so this node's three &pdc interrupts have
@@ -543,11 +553,15 @@ def set_own_prop(text, name, prop, value, expect=1):
 # 2. The SS phy (phy@88e8000, qcom,sm8475-qmp-usb3-dp-phy) stays disabled: poking
 #    0x088e8000 is exactly what took the board down in the pre-minimal rounds.  With
 #    phy-names cut to "usb2-phy" the dwc3 core sees -ENODEV for the SS phy (that one
-#    is tolerated), maximum-speed keeps the gadget at 480 Mbit, and
+#    is tolerated), maximum-speed caps the bus at 480 Mbit, and
 #    qcom,select-utmi-as-pipe-clk tells the glue no pipe clock exists.
-# 3. dr_mode becomes "peripheral" so dwc3-qcom enables the VBUS override, and
-#    dropping usb-role-switch keeps the typec role machinery out - no TCPM or
-#    qcom-pmic typec driver is built in, so a role switch would never appear.
+# 3. dr_mode becomes "host".  Nothing here can drive a role switch (no TCPM, no
+#    qcom-pmic typec driver built in, and no connector endpoint reaches DWC3),
+#    so dr_mode alone decides what the port is - and dropping usb-role-switch
+#    keeps the typec role machinery out of the way.  A179/A182: with dr_mode set
+#    to host, dwc3-qcom probes cleanly (xhci 480 Mbit on both root hubs) and the
+#    ADSP TCPM sources VBUS once a real device hangs off the port, which is what
+#    a gamepad needs.  adb over USB is the price: debug goes over the network.
 # Safety net: usb30_prim_gdsc is ALWAYS_ON in drivers/clk/qcom/gcc-sm8450.c, so the
 # block is powered before any of this happens.
 EUSB2_NODE = 'phy@88e3000'
@@ -566,7 +580,7 @@ USB_PHYNAMES_NEW = r'phy-names = "usb2-phy";'
 USB_MAXSPEED_OLD = 'maximum-speed = "super-speed-plus";'
 USB_MAXSPEED_NEW = 'maximum-speed = "high-speed";'
 USB_DRMODE_OLD = 'dr_mode = "otg";'
-USB_DRMODE_NEW = 'dr_mode = "peripheral";'
+USB_DRMODE_NEW = 'dr_mode = "host";'
 USB_ADD = ('maximum-speed = "high-speed";', 'qcom,select-utmi-as-pipe-clk;')
 
 
@@ -608,7 +622,7 @@ def add_own_props(text, name, props):
     return '\n'.join(lines), added
 
 
-def usb_peripheral(text):
+def usb_host(text):
     for old, new in ((USB_IRQ_OLD, USB_IRQ_NEW), (USB_NAMES_OLD, USB_NAMES_NEW),
                      (USB_PHYS_OLD, USB_PHYS_NEW),
                      (USB_PHYNAMES_OLD, USB_PHYNAMES_NEW),
@@ -624,8 +638,8 @@ def usb_peripheral(text):
     text = drop_own_flag(text, USB_NODE, 'usb-role-switch')
     text, _n = strip_own_prop(text, USB_NODE, 'role-switch-default-mode')
     text, added = add_own_props(text, USB_NODE, USB_ADD)
-    print('A45: %s is a high-speed peripheral: pdc irqs trimmed to 3 cells, ss phy dropped, '
-          'dr_mode=peripheral, max-speed capped to HS, added %d props %s'
+    print('A45: %s is a high-speed host: pdc irqs trimmed to 3 cells, ss phy dropped, '
+          'dr_mode=host, max-speed capped to HS, added %d props %s'
           % (USB_NODE, len(added), USB_ADD))
     return text
 
@@ -719,8 +733,8 @@ def main():
                     if n not in GPU_NODES + (GPU_SMMU_NODE,)]
     for node in disabled:
         text = set_status_disabled(text, node)
-    # 4a2. A45: the dwc3 wrapper is back on, as an HS peripheral.
-    text = usb_peripheral(text)
+    # 4a2. A45: the dwc3 wrapper is back on, as an HS host.
+    text = usb_host(text)
 
     # 4b. icc providers pinned off must not be left in any consumer's phandle list
     icc_off, icc_refs, spmi_irq = [], 0, 0
@@ -804,11 +818,14 @@ def main():
     #    and the deferred retry that a successful bind triggers probes the
     #    qcom,smp2p subsystem-communication devices on top of it, plus the
     #    serdev child of the geni uart ("serial0-0" -> the bluetooth node).
-    #    The board dies ~0.7 s into that retry burst, so pin all of them off and
-    #    see whether the boot survives past 3 s.
+    #    The board dies ~0.7 s into that retry burst, so pin them off and see
+    #    whether the boot survives past 3 s.  A182 later cleared the bluetooth
+    #    child of that suspicion: with the four smp2p nodes still pinned off, the
+    #    uart's serdev child probes, btqca loads qca/wcnhpbtfw21.tlv and
+    #    wcnhpnv21g.bin, and hci0 shows up - so the death was the smp2p retry
+    #    burst and nothing to do with Bluetooth.
     for _n, _depth in (('smp2p-adsp', 1), ('smp2p-cdsp', 1),
-                       ('smp2p-modem', 1), ('smp2p-slpi', 1),
-                       ('bluetooth', 4)):
+                       ('smp2p-modem', 1), ('smp2p-slpi', 1)):
         _head = chr(10) + chr(9) * _depth + _n + ' {'
         assert text.count(_head) == 1, 'A33 node header %s count=%d' % (
             _n, text.count(_head))
@@ -817,7 +834,32 @@ def main():
             'A33 node %s already handled' % _n)
         text = (text[:_at] + chr(10) + chr(9) * (_depth + 1) +
                 'status = "disabled";' + text[_at:])
-    print('A33: pinned smp2p x4 and the uart bluetooth child disabled')
+    print('A33: pinned smp2p x4 disabled')
+
+    # A182: the radio needs that serdev child, and the DT carries no usable
+    # address for it.  WCN6855 answers Read BD_ADDR with 00:00:00:00:5a:ad, which
+    # leaves hci0 flagged HCI_UNCONFIGURED: bluez gets an "Unconfigured Index
+    # Added", Set Powered comes back Invalid Index, and every adapter-level
+    # operation dies before the radio is touched.  hci_sync clears the flag when
+    # the fwnode of the serdev device (this node) carries local-bd-address and the
+    # transport can push it in - btqca can, it sets hdev->set_bdaddr to
+    # qca_set_bdaddr for everything but Rome.  The binding is little-endian, so
+    # the textual 00:00:00:00:5a:ad goes in last byte first.  Y700_A33_BT_OFF=1
+    # restores A33's pin for bisection.
+    if os.environ.get('Y700_A33_BT_OFF'):
+        _head = chr(10) + chr(9) * 4 + 'bluetooth {'
+        assert text.count(_head) == 1, 'A33 bluetooth header count=%d' % text.count(_head)
+        _at = text.index(_head) + len(_head)
+        text = (text[:_at] + chr(10) + chr(9) * 5 +
+                'status = "disabled";' + text[_at:])
+        print('A33: uart bluetooth child pinned disabled again (Y700_A33_BT_OFF)')
+    else:
+        if own_status(text, 'bluetooth') == 'disabled':
+            text, _n = set_own_prop(text, 'bluetooth', 'status', 'status = "okay";')
+        text, _added = add_own_props(
+            text, 'bluetooth', ['local-bd-address = [ad 5a 00 00 00 00];'])
+        print('A182: bluetooth left enabled (status %s), %d prop(s) added: %s'
+              % (own_status(text, 'bluetooth'), len(_added), _added))
 
     # A65: pin the KTZ8866 backlight chip off.  Nothing else in this kernel
     # touches the display (DSI/DPU/DP/panel nodes are all disabled, so the

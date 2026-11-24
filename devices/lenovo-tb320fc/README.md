@@ -14,18 +14,44 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 
 | 功能 | 当前状态 |
 |---|---|
-| kShimC 启动菜单 | 未实机验证（270° 旋转、中文、星图主题、电源/高级操作已配置） |
-| Android 启动 | 未实机验证；要求 bootloader 已解锁（AVB `NONE` 重封） |
+| kShimC 启动菜单 | 已实机验证：runtime 自己做 NVT host-download，菜单吃触摸，270° 旋转与中文都在（A176-A180）；板上 `boot_b` 是 c61e、`boot_a` 是 a61 |
+| Android 启动 | 已实机验证：活动槽 `b` + 菜单选 `Android（机身）`，安卓正常进系统（A180，2026-11-24 复测）；要求 bootloader 已解锁（AVB `NONE` 重封） |
 | 机身 Linux | 已实机验证：`boot_b` → initramfs → UFS 根 `y700root-ufs`（`/dev/sda16`）→ systemd，不插 TF 卡直接进 Plasma Mobile 桌面 |
+| 触屏 | 已实机验证：NT36523N host-download SPI 固件加载成功，输入挂在真实 DSI 面板上（A98-A103），方向正确、可拖窗口，熄屏恢复后仍可用 |
 | 触屏/手写笔 | 已实机验证：NT36523N host-download SPI 固件加载成功，输入挂在真实 DSI 面板上（A98-A103），方向正确、可拖窗口，熄屏恢复后仍可用 |
 | GPU/显示 | 已实机验证：Adreno 730 + GMU + gpucc + adreno-SMMU 全部绑定，`renderD128` 存在，weston `GL renderer: FD730`（GPU 固件必须进 initramfs，见 `boot/a-series/kernel/patches/a104-build.sh`） |
 | Wi-Fi | 已实机验证：WCN6855 走 `ath11k_pci`（`.ko`，根挂载后 insmod），已能连网；死结是 boot DTB 里 `pcie@1c00000` 缺 `iommu-map`，A130 修好后端到端通了，路线见根目录 `qca6490.md` 与 `PROGRESS.md` A120-A130 |
-| 音频 | 已实机验证：ADSP(AudioReach) + `q6apm`/`q6prm` + `snd-sc8280xp`(lenovo,y700-sndcard) + 两片 CS35L45，立体声外放出声；拓扑与 UCM 已进 `system_files`，开机自动写功放路由（A131-A141），A143 起开机不再播放测试音 |
+| 音频 | 已实机验证：ADSP(AudioReach) + `q6apm`/`q6prm` + `snd-sc8280xp`(lenovo,y700-sndcard) + 两片 CS35L45，立体声外放出声；拓扑与 UCM 已进 `system_files`，开机自动写功放路由（A131-A141），A143 起开机不再播放测试音 ；A184 起路由写两遍（`passes=2`）且只保留一个写者（A185 把 payload 的 `y700-audio`/`y700-power` mask 掉），两只功放稳定出声 |
 | 电池/充电 | 已实机验证：ADSP PMIC GLINK 路线（`pmic_glink` + `qcom_battmgr` + `ucsi_glink`，不改 DT），`/sys/class/power_supply` 齐全、USB-C 已按 PD/PPS 11 V · 3 A 充电（A142）；固件给的 charge/energy/power 三个数是坏的，A145-A146 起由内核派生，桌面读数与剩余时间正常 |
 | 触觉反馈 | PM8008（i2c5）尚无主线消费方，节点保持禁用 |
 | 内置手柄 | 本机无内置手柄，`ARMADA_BUILTIN_GAMEPAD=0`，不等待 CompositeDevice |
 
-启动链、显示/触摸与 GPU 已实机验证（见根目录 `PROGRESS.md` A97-A105）；kShimC 菜单与 Android 启动尚未实机验证。镜像层面的工作（live 逆向、boot 镜像解码、打包往返与 dry-run 全链路）已完成，见[二代引导文档](boot/README.md)。
+启动链、显示/触摸、GPU、kShimC 菜单与 Android 启动均已实机验证（见根目录 `PROGRESS.md` A97-A105、A176-A187）。镜像层面的工作（live 逆向、boot 镜像解码、打包往返与 dry-run 全链路）已完成，见[二代引导文档](boot/README.md)。
+
+## 槽位与活动槽（A187）
+
+两个槽的语义是固定的，别按"槽 a = 安卓"去理解 —— 这几天每次"进不去安卓"都是这个假设造成的：
+
+| 活动槽 | boot 内容 | base（菜单默认项） | 能去哪 |
+|---|---|---|---|
+| `a` | `boot_a-c61a.img`（sha `00ec152d…`） | ArmadaOS（机身） | 只有 ArmadaOS |
+| `b` | `boot_b-c61e.img`（sha `1f4c808d…`） | Android（机身） | 安卓 + route A 进 ArmadaOS（菜单带触摸） |
+
+日常把活动槽留在 `b`：两套系统都能从一个菜单进，不用碰 fastboot。
+
+活动槽不在 `misc`（整 1 MiB 只有偏移 8 处一个 `-bootloader` 残留和 0x8000 处 5 个字节，`--set-active` 前后逐字节相同），也不是 EFI 变量（两个系统里都没有 `/sys/firmware/efi/efivars`）。它就是承载 `boot_a/boot_b` 的那个 UFS LU 的 **GPT 分区条目属性位**：bit48-51 优先级、52 successful、53 boot-failed、55 dont-boot-again。本机 27 对 `_a/_b` 分区都带这些位，`fastboot --set-active` 会同时改主备两份 GPT。
+
+要紧的是**失败的启动会自己降权**：连续失败的槽 priority 递减并被打上 `dont-boot-again`；两边都被降权之后 XBL 没有可试的对象，屏幕就停在 fastboot 界面。这才是"一直卡在 fastboot""选过一次 ArmadaOS 之后启动项消失"的真身，与 `y700-*` 单元被 mask 无关 —— mask 状态下 ArmadaOS 照样正常起（A187 实测）。
+
+`/usr/libexec/tb320fc/slot-attrs` 是这一层的读数与修复工具：
+
+    slot-attrs report                    # 只读，列出每对分区的 prio/flags
+    slot-attrs set --slot b              # dry-run，列出将要写入的条目
+    slot-attrs set --slot b --commit     # 真写：重算主备 CRC32、读回校验、留 pre-dump
+
+语义是幂等的：把每对里较高的优先级给目标槽、较低的给另一个，并清掉目标槽的 `dont-boot-again`/`boot-failed`、置上 `successful`；对已经首选的槽跑一遍会直接报 `already_preferred=1`，一个字节都不写。主备两份拷贝任一 CRC 不过、或两份不一致时它直接拒绝 —— 不猜哪半边可信。于是"卡在 fastboot、但另一个槽的系统还能 SSH"这种情况不用再把手放到板子上。测试见 `tests/tb320fc-slot-attrs-test.sh`（合成 GPT，21 项，覆盖写入路径、幂等、两类拒绝）。
+
+两个坑：`fastboot getvar all` 会把这台 XBL 的 fastboot 会话彻底卡死（之后连 `getvar unlocked` 都不回话，只能重新复位），要读数就发单条 `getvar`；`getvar current-slot` 同样不实现，会挂住。
 
 ## 整机进镜像（A150 起）
 
@@ -69,6 +95,10 @@ A 系列那些「开机后打补丁」的脚本已经不是路线了：本机现
 - **开机必须写的路由**：`PRIMARY_MI2S_RX Audio Mixer MultiMedia1` = 1，两片 CS35L45 的 `DSP1 Firmware`=Protection、`Amplifier Mode`=SPK、`DSP_RX1..8 Source`（ASP_RX1/ASP_RX2/VMON/IMON/VDD_BATTMON/VDD_BSTMON/CLASSH_TGT/VDD_BATTMON）、`DACPCM Source`=DSP_TX1、`DSP1 Preload Switch`=1、`AMP Enable Switch` 先 0 后 1。静音的真正原因是 `SPK1/SPK2 Digital PCM Volume` 复位为 0（= -102.25 dB），而 `mute=1` 的 dBscale 控件拒绝 `-8dB` 这类文本写法，只能写原始值（当前用 400）。
 - **UCM**：`Lenovo-Y700` / `HiFi` 用例把上面这套序列编码进 `system_files/usr/share/alsa/ucm2/conf.d/sm8475/Lenovo-Y700.conf` 与 `ucm2/Lenovo/Y700/HiFi.conf`；`/etc/tb320fc/audio.conf` 的 `unmute=on` 让 `/usr/libexec/tb320fc/audio` 每次开机也写一遍，两者互为保险。
 - **必须静默**：A143 起默认不放测试音，开机只写功放路由（`/etc/tb320fc/audio.conf` 里不再有 `play`）。要复现测试音就临时 `systemctl restart tb320fc-audio` 之后再手动 `speaker-test`。
+- **路由要写两遍**：只在声卡刚出现时写一次，第二片 CS35L45 的 DSP 图常常还没落稳，结果是一只响一只不响，而且**有声/无声两种状态下所有 kcontrol 读数完全一致**。`/etc/tb320fc/audio.conf` 的 `passes=2` + `pass_gap=8` 是关键，日志里每片功放各打一行 `SPK1/SPK2 gate amp=... digvol=...`（A184）。
+- **后端第二槽是空的**：`PRIMARY_MI2S_RX Audio Mixer MultiMedia1` 是两元素布尔，读数 `on,off`，第二个元素怎么写都写不上（`1`、`1,1`、numid、`alsactl restore` 都失败）—— stock ADSP 图里 `ASP_RX2` 根本没连线。两只功放的主输入都取 `ASP_RX1`，把任何一只改成 `ASP_RX2` 它就哑（A184）。
+- **只允许一个写者**：A 系 boot payload 每次开机还会在 `/etc` 重新装上 `y700-audio.service`/`y700-power.service`，和镜像的 `tb320fc-audio`/`tb320fc-power` 抢同一批控制。`tb320fc-legacy-off.service`（sysinit，`Before=` 两条链和 multi-user）把它们 `disable --now` + `mask`；mask 是 `/dev/null` 符号链接，下一轮 payload 的 `cat >` 写进黑洞，所以不重刷 payload 也能稳住（A185）。
+- **`/usr` 会被回滚抹掉**：板上的热修复写进 `/usr` 能活过重启，但回滚或新部署就回到镜像内容。机制是 `system_files/usr/libexec/tb320fc/usr-overlay`：内容存在 stateroot 的 var（`/var/usrlocal/lib/tb320fc-usroverlay/files`），每次开机先于 modules-tree/audio/power/input 回放。mode 由路径决定（libexec/bin/sbin=755，其余 644），内容相同也要修 mode；它还会先更新「正在运行的自己」再 `exec`，否则 shell 会从旧偏移继续读新文件而半路炸掉（A185）。
 - **固件**：ADSP（26 个文件 / 13 MB，`adsp.mdt` + `adsp.b*`）与 CS35L45 保护固件（`spk1/spk2-cs35l45-dsp1-spk-prot.wmfw/.bin`）来自 <https://github.com/dianqk/firmware-lenovo-asphalt>（`lenovo/tb320fc/audio/`，原样取自 TB320FC 的 `modem_b`/`vendor`），A150 起**已入库**在 `system_files/usr/lib/firmware/`（`qcom/sm8475/lenovo/tb320fc/`、`cirrus/` 与固件根同名副本），出处与差异写在 `qcom/sm8475/lenovo/tb320fc/NOTICE.lenovo-firmware`；spk2 的 wmfw 在原图里是指向 spk1 的符号链接，入库时按普通副本落地。
 
 构建与诊断脚本：`boot/a-series/kernel/patches/a131..a146-build.sh`（模块与门禁）、`boot/a-series/initramfs/y700-patch-a143.sh`（把 `.ko`/拓扑/UCM 装进根）、`boot/a-series/rootfs/y700-audio-a143.sh`（`/usr/local/bin/y700-audio.sh` + `y700-audio.service`）。
@@ -136,6 +166,7 @@ upower 直接把 `POWER_NOW` 当 `energy-rate`，于是「快满了却只剩 25 
 | [Y700 音频拓扑源](../../audio_topology/sm8475/Lenovo-Y700.m4) | AudioReach 拓扑（m4），生成 `Lenovo-Y700-tplg.bin` |
 | [音频拓扑成品](../../system_files/usr/lib/firmware/qcom/sm8475/Lenovo-Y700-tplg.bin) | AudioReach 拓扑 blob |
 | [UCM 用例](../../system_files/usr/share/alsa/ucm2/Lenovo/Y700/HiFi.conf) | `Lenovo-Y700`/HiFi 功放路由序列 |
+| [/usr 覆盖层推送工具](usr-overlay/push.sh) | 把 `system_files/` 的板级修复同时写进 stage 与当前部署，并退役 `/usr/local` 副本、`/etc` 旧单元和 ExecStart drop-in（A185） |
 | [kShimC 补丁](patches/boot/kshim-gen2-entry-protocol.patch) | 二代入口协议（自适应二/四代布局） |
 | [boot 打包器](boot/build_android_boot.py) | MZ/PE 感知的二代 boot 打包器 |
 | [edl-devices profile](../../build_files/edl-devices.json) | 构建机设备 profile（SM8475/capep） |

@@ -132,6 +132,15 @@ runtime 在 comfyui（Ubuntu 24.04，交叉工具链在 /usr/bin）构建，依�
 
 - 刷：.work/flash-kshim.ps1（fastboot flash boot_b + set_active b + reboot）。
 - 回：.work/flash-kshim.ps1 -Restore 放回 ArmadaOS 的 boot（comfyui /root/y700-artifacts/boot-b-a150.img）。
-- boot_a 全程不动：fastboot --set-active=a 就是原厂 Android，任何一轮都能退出。
+- 现在两个槽都带 shim：`boot_b`=c61e（base 是安卓，另有 route A 进 ArmadaOS）、`boot_a`=a61（base 就是 ArmadaOS）。写槽用板内 dd（见 `usr-overlay/push.sh` 那套 staged 做法），不要用 fastboot 写 `boot_a/boot_b`，免得盖掉另一个槽。
+- 槽位语义固定：槽 a 的 base 是 ArmadaOS，槽 b 的 base 是安卓；日常活动槽留在 b，两套系统都能从 b 的菜单进。详见 `devices/lenovo-tb320fc/README.md` 的「槽位与活动槽」。
 
 观察顺序：菜单是否画出来（STAR_CHART 彩色界面）→ 音量上下能否移动光标 → Power 确认 → 安卓是否真从 b 槽起来（这一步才证明 CONFIG_KSHIM_GEN2_ENTRY_RESTORE 的五字回写与 offset-0 入口是对的）。
+
+### 活动槽就是 GPT 属性位（A187）
+
+活动槽不在 `misc`（整 1 MiB 只有偏移 8 处一个 `-bootloader` 残留，`--set-active` 前后逐字节相同），也不是 EFI 变量（两个系统都没有 `/sys/firmware/efi/efivars`）。它是承载 `boot_a/boot_b` 的那个 UFS LU 的 GPT 分区条目属性位：bit48-51 优先级、52 successful、53 boot-failed、55 dont-boot-again；本机 27 对 `_a/_b` 分区都带，`fastboot --set-active` 同步改主备两份 GPT。失败的启动会自己降权（priority 递减 + dont-boot-again），两边都降权之后 XBL 没有可试的对象，屏幕就停在 fastboot 界面。
+
+读与修：`/usr/libexec/tb320fc/slot-attrs`（POSIX sh，CRC32 由 gzip 尾槽提供，ArmadaOS 与安卓 toybox 都实测跑过）。`report` 只读；`set --slot X` 默认 dry-run；`--commit` 才写，写之前要求主备两份 CRC 都过且逐字节一致，写之后读回比对，pre-dump 存 `/var/lib/tb320fc/gpt-pre-*`。语义幂等：对已经首选的槽再跑一遍报 `already_preferred=1`、不写任何字节。测试 `tests/tb320fc-slot-attrs-test.sh`（合成 GPT 21 项：写入路径、CRC 重建、幂等、两类拒绝）。
+
+两个 fastboot 坑：`getvar all` 会把这台 XBL 的会话彻底卡死（之后连 `getvar unlocked` 都不回话，只能重新复位到 fastboot）；`getvar current-slot` 不实现，会一直挂住。读数只用单条 `getvar`。
