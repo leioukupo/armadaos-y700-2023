@@ -2,12 +2,22 @@
 
 # Script copied from https://github.com/OpenGamingCollective/gamescope-session-steam/commit/55e541aa3adb80ee751220c886b9d133504f6e20
 
-# Baldur's panel profile is landscape-right. The launcher consumes ORIENTATION,
-# not ARMADA_PANEL_ORIENTATION. Keep explicit overrides; later /etc and per-user
-# session files can still override this default. Gamescope associates and rotates
-# real SPI child inputs itself; the vendor virtual NVT input is handled by
-# 99-armada-tb323fu-virtual-touch.rules, so do not add the old libinput rotation
-# matrix here.
+# The launcher consumes ORIENTATION, not ARMADA_GAMESCOPE_ORIENTATION. Keep
+# explicit overrides; later /etc and per-user session files can still override
+# these defaults. Gamescope only rotates a touchscreen after it has associated
+# the device with a connector, and an SPI digitizer counts as internal because
+# the gamescope package carries patch 0035 (wlserver: associate SPI touchscreens
+# with the internal display); the TB323FU vendor virtual NVT input is handled by
+# 99-armada-tb323fu-virtual-touch.rules. So do not add the old libinput rotation
+# matrix here: it would turn the coordinates twice in the Plasma desktop, which
+# rotates the panel through KWin instead.
+if [[ -z "${ORIENTATION:-}" && -n "${ARMADA_GAMESCOPE_ORIENTATION:-}" ]]; then
+    ORIENTATION="${ARMADA_GAMESCOPE_ORIENTATION}"
+fi
+
+# Baldur's panel profile is landscape-right and its desktop rotation is stored
+# the same way, so its gamescope rotation reuses ARMADA_PANEL_ORIENTATION. The
+# Legion Y700 Gen2 cannot: KWin rotates that portrait panel by itself.
 if [[ "${ARMADA_DEVICE_ID:-}" == lenovo-tb323fu && -z "${ORIENTATION:-}" ]]; then
     ORIENTATION="${ARMADA_PANEL_ORIENTATION:-right}"
 fi

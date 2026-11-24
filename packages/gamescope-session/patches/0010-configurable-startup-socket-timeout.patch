@@ -1,0 +1,40 @@
+From: Armada <armada@fyralabs.com>
+Date: Wed, 18 Nov 2026 23:30:00 +0800
+Subject: [PATCH] Make the startup socket timeout configurable
+
+The Legion Y700 Gen2 needs about fifty seconds before Gamescope reports its
+displays, and that wait is a property of the hardware rather than cold cache
+work: restricting the Vulkan ICDs changed nothing. Fifteen seconds was written
+for SD-card Deck boots, so every Steam attempt on this tablet ended in
+"gamescope failed" and a fallback to the desktop. Let the device profile raise
+the window through ARMADA_GAMESCOPE_STARTUP_TIMEOUT.
+---
+--- a/usr/share/gamescope-session-plus/gamescope-session-plus
++++ b/usr/share/gamescope-session-plus/gamescope-session-plus
+@@ -120,6 +120,13 @@
+ fi
+ if [ "${ARMADA_GAMESCOPE_USE_ROTATION_SHADER:-0}" = "1" ]; then
+ 	FORCE_COMPOSITION_ROTATION=1
++fi
++
++# Gamescope readiness is a fixed wait on some panels, so let the device
++# profile say how long to wait for the startup socket instead of baking
++# one number in for every device.
++if [ -n "${ARMADA_GAMESCOPE_STARTUP_TIMEOUT:-}" ]; then
++	GAMESCOPE_STARTUP_TIMEOUT="$ARMADA_GAMESCOPE_STARTUP_TIMEOUT"
+ fi
+ 
+ # Source client app specific configuration files
+@@ -336,7 +343,7 @@
+ $GAMESCOPECMD &
+ gamescope_pid="$!"
+ 
+-if read -r -t 15 response_x_display response_wl_display <>"$socket"; then
++if read -r -t "${GAMESCOPE_STARTUP_TIMEOUT:-15}" response_x_display response_wl_display <>"$socket"; then
+ 	export DISPLAY="$response_x_display"
+ 	export GAMESCOPE_WAYLAND_DISPLAY="$response_wl_display"
+ 	# We're done!
+
+
+-- 
+2.55.0

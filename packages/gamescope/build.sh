@@ -5,6 +5,18 @@ set -euxo pipefail
 source /src/TERRA.env
 source /src/toolchain.env
 
+# BEGIN TARGET-ARCH GUARD (tests/package-platform-test.sh runs this block)
+# The Snapdragon march flags appended to the spec below only exist on arm64. On a
+# foreign arch the spec mixes -m64 -march=x86-64 with -march=armv8.2-a and meson
+# reports the useless "Compiler gcc cannot compile programs" half an hour later.
+target_arch="$(rpm --eval '%{_target_arch}')"
+if [[ "${target_arch}" != "aarch64" ]]; then
+    echo "error: gamescope is an arm64 package but this builder targets ${target_arch}" >&2
+    echo "       build it for arm64: buildah build --platform linux/arm64, or ../build-local.sh" >&2
+    exit 1
+fi
+# END TARGET-ARCH GUARD
+
 rm -rf out
 mkdir -p out
 
