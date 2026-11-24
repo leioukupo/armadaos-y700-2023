@@ -154,7 +154,9 @@ if [ -z "$LBASIZE" ]; then
   if [ -r "$SYS/queue/logical_block_size" ]; then
     LBASIZE=$(cat "$SYS/queue/logical_block_size")
   else
-    LBASIZE=$(blockdev --getss "$DISK" 2>/dev/null)
+    # `|| true` matters: an assignment takes the exit status of its command
+    # substitution, and set -e would end the script here on a regular file.
+    LBASIZE=$(blockdev --getss "$DISK" 2>/dev/null || true)
     if [ -z "$LBASIZE" ]; then
       # A regular file - a saved GPT dump - carries no block geometry, so look
       # for the header signature: it sits one logical block into the LU whatever
