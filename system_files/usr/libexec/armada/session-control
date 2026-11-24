@@ -58,7 +58,10 @@ case "${requested}" in
 esac
 
 printf '[Autologin]\nSession=%s\n' "${session}" > /etc/sddm.conf.d/zz-holo-autologin.conf
+# zz-steamos and the Y700 bring-up file both sort next to or after zz-holo, so
+# leaving either behind silently pins the session and the switch is a no-op.
 rm -f /etc/sddm.conf.d/zz-steamos-autologin.conf
+rm -f /etc/sddm.conf.d/zz-y700-autologin.conf
 systemctl reset-failed sddm.service 2>/dev/null || true
 
 if [[ "${requested}" == default-* ]]; then
@@ -66,7 +69,14 @@ if [[ "${requested}" == default-* ]]; then
 fi
 
 if [[ "${1}" == "switch-gamemode" ]] && logout_plasma; then
-    exit 0
+    # Plasma accepts the logout call and stays up (there is no ksmserver in
+    # plasma-mobile), so asking nicely can be a silent no-op. Confirm the
+    # compositor actually went away before skipping the display manager restart.
+    for _ in 1 2 3 4 5 6 7 8; do
+        pgrep -x kwin_wayland >/dev/null || exit 0
+        sleep 1
+    done
+    echo "Plasma is still running after logout; restarting the display manager" >&2
 fi
 
 systemctl --no-block restart sddm.service

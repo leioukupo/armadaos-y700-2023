@@ -19,6 +19,9 @@ PROTON_11_STABLE = "proton-cachyos-11.0-arm64"
 
 FIXUP_STATE_DIR = pathlib.Path("/var/lib/armada/fixups")
 STEAM_OOBE_IMAGE = pathlib.Path("/etc/steamos-oobe-image")
+SDDM_AUTOLUGIN_DIR = pathlib.Path("/etc/sddm.conf.d")
+SDDM_AUTOLUGIN_CURRENT = "zz-holo-autologin.conf"
+SDDM_AUTOLUGIN_LEGACY = ("zz-steamos-autologin.conf", "zz-y700-autologin.conf")
 
 
 def fix_desktop_ownership():
@@ -146,14 +149,17 @@ def strip_compat_wildcard():
 
 def migrate_sddm_autologin():
     # steamos-manager prefers the legacy name while it exists, so the two diverge.
-    legacy = pathlib.Path("/etc/sddm.conf.d/zz-steamos-autologin.conf")
-    if not legacy.is_file():
-        return
-    current = pathlib.Path("/etc/sddm.conf.d/zz-holo-autologin.conf")
-    if not current.exists():
-        current.write_text(legacy.read_text())
-    legacy.unlink()
-    print("Migrated autologin config to zz-holo-autologin.conf")
+    # The Y700 bring-up wrote a third name that sorts after the managed one, which
+    # overrode every session-control switch; both are folded in once.
+    current = SDDM_AUTOLUGIN_DIR / SDDM_AUTOLUGIN_CURRENT
+    for name in SDDM_AUTOLUGIN_LEGACY:
+        legacy = SDDM_AUTOLUGIN_DIR / name
+        if not legacy.is_file():
+            continue
+        if not current.exists():
+            current.write_text(legacy.read_text())
+        legacy.unlink()
+        print(f"Migrated autologin config {name} to {current.name}")
 
 
 def sync_steam_oobe():
