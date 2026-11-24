@@ -195,6 +195,88 @@ else
   bad "helper is not in usr-overlay/push.sh's file list"
 fi
 
+# ---------------------------------------------------------------------------
+# pin: the same priority re-arrangement plus dont-boot-again on the peer, which
+# is the state Android leaves behind after a verified boot.  A payload Linux
+# never reports "boot completed", so this is the state that has to be re-written
+# every boot or XBL keeps demoting slots (PROGRESS.md A194).  --pair keeps the
+# write to the pair that actually drifts.
+# ---------------------------------------------------------------------------
+cp "$IMG.orig" "$IMG"
+out=$(run pin --slot b --pair boot)
+grep_ok "entries_to_change=2 written=0 (dry run" "$out" "pin --pair boot plans only the boot pair"
+cmp -s "$IMG" "$IMG.orig" && ok "pin dry run left the image untouched" || bad "pin dry run modified the image"
+
+out=$(run pin --slot b --pair boot --commit)
+grep_ok "SLOTATTRS-OK cmd=pin slot=b entries_written=2 verified=1 pre_dump=" "$out" "pin commits exactly two entries"
+v=$(verify)
+n=$(printf '%s\n' "$v" | tr '|' '\n' | grep -c "crc_arr=1 crc_hdr=1")
+check "both GPT copies still pass their CRC32s after pin" "$n" "2"
+grep_ok "boot_b prio=7 dont=0" "$v" "pin makes boot_b the preferred boot slot"
+grep_ok "boot_a prio=2 dont=1" "$v" "pin marks boot_a dont-boot-again so XBL cannot fall back to it"
+grep_ok "vendor_boot_a prio=15" "$v" "pin --pair boot leaves the firmware pairs alone"
+
+out=$(run pin --slot b --pair boot --commit)
+grep_ok "written=0 already_pinned=1" "$out" "running pin again changes nothing"
+
+out=$(run pin --slot b)
+grep_ok "entries_to_change=$ENTRIES written=0" "$out" "pin without --pair plans every slot pair"
+out=$(run pin --slot b --pair nosuchpair --commit)
+printf '%s\n' "$out" | grep -q "no such slot pair" && ok "pin refuses an unknown --pair name" || bad "unknown pair: $(printf '%s' "$out" | tail -1)"
+
+out=$(run pin --slot b --pair boot --prio 15 --peer-prio 0 --commit)
+v=$(verify)
+grep_ok "boot_b prio=15 dont=0" "$v" "--prio raises the pinned slot to an explicit priority"
+grep_ok "boot_a prio=0" "$v" "--peer-prio demotes the other side to an explicit priority"
+out=$(run pin --slot b --pair boot --prio 16)
+printf '%s\n' "$out" | grep -q "0-15" && ok "--prio rejects a value outside 0-15" || bad "prio range: $(printf '%s' "$out" | tail -1)"
+
+# ---------------------------------------------------------------------------
+# slot-pin is what the systemd unit execs: it reads the conf, gates on the board
+# DT, and hands slot-attrs the pin arguments.  All three inputs are overridable,
+# so the whole ExecStart path is exercised against the fixture image here.
+# ---------------------------------------------------------------------------
+HELPER=system_files/usr/libexec/tb320fc/slot-pin
+UNIT=system_files/usr/lib/systemd/system/tb320fc-slot-pin.service
+CONF=system_files/etc/tb320fc/slot-pin.conf
+[ -x "$HELPER" ] && ok "slot-pin helper is executable" || bad "slot-pin helper missing or not executable"
+[ -f "$UNIT" ] && ok "the unit file ships in /usr/lib" || bad "unit file missing"
+grep -q "ExecStart=/usr/libexec/tb320fc/slot-pin" "$UNIT" && ok "unit execs the helper" || bad "unit ExecStart wrong"
+grep -q "^systemctl enable tb320fc-slot-pin.service$" build_files/40-vendor-system-files.sh \
+  && ok "the image enables tb320fc-slot-pin.service" || bad "unit is not enabled by the image build"
+for f in usr/libexec/tb320fc/slot-pin usr/lib/systemd/system/tb320fc-slot-pin.service etc/tb320fc/slot-pin.conf; do
+  grep -q "$f" devices/lenovo-tb320fc/usr-overlay/push.sh && ok "push.sh carries $f" || bad "push.sh does not carry $f"
+done
+grep -q "^pin=on$" "$CONF" && ok "conf ships with the repair armed" || bad "conf default pin"
+grep -q "^slot=b$" "$CONF" && ok "conf names the payload slot" || bad "conf default slot"
+grep -q "^pairs=boot$" "$CONF" && ok "conf narrows the write to the boot pair" || bad "conf default pairs"
+
+printf 'lenovo,tb320fc\0' > "$W/compat"
+pinconf() { printf 'slot=b\npairs=boot\ncommit=%s\n%s\n' "$1" "$2" > "$W/pin.conf"; }
+cp "$IMG.orig" "$IMG"
+pinconf on ""
+out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
+grep_ok "TB320FC-SLOT-PIN-v1 start slot=b pairs=boot commit=on" "$out" "slot-pin logs the settings it used"
+grep_ok "SLOTATTRS-OK cmd=pin slot=b entries_written=2 verified=1" "$out" "slot-pin drives pin to a verified write"
+grep_ok "TB320FC-SLOT-PIN-v1 done rc=0" "$out" "slot-pin reports success"
+grep_ok "boot_a prio=2 dont=1" "$(verify)" "slot-pin left the boot pair pinned to slot b"
+
+cp "$IMG.orig" "$IMG"
+pinconf on "pin=off"
+out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
+grep_ok "skip pin=off" "$out" "pin=off is a kill switch"
+cmp -s "$IMG" "$IMG.orig" && ok "kill switch left the image untouched" || bad "kill switch wrote anyway"
+
+pinconf off ""
+out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
+grep_ok "cmd=pin slot=b entries_to_change=2 written=0 (dry run" "$out" "commit=off keeps the unit in dry run"
+cmp -s "$IMG" "$IMG.orig" && ok "dry-run unit left the image untouched" || bad "commit=off wrote anyway"
+
+printf 'tb320fc-not-this-board\0' > "$W/compat-other"
+out=$(TB320FC_DT_COMPATIBLE="$W/compat-other" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
+grep_ok "skip board-mismatch" "$out" "the helper no-ops on another board"
+cmp -s "$IMG" "$IMG.orig" && ok "board gate left the image untouched" || bad "board gate wrote anyway"
+
 out=$(run report --disk /dev/null)
 printf '%s\n' "$out" | grep -q "not a block device or image file" && ok "refuses a character device" || bad "char device: $(printf '%s' "$out" | tail -1)"
 

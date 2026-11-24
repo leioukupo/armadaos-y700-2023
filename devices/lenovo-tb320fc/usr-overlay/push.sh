@@ -39,6 +39,7 @@ usr/libexec/tb320fc/wifi-mac-sync
 usr/libexec/tb320fc/touch-watch
 usr/libexec/tb320fc/touch-revive
 usr/libexec/tb320fc/slot-attrs
+usr/libexec/tb320fc/slot-pin
 "
 UNITS="
 usr/lib/systemd/user/tb320fc-speaker-gate.service
@@ -48,6 +49,7 @@ usr/lib/systemd/system/tb320fc-usr-overlay.service
 usr/lib/systemd/system/tb320fc-legacy-off.service
 usr/lib/systemd/system/tb320fc-input.service
 usr/lib/systemd/system/tb320fc-wifi-mac.service
+usr/lib/systemd/system/tb320fc-slot-pin.service
 "
 CONFS="
 etc/tb320fc/audio.conf
@@ -55,6 +57,7 @@ etc/tb320fc/legacy-off.conf
 etc/tb320fc/wifi.conf
 etc/tb320fc/touch.conf
 etc/tb320fc/power.conf
+etc/tb320fc/slot-pin.conf
 "
 # Files the image already carries but that this board needs a newer copy of, together
 # with the data files they read: a device-quirks change is only useful on the next boot
@@ -71,7 +74,7 @@ FILES="$HELPERS $UNITS $CONFS $ARMADA_DATA"
 # renaming them keeps the rollback available without keeping the trap.
 STALE="/usr/local/libexec/tb320fc/audio /usr/local/libexec/tb320fc/power /usr/local/libexec/tb320fc/input /usr/local/libexec/tb320fc/modload /usr/local/libexec/tb320fc/modules-tree"
 # Units that must be enabled; drop-ins and /etc copies matching these names are removed.
-ARM="tb320fc-modules-tree.service tb320fc-usr-overlay.service tb320fc-legacy-off.service tb320fc-input.service tb320fc-audio.service tb320fc-power.service tb320fc-wifi.service tb320fc-wifi-mac.service tb320fc-touch.service"
+ARM="tb320fc-modules-tree.service tb320fc-usr-overlay.service tb320fc-legacy-off.service tb320fc-input.service tb320fc-audio.service tb320fc-power.service tb320fc-wifi.service tb320fc-wifi-mac.service tb320fc-touch.service tb320fc-slot-pin.service"
 # The session half of the audio chain: a user unit, enabled with --global so systemd
 # writes the wants symlinks under /etc/systemd/user.
 GLOBAL="tb320fc-speaker-gate.service tb320fc-speaker-watch.service"

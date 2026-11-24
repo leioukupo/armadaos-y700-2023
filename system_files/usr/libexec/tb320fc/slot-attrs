@@ -32,6 +32,8 @@
 # usage:
 #   slot-attrs report [--disk DEV] [--lba-size N]
 #   slot-attrs set --slot a|b [--disk DEV] [--lba-size N] [--commit]
+#   slot-attrs pin --slot a|b [--pair NAME] [--prio N] [--peer-prio N]
+#                  [--disk DEV] [--lba-size N] [--commit]
 #
 # Rewriting a GPT is destructive, so the defaults are deliberately cautious:
 # nothing is written without --commit, and the tool refuses outright when either
@@ -39,7 +41,7 @@
 # a half-written table by guessing.
 set -eu
 
-VER=TB320FC-SLOTATTRS-v1
+VER=TB320FC-SLOTATTRS-v2
 PROG=${0##*/}
 PRIO_SHIFT=16
 PRIO_MASK=$((0xf << PRIO_SHIFT))
@@ -56,6 +58,7 @@ die() { printf '%s: %s\n' "$VER" "$1" >&2; exit 1; }
 usage() {
   printf 'usage: %s report [--disk DEV] [--lba-size N]\n' "$PROG" >&2
   printf '       %s set --slot a|b [--disk DEV] [--lba-size N] [--commit]\n' "$PROG" >&2
+  printf '       %s pin --slot a|b [--pair NAME] [--prio N] [--peer-prio N] [--commit]\n' "$PROG" >&2
   exit 2
 }
 
@@ -103,22 +106,34 @@ flags_of() { # HI32 -> readable form of the upper half of the attribute bits
 # ---- arguments ------------------------------------------------------------
 # The subcommand may come before or after the options; typing
 # `slot-attrs --disk /dev/sdd report` should just work.
-CMD= DISK= LBASIZE= SLOT= COMMIT=0
+CMD= DISK= LBASIZE= SLOT= COMMIT=0 ONLY= PRIO= PEERPRIO=
 while [ $# -gt 0 ]; do
   case $1 in
-    --disk)     [ $# -ge 2 ] || usage; DISK=$2; shift 2 ;;
-    --lba-size) [ $# -ge 2 ] || usage; LBASIZE=$2; shift 2 ;;
-    --slot)     [ $# -ge 2 ] || usage; SLOT=$2; shift 2 ;;
-    --commit)   COMMIT=1; shift ;;
-    report|set) [ -z "$CMD" ] || usage; CMD=$1; shift ;;
+    --disk)       [ $# -ge 2 ] || usage; DISK=$2; shift 2 ;;
+    --lba-size)   [ $# -ge 2 ] || usage; LBASIZE=$2; shift 2 ;;
+    --slot)       [ $# -ge 2 ] || usage; SLOT=$2; shift 2 ;;
+    --pair|--only) [ $# -ge 2 ] || usage; ONLY="$ONLY,$2"; shift 2 ;;
+    --prio)       [ $# -ge 2 ] || usage; PRIO=$2; shift 2 ;;
+    --peer-prio)  [ $# -ge 2 ] || usage; PEERPRIO=$2; shift 2 ;;
+    --commit)     COMMIT=1; shift ;;
+    report|set|pin) [ -z "$CMD" ] || usage; CMD=$1; shift ;;
     -h|--help)  usage ;;
     *)          usage ;;
   esac
 done
-case $CMD in report|set) ;; *) usage ;; esac
-if [ "$CMD" = set ]; then
-  case $SLOT in a|b) ;; *) die "set needs --slot a|b" ;; esac
+case $CMD in report|set|pin) ;; *) usage ;; esac
+if [ "$CMD" = set ] || [ "$CMD" = pin ]; then
+  case $SLOT in a|b) ;; *) die "$CMD needs --slot a|b" ;; esac
 fi
+if [ -n "$PRIO" ]; then
+  case $PRIO in *[!0-9]*) die "--prio takes a slot priority of 0-15" ;; esac
+  [ "$PRIO" -le 15 ] || die "--prio takes a slot priority of 0-15"
+fi
+if [ -n "$PEERPRIO" ]; then
+  case $PEERPRIO in *[!0-9]*) die "--peer-prio takes a slot priority of 0-15" ;; esac
+  [ "$PEERPRIO" -le 15 ] || die "--peer-prio takes a slot priority of 0-15"
+fi
+ONLY=${ONLY#,}
 
 # ---- which LU carries boot_a/boot_b ---------------------------------------
 if [ -z "$DISK" ]; then
@@ -228,6 +243,15 @@ while [ "$i" -lt "$NUM" ]; do
 done
 
 PAIRS=$(cut -d' ' -f1 "$W/ents" | sort -u | wc -l | tr -d ' ')
+if [ -n "$ONLY" ]; then
+  # A typo in --pair would otherwise look like "nothing to do", which is the most
+  # dangerous possible answer from a tool that edits a boot-critical table.
+  _missing=
+  for _p in $(printf '%s' "$ONLY" | tr ',' ' '); do
+    grep -q "^$_p " "$W/ents" || _missing="$_missing $_p"
+  done
+  [ -z "$_missing" ] || die "no such slot pair(s):$_missing"
+fi
 printf '%s %s disk=%s lba=%s entries=%s pairs=%s\n' \
   "$VER" "$CMD" "$DISK" "$LBASIZE" "$NUM" "$PAIRS"
 
@@ -257,6 +281,18 @@ fi
 # on the target, and so is boot-failed (that counter is what drove the priority
 # down in the first place); successful is set because that is what
 # `fastboot --set-active` does and what the booted slot would set anyway.
+#
+# `pin` is the same re-arrangement plus one difference that matters on this
+# tablet: it also raises dont-boot-again on the *other* side, which is exactly
+# where Android leaves an inactive slot after a verified boot.  A payload Linux
+# never reports "boot completed", so XBL keeps treating whichever slot it loaded
+# as untried: the slot loses priority and eventually gains dont-boot-again, the
+# menu alternates between the two slots, and when both sides run out of priority
+# the board just sits on the fastboot screen (PROGRESS A194 measured boot at
+# 7/2 with boot-failed set on both sides while the 26 firmware pairs sit at the
+# vendor resting state 15/11 with dont-boot-again on the inactive side).  Writing
+# the vendor resting state every boot makes that decay harmless, and --pair boot
+# keeps the write to the one pair that actually drifts.
 : > "$W/plan"
 cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
   ra=$(awk -v n="$stem" '$1==n && $2=="a"' "$W/ents")
@@ -265,29 +301,40 @@ cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
   ia=$(printf '%s' "$ra" | cut -d' ' -f3); ha=$(printf '%s' "$ra" | cut -d' ' -f4)
   ib=$(printf '%s' "$rb" | cut -d' ' -f3); hb=$(printf '%s' "$rb" | cut -d' ' -f4)
   p_a=$(( (ha >> PRIO_SHIFT) & 0xf )); p_b=$(( (hb >> PRIO_SHIFT) & 0xf ))
-  # Skip a pair that already prefers the target and does not carry
-  # dont-boot-again on it.  Without this guard the command would rewrite the
-  # boot-failed bit of a slot that is already fine, and "nothing to do" would
-  # never be reported.
-  if [ "$SLOT" = a ]; then
-    pt=$p_a; po=$p_b; dt=$(( (ha >> 23) & 1 ))
-  else
-    pt=$p_b; po=$p_a; dt=$(( (hb >> 23) & 1 ))
-  fi
-  if [ "$pt" -gt "$po" ] && [ "$dt" = 0 ]; then continue; fi
   if [ "$p_a" = "$p_b" ]; then
-    want_a=15; want_b=11
-  else
-    if [ "$p_a" -gt "$p_b" ]; then hi=$p_a; lo=$p_b; else hi=$p_b; lo=$p_a; fi
-    want_a=$hi; want_b=$lo
+    # Both sides demoted - the brick state.  Fall back to the vendor convention
+    # so the target gets a real edge.
+    hi=15; lo=11
+  elif [ "$p_a" -gt "$p_b" ]; then hi=$p_a; lo=$p_b
+  else hi=$p_b; lo=$p_a
   fi
-  if [ "$SLOT" = a ]; then new_a=$want_a; new_b=$want_b; else new_a=$want_b; new_b=$want_a; fi
+  ht=$hi; hl=$lo
+  if [ -n "$PRIO" ]; then ht=$PRIO; fi
+  if [ -n "$PEERPRIO" ]; then hl=$PEERPRIO; fi
+  if [ "$SLOT" = a ]; then
+    pt=$p_a; po=$p_b; dt=$(( (ha >> 23) & 1 )); ft=$(( (ha >> 21) & 1 )); dp=$(( (hb >> 23) & 1 ))
+  else
+    pt=$p_b; po=$p_a; dt=$(( (hb >> 23) & 1 )); ft=$(( (hb >> 21) & 1 )); dp=$(( (ha >> 23) & 1 ))
+  fi
+  # Skip a pair that is already in the wanted state.  Without this guard the
+  # command would rewrite the boot-failed bit of a slot that is already fine, and
+  # "nothing to do" would never be reported.  With no --prio/--peer-prio override,
+  # ht/hl are this pair's own current max/min, so "already preferred" and "already
+  # at these priorities" are the same test.  pin also asks for a clean
+  # boot-failed counter on the target and dont-boot-again on the peer.
+  if [ "$pt" -eq "$ht" ] && [ "$po" -eq "$hl" ] && [ "$dt" = 0 ]; then
+    if [ "$CMD" != pin ]; then continue; fi
+    if [ "$ft" = 0 ] && [ "$dp" = 1 ]; then continue; fi
+  fi
+  if [ "$SLOT" = a ]; then new_a=$ht; new_b=$hl; else new_a=$hl; new_b=$ht; fi
   na=$(( (ha & ~PRIO_MASK) | (new_a << PRIO_SHIFT) ))
   nb=$(( (hb & ~PRIO_MASK) | (new_b << PRIO_SHIFT) ))
   if [ "$SLOT" = a ]; then
     na=$(( (na & ~BIT_DONTBOOT & ~BIT_FAILED) | BIT_SUCCESSFUL ))
+    if [ "$CMD" = pin ]; then nb=$(( nb | BIT_DONTBOOT )); fi
   else
     nb=$(( (nb & ~BIT_DONTBOOT & ~BIT_FAILED) | BIT_SUCCESSFUL ))
+    if [ "$CMD" = pin ]; then na=$(( na | BIT_DONTBOOT )); fi
   fi
   if [ "$na" != "$ha" ] || [ "$nb" != "$hb" ]; then
     printf '%s %s %s\n' "$stem" "$ia" "$na" >> "$W/plan"
@@ -299,12 +346,14 @@ done
 
 CHANGED=$(wc -l < "$W/plan" | tr -d ' ')
 if [ "$CHANGED" = 0 ]; then
-  printf 'SLOTATTRS-OK cmd=set slot=%s written=0 already_preferred=1\n' "$SLOT"
+  already=already_preferred
+  if [ "$CMD" = pin ]; then already=already_pinned; fi
+  printf 'SLOTATTRS-OK cmd=%s slot=%s written=0 %s=1\n' "$CMD" "$SLOT" "$already"
   exit 0
 fi
 if [ "$COMMIT" != 1 ]; then
-  printf 'SLOTATTRS-OK cmd=set slot=%s entries_to_change=%s written=0 (dry run; add --commit)\n' \
-    "$SLOT" "$CHANGED"
+  printf 'SLOTATTRS-OK cmd=%s slot=%s entries_to_change=%s written=0 (dry run; add --commit)\n' \
+    "$CMD" "$SLOT" "$CHANGED"
   exit 0
 fi
 
@@ -353,5 +402,5 @@ for pair in "ph chk-ph" "pa chk-pa" "bh chk-bh" "ba chk-ba"; do
   cmp -s "$W/$1" "$W/$2" || die "read-back of $1 differs from what was written"
 done
 
-printf 'SLOTATTRS-OK cmd=set slot=%s entries_written=%s verified=1 pre_dump=%s\n' \
-  "$SLOT" "$CHANGED" "$SAVE"
+printf 'SLOTATTRS-OK cmd=%s slot=%s entries_written=%s verified=1 pre_dump=%s\n' \
+  "$CMD" "$SLOT" "$CHANGED" "$SAVE"

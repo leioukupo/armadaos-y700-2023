@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+# Re-write the Android A/B boot-slot flags after every payload boot.  Ordered
+# after multi-user on purpose: reaching the target is the "this boot is good"
+# signal the bootloader never gets from a Linux payload, and the LU holding
+# boot_a/boot_b must already be enumerated.
+[Unit]
+Description=TB320FC re-pin the Android A/B boot slot flags
+Documentation=file:/usr/libexec/tb320fc/slot-pin
+Documentation=file:/usr/libexec/tb320fc/slot-attrs
+After=tb320fc-usr-overlay.service
+Wants=tb320fc-usr-overlay.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=120
+ExecStart=/usr/libexec/tb320fc/slot-pin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

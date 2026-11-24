@@ -178,6 +178,10 @@ systemctl enable tb320fc-wifi.service
 systemctl enable tb320fc-wifi-mac.service
 systemctl enable tb320fc-touch.service
 systemctl enable tb320fc-input.service
+# and the boot-slot repair: XBL demotes a slot that never reports a successful boot,
+# which is every payload Linux boot on this board, so re-write the vendor resting
+# state each time the payload reaches multi-user.target (PROGRESS.md A194).
+systemctl enable tb320fc-slot-pin.service
 
 # logind's "reboot implies set-wall-message" annotation lets Steam re-enable
 # the reboot wall past the deny rule; the pre-check fails loud on a reformat.
