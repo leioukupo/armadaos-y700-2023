@@ -9,7 +9,11 @@ source /src/toolchain.env
 # The Snapdragon march flags appended to the spec below only exist on arm64. On a
 # foreign arch the spec mixes -m64 -march=x86-64 with -march=armv8.2-a and meson
 # reports the useless "Compiler gcc cannot compile programs" half an hour later.
-target_arch="$(rpm --eval '%{_target_arch}')"
+# A bare Fedora builder image has no rpm macro set loaded, so an rpm --eval
+# there hands the macro back verbatim and the guard refuses every arch. Ask the
+# kernel instead: uname -m is aarch64 inside an arm64 container even when the
+# host runs that container under qemu.
+target_arch="$(uname -m)"
 if [[ "${target_arch}" != "aarch64" ]]; then
     echo "error: gamescope is an arm64 package but this builder targets ${target_arch}" >&2
     echo "       build it for arm64: buildah build --platform linux/arm64, or ../build-local.sh" >&2

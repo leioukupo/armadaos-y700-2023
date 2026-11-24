@@ -76,11 +76,11 @@ awk '/# BEGIN TARGET-ARCH GUARD/{f=1;next} /# END TARGET-ARCH GUARD/{f=0} f' \
 [[ -s "$WORK/guard.sh" ]] || fail 'gamescope build.sh has no target-arch guard'
 
 mkdir -p "$WORK/stub"
-cat >"$WORK/stub/rpm" <<'STUB'
+cat >"$WORK/stub/uname" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$FAKE_ARCH"
 STUB
-chmod +x "$WORK/stub/rpm"
+chmod +x "$WORK/stub/uname"
 
 out="$(PATH="$WORK/stub:$PATH" FAKE_ARCH=x86_64 bash "$WORK/guard.sh" 2>&1)"
 rc=$?
