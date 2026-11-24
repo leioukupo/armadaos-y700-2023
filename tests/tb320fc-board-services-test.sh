@@ -153,7 +153,12 @@ check "the wifi helper asks wifi-mac" grep -q 'tb320fc_exec wifi-mac resolve' "$
 check "the wifi sync unit teaches NetworkManager" grep -q "802-11-wireless.cloned-mac-address" "$EXEC/wifi-mac-sync"
 check "the wifi sync unit runs after NetworkManager" grep -q "After=NetworkManager.service" "$UNITS/tb320fc-wifi-mac.service"
 check "the wifi bring-up stays before NetworkManager" grep -q "Before=NetworkManager.service" "$UNITS/tb320fc-wifi.service"
+check "the wifi helper pins the NetworkManager default as well" grep -q '90-tb320fc-wifi-mac.conf' "$EXEC/wifi"
+check "the wifi helper applies that pin from the resolved address" grep -q 'nm_conf "${want_mac}"' "$EXEC/wifi"
+check "the wifi helper drops the pin when mac is keep" grep -q 'nm_conf off' "$EXEC/wifi"
+check "the sync drops per-boot address bindings" grep -q -- '-802-11-wireless.mac-address' "$EXEC/wifi-mac-sync"
 check "the wifi conf carries mac_nm" grep -q "^mac_nm=on$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
+check "the wifi conf turns address bindings off" grep -q "^mac_bind=off$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
 check "the wifi conf documents the pin" grep -q "^mac=auto$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
 check "the touch watcher resolves touch-revive" grep -q "helper=touch-revive" "$EXEC/touch-watch"
 # ---- sibling resolution: own directory wins, and a missing sibling is reported ----
@@ -291,9 +296,13 @@ if [ "$1" = -g ] && [ "$2" = 802-11-wireless.cloned-mac-address ]; then
     cat "$st/$5" 2>/dev/null || true
     exit 0
 fi
+if [ "$1" = -g ] && [ "$2" = 802-11-wireless.mac-address ]; then
+    cat "$st/$5.bind" 2>/dev/null || true
+    exit 0
+fi
 if [ "$1" = connection ] && [ "$2" = modify ]; then
-    echo "$5" > "$st/$3"
-    echo "modify $3" >> "$st/log"
+    if [ "$5" = -802-11-wireless.mac-address ]; then rm -f "$st/$3.bind"; else echo "$5" > "$st/$3"; fi
+    echo "modify $3 $5" >> "$st/log"
     exit 0
 fi
 if [ "$1" = device ] && [ "$2" = reapply ]; then
@@ -320,6 +329,21 @@ check "the sync logs each connection" test "$(grep -c '^modify ' "$work/nmstate/
 
 out="$(run_sync)"
 check "a boot that is already correct writes nothing" grep -q 'updated=0' <<<"$out"
+
+# A profile bound with 802-11-wireless.mac-address only matches the device address of the
+# boot that created it, so on this chip it guarantees a password prompt on the next boot.
+printf '00:03:7F:12:AA:BB\n' > "$work/nmstate/aa11.bind"
+printf '00:03:7F:12:CC:DD\n' > "$work/nmstate/cc33.bind"
+: > "$work/nmstate/log"
+out="$(run_sync)"
+printf '%s\n' "$out"
+check "the sync clears a per-boot address binding" grep -q 'unbound=2' <<<"$out"
+out="$(run_sync)"
+check "the second sync has nothing left to clear" grep -q 'unbound=0' <<<"$out"
+printf 'mac=auto\nmac_nm=on\nmac_bind=on\n' > "$work/sync.conf"
+printf '00:03:7F:12:AA:BB\n' > "$work/nmstate/aa11.bind"
+out="$(run_sync)"
+check "mac_bind=on leaves the address binding alone" grep -q 'unbound=0' <<<"$out"
 
 printf 'mac=keep\nmac_nm=on\n' > "$work/sync.conf"
 out="$(run_sync)"

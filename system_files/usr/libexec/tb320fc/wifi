@@ -18,13 +18,14 @@
 # Now modprobe failures fall back to the matching .ko in /usr/lib/y700, the conf
 # is parsed defensively, and an interface is matched as wl* because udev renames
 # wlan0 to wlp1s0 within milliseconds of the probe.
-TB320FC_TAG=TB320FC-WIFI-v6
+TB320FC_TAG=TB320FC-WIFI-v7
 CONF=/etc/tb320fc/wifi.conf
 load=on
 regdom=CN
 polls=30
 ko_fallback=on
 mac=auto
+mac_nm=on
 if [ -f "${CONF}" ] ; then
 	# Strip CR and any stray whitespace so a CRLF conf cannot empty ${polls}.
 	TMPC=$(mktemp 2>/dev/null || echo /tmp/tb320fc-wifi.conf.$$)
@@ -140,11 +141,51 @@ fi
 # connections have to carry it as well - that is tb320fc-wifi-mac.service, which runs
 # after NetworkManager (nmcli has nothing to talk to from here, this unit is ordered
 # Before=NetworkManager.service on purpose).
+# Pinning the netdev and the connections is still not enough: NetworkManager decides the
+# on-air address for every connection that carries no cloned-mac-address of its own, and the
+# shipped default here is cloned-mac-address=permanent (the payload shadows Fedora's
+# stable-ssid default with /etc/NetworkManager/conf.d/22-wifi-mac-addr.conf). "Permanent" is
+# exactly the address this chip regenerates at every service-ready, so any profile created
+# after tb320fc-wifi-mac.service ran went back to a fresh address on its next activation -
+# which is the whole password-prompt story (PROGRESS.md A193). Pin the default as well.
+# Files in /etc/NetworkManager/conf.d are read in ascii order, so 90- overrides 22-, and
+# nothing else on this image touches the key.
+NM_CONF_DIR=/etc/NetworkManager/conf.d
+NM_CONF=${NM_CONF_DIR}/90-tb320fc-wifi-mac.conf
+nm_conf() {
+	# nm_conf <address|off>
+	_v=$1
+	if [ "${_v}" = off ] ; then
+		if [ -e "${NM_CONF}" ] ; then
+			rm -f "${NM_CONF}" 2>/dev/null && echo "${TB320FC_TAG} nmconf removed=${NM_CONF}" \
+				|| echo "${TB320FC_TAG} WARN nmconf remove failed path=${NM_CONF}" >&2
+		fi
+		return 0
+	fi
+	mkdir -p "${NM_CONF_DIR}" 2>/dev/null \
+		|| { echo "${TB320FC_TAG} WARN nmconf dir missing path=${NM_CONF_DIR}" >&2; return 0; }
+	_tmp=${NM_CONF}.new
+	printf '# Written by /usr/libexec/tb320fc/wifi (%s) from wifi-mac, every boot: WCN6855 has\n# no BD address, so the driver address NetworkManager calls "permanent" is new each\n# time. Edit /etc/tb320fc/wifi.conf (mac=, mac_nm=) instead of this file.\n[connection]\nwifi.cloned-mac-address=%s\n' "${TB320FC_TAG}" "${_v}" > "${_tmp}" 2>/dev/null \
+		|| { echo "${TB320FC_TAG} WARN nmconf write failed path=${NM_CONF}" >&2; return 0; }
+	if cmp -s "${_tmp}" "${NM_CONF}" 2>/dev/null ; then
+		rm -f "${_tmp}"
+		echo "${TB320FC_TAG} nmconf kept=${NM_CONF}"
+	elif mv -f "${_tmp}" "${NM_CONF}" 2>/dev/null ; then
+		echo "${TB320FC_TAG} nmconf written=${NM_CONF} mac=${_v}"
+	else
+		rm -f "${_tmp}"
+		echo "${TB320FC_TAG} WARN nmconf install failed path=${NM_CONF}" >&2
+	fi
+	return 0
+}
+
 want_mac=$(tb320fc_exec wifi-mac resolve "${mac}")
 if [ -z "${want_mac}" ] ; then
 	echo "${TB320FC_TAG} WARN mac left as-is setting=${mac} (wifi-mac failed)"
+	nm_conf off
 elif [ "${want_mac}" = keep ] ; then
 	echo "${TB320FC_TAG} mac keep iface=${I} mac=$(cat "/sys/class/net/${I}/address" 2>/dev/null)"
+	nm_conf off
 else
 	cur=$(cat "/sys/class/net/${I}/address" 2>/dev/null)
 	if [ "${cur}" != "${want_mac}" ] ; then
@@ -155,6 +196,7 @@ else
 		fi
 	fi
 	echo "${TB320FC_TAG} mac iface=${I} was=${cur:-none} now=$(cat "/sys/class/net/${I}/address" 2>/dev/null) source=${mac}"
+	if [ "${mac_nm}" = on ] ; then nm_conf "${want_mac}" ; else nm_conf off ; fi
 fi
 
 timeout 15 ip link set "${I}" up 2>&1 | sed "s/^/${TB320FC_TAG} ip-up: /"
