@@ -22,6 +22,15 @@ fi
 case "${boot_method}" in
     abl)
         ;;
+    none)
+        # Bring-up devices whose boot image (kernel, DTB, payload modules) is
+        # written out of band by the A-series tooling. A bootc deployment has
+        # nothing to sync here, and falling through to the ABL path would fail on
+        # the missing ESP and roll a perfectly good deployment back
+        # (PROGRESS.md A197: that is what a bootc switch did on TB320FC).
+        echo "armada-bootimg-update: boot method none: the boot image is not managed by bootc" >&2
+        exit 0
+        ;;
     kshimc)
         if [ "$#" -eq 0 ]; then
             exec /usr/libexec/armada/armada-kshim-state sync

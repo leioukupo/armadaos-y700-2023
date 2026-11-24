@@ -152,6 +152,17 @@ class HookTest(unittest.TestCase):
 
     # -- update: method selection -----------------------------------------
 
+    def test_none_method_does_nothing(self):
+        self.method.write_text("none\n", encoding="utf-8")
+        for args in ((), ["--snapshot-prev"]):
+            with self.subTest(args=args):
+                self.clear_calls()
+                code, out = self.run_script(self.update, self.legacy, args)
+                self.assertEqual(code, 0, out)
+                self.assertIn("not managed by bootc", out)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(Path(self.legacy["ESP"]).exists())
+
     def test_unknown_method_is_refused_before_any_legacy_write(self):
         self.method.write_text("nothing\n", encoding="utf-8")
         code, out = self.run_script(self.update, self.legacy)
@@ -220,6 +231,14 @@ class HookTest(unittest.TestCase):
                     expected += [str(self.rollback), "rollback"]
                     self.assertIn("rolling back", out)
                 self.assertEqual(self.calls(), expected)
+
+    def test_finalize_none_method_neither_updates_nor_rolls_back(self):
+        finalize = self.finalize_copy()
+        self.method.write_text("none\n", encoding="utf-8")
+        code, out = self.run_script(finalize, {"STUB_EXIT": "1"})
+        self.assertEqual(code, 0, out)
+        self.assertIn("nothing to do", out)
+        self.assertEqual(self.calls(), [])
 
     def test_finalize_unknown_method_is_refused(self):
         finalize = self.finalize_copy()

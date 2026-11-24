@@ -19,6 +19,12 @@ fi
 case "${boot_method}" in
     abl)
         ;;
+    none)
+        # See armada-bootimg-update: the boot image is managed out of band, so a
+        # staged deployment finalizing successfully is the whole story.
+        echo "armada-bootimg-finalize: boot method none: nothing to do" >&2
+        exit 0
+        ;;
     kshimc)
         # The update dispatches to kShimC state sync itself; exec keeps its
         # exact status and skips the bootc rollback below.
