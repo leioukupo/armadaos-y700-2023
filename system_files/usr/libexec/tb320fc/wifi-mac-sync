@@ -1,0 +1,127 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC: make the Wi-Fi MAC address stick.
+#
+# Pinning the netdev is not enough. WCN6855 has no BD address in its BDF, so the firmware
+# hands ath11k a fresh address at every service-ready, and NetworkManager - whose Wi-Fi
+# default is cloned-mac-address=preserve - copies that per-boot "permanent" address back
+# over whatever we set seconds earlier (PROGRESS.md A186: the pin was in place at 47.15 s
+# and the association at 47.4 s used 00:03:7f:12:0f:19). So the connections themselves have
+# to carry the address.
+#
+# This runs after NetworkManager, which is why it is a separate unit: the wifi bring-up unit
+# is ordered *before* NetworkManager (it has to load ath11k first) and nmcli has nothing to
+# talk to at that point. Writing the property is enough for later boots; the current boot
+# only needs one reapply, and only while the address still differs.
+# Kill switch: mac=keep (or mac_nm=off) in /etc/tb320fc/wifi.conf
+TB320FC_TAG=TB320FC-WIFI-MAC-SYNC-v2
+CONF=${TB320FC_WIFI_CONF:-/etc/tb320fc/wifi.conf}
+mac=auto
+mac_nm=on
+if [ -f "${CONF}" ] ; then
+	TMPC=$(mktemp 2>/dev/null || echo /tmp/tb320fc-wifi.conf.$$)
+	tr -d '\r' < "${CONF}" > "${TMPC}" 2>/dev/null && . "${TMPC}" 2>/dev/null
+	rm -f "${TMPC}"
+fi
+
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+
+tb320fc_exec board-check || exit 0
+if [ "${mac_nm}" != on ] ; then
+	echo "${TB320FC_TAG} skip mac_nm=${mac_nm}"
+	exit 0
+fi
+command -v nmcli >/dev/null 2>&1 || { echo "${TB320FC_TAG} FAIL nmcli missing"; exit 0; }
+
+want=$(tb320fc_exec wifi-mac resolve "${mac}")
+if [ -z "${want}" ] || [ "${want}" = keep ] ; then
+	echo "${TB320FC_TAG} skip want=${want:-none} setting=${mac}"
+	exit 0
+fi
+
+i=0
+while [ "${i}" -lt 20 ] ; do
+	nmcli -t -f UUID,TYPE connection show >/dev/null 2>&1 && break
+	sleep 1
+	i=$((i + 1))
+done
+if [ "${i}" -ge 20 ] ; then
+	echo "${TB320FC_TAG} FAIL NetworkManager never answered"
+	exit 0
+fi
+
+list=$(mktemp) || exit 0
+nmcli -t -f UUID,TYPE connection show 2>/dev/null | awk -F: '$2 == "802-11-wireless" { print $1 }' > "${list}"
+set_changed=0
+set_total=0
+while IFS= read -r u ; do
+	[ -n "${u}" ] || continue
+	set_total=$((set_total + 1))
+	# NM normalises the property to upper case, so compare case-insensitively or every boot
+	# looks like it changed something.
+	have=$(nmcli -g 802-11-wireless.cloned-mac-address connection show "${u}" 2>/dev/null | tr 'A-Z' 'a-z')
+	[ "${have}" = "${want}" ] && continue
+	if nmcli connection modify "${u}" 802-11-wireless.cloned-mac-address "${want}" >/dev/null 2>&1 ; then
+		set_changed=$((set_changed + 1))
+	else
+		echo "${TB320FC_TAG} WARN modify failed uuid=${u}"
+	fi
+done < "${list}"
+rm -f "${list}"
+
+iface() {
+	for n in /sys/class/net/wl*; do
+		[ -d "${n}/wireless" ] && { echo "${n##*/}"; return 0; }
+	done
+	return 1
+}
+I=$(iface)
+if [ -z "${I}" ] ; then
+	echo "${TB320FC_TAG} ok want=${want} connections=${set_total} updated=${set_changed} iface=none"
+	exit 0
+fi
+
+# The address that matters is the one that went on the air. mac80211/ath11k put the
+# driver's own "permanent" address back when the interface is opened for association, which
+# is later than this unit normally runs, so waiting for NM to report the connection is what
+# makes the comparison mean something (PROGRESS.md A186: the pin read back clean at +50 s
+# while the association five seconds later used 00:03:7f:12:ad:2b).
+j=0
+state=
+while [ "${j}" -lt 30 ] ; do
+	state=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v i="${I}" '$1 == i { print $2 }')
+	case "${state}" in connected*) break ;; esac
+	sleep 1
+	j=$((j + 1))
+done
+air=$(cat "/sys/class/net/${I}/address" 2>/dev/null)
+reapplied=skip
+if [ "${air}" != "${want}" ] ; then
+	nmcli device reapply "${I}" >/dev/null 2>&1 \
+		|| nmcli connection up uuid "$(nmcli -t -f NAME,UUID,DEVICE connection show --active 2>/dev/null | awk -F: -v i="${I}" '$3 == i { print $2 }' | head -1)" >/dev/null 2>&1
+	k=0
+	while [ "${k}" -lt 20 ] ; do
+		[ "$(cat "/sys/class/net/${I}/address" 2>/dev/null)" = "${want}" ] && break
+		sleep 1
+		k=$((k + 1))
+	done
+	air=$(cat "/sys/class/net/${I}/address" 2>/dev/null)
+	if [ "${air}" = "${want}" ] ; then
+		reapplied=ok
+	else
+		reapplied="failed after $((k + 1))s"
+	fi
+fi
+echo "${TB320FC_TAG} ok want=${want} connections=${set_total} updated=${set_changed} iface=${I} state=${state:-unknown} connected-after=${j}s on-air=${air:-none} reapply=${reapplied}"
+exit 0

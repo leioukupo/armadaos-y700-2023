@@ -1,0 +1,72 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC: the payload kernel (7.3.0-rc6) keeps the board drivers and binfmt/sunrpc
+# as =m, but an A-series image carries no /usr/lib/modules/$(uname -r) for it, so kmod
+# cannot resolve anything: proc-sys-fs-binfmt_misc.{automount,mount}, systemd-binfmt,
+# var-lib-nfs-rpc_pipefs.mount all go red, a plugged gamepad gets no input device
+# (CONFIG_HID_GENERIC=m) and InputPlumber's deck-uhid target has no /dev/uhid.
+#
+# The tree is staged under /var, the stateroot var that every ostree deployment shares:
+# writes to /usr do survive a reboot, but they belong to one deployment directory and
+# vanish on a rollback or on any update that composes a new deployment, so /var is the
+# only place a payload tree can reliably be found. (No "ostree admin unlock" overlay is
+# in use here: /run/ostree is empty and /usr is the deployment's own content.)
+#
+# Reconciling matters as much as the tree itself: /usr/lib/y700 holds the patched
+# copies built for this exact kernel, and tb320fc-{audio,power,input} only fall back to
+# insmod of those when modprobe FAILS. Once a tree exists modprobe succeeds, so without
+# this step the unpatched mainline copies win and audio/battery silently regress
+# (snd-sc8280xp defers forever, qcom-battmgr comes up with an empty capacity). The
+# patched copies therefore live in extra/ (depmod searches extra/ before kernel/) and
+# no same-name module may stay under kernel/. The prune runs every boot, not only when
+# something was copied - a freshly pushed tree would otherwise re-introduce the
+# shadowing (observed: ko=897 with 32 duplicates back under kernel/).
+TB320FC_TAG=TB320FC-MODULES-TREE-v2
+K=$(uname -r)
+TREE=/var/usrlocal/lib/y700-73mods/$K
+DST=/usr/lib/modules/$K
+STAGE_DIRS="/usr/lib/y700 /usr/local/lib/y700 /usr/local/lib/y700-73ko"
+
+if [ ! -f "$TREE/modules.dep" ]; then
+	echo "$TB320FC_TAG skip tree=$TREE not staged (ko=$(find "$TREE" -name '*.ko' 2>/dev/null | wc -l))"
+	exit 0
+fi
+mkdir -p "$DST" 2>/dev/null || { echo "$TB320FC_TAG fail mkdir $DST (/usr not writable?)"; exit 0; }
+if ! mountpoint -q "$DST"; then
+	mount --bind "$TREE" "$DST" || { echo "$TB320FC_TAG fail bind $TREE -> $DST"; exit 0; }
+fi
+
+changed=0
+mkdir -p "$DST/extra"
+for d in $STAGE_DIRS; do
+	[ -d "$d" ] || continue
+	for f in $d/*.ko; do
+		[ -f "$f" ] || continue
+		n=$(modinfo -F name "$f" 2>/dev/null)
+		[ -n "$n" ] || n=$(basename "$f" .ko | tr '-' '_')
+		if ! cmp -s "$f" "$DST/extra/$n.ko"; then
+			install -m 0644 "$f" "$DST/extra/$n.ko" && changed=1
+		fi
+	done
+done
+
+# Prune any provider of the same module name outside extra/, by file-name candidates
+# (module names use underscores, file names usually dashes).
+for t in $DST/extra/*.ko; do
+	[ -f "$t" ] || continue
+	n=$(basename "$t" .ko)
+	d=$(printf '%s' "$n" | tr '_' '-')
+	for cand in "$n" "$d"; do
+		dup=$(find "$DST/kernel" -name "$cand.ko" -print 2>/dev/null)
+		if [ -n "$dup" ]; then
+			printf '%s\n' "$dup" | while read -r f; do rm -f "$f"; done
+			changed=1
+		fi
+	done
+done
+
+if [ "$changed" = 1 ]; then
+	depmod -a "$K" || echo "$TB320FC_TAG WARN depmod failed"
+fi
+
+echo "$TB320FC_TAG ok dst=$DST ko=$(find "$DST" -name '*.ko' | wc -l) extra=$(find "$DST/extra" -name '*.ko' | wc -l) kernel=$(find "$DST/kernel" -name '*.ko' | wc -l) changed=$changed"

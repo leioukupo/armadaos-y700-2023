@@ -7,14 +7,32 @@
 # counter freezes from the blank onwards - the panel wakes, the controller does
 # not. So the trigger is bl_power, and the recovery is one cold re-init per rung
 # of a ladder, stopped as soon as the input device is back.
-TB320FC_TAG=TB320FC-TOUCH-v1
+TB320FC_TAG=TB320FC-TOUCH-v2
 CONF=/etc/tb320fc/touch.conf
 revive=auto
 ladder="5 20 45"
 sample=1
 [ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
-/usr/libexec/tb320fc/board-check || exit 0
-REV=/usr/libexec/tb320fc/touch-revive
+# Sibling helpers are not guaranteed to sit next to this script (see audio).
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+
+tb320fc_exec board-check || exit 0
+
+REV=$(for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+	[ -x "${_d}/touch-revive" ] && { echo "${_d}/touch-revive"; break; }
+done)
+[ -n "${REV}" ] || { echo "${TB320FC_TAG} FAIL helper missing helper=touch-revive"; exit 1; }
 FLAG=/run/tb320fc-touch-revive
 NO=/run/tb320fc-no-touch-watch
 

@@ -8,23 +8,37 @@
 # chain are loaded, and that needs the ADSP already running - which is why this
 # unit runs after tb320fc-audio.service. aux-hpd-bridge is mandatory too
 # (CONFIG_DRM_AUX_HPD_BRIDGE=m is an aux-device supplier for pmic_glink_altmode).
-TB320FC_TAG=TB320FC-POWER-v1
+TB320FC_TAG=TB320FC-POWER-v3
 CONF=/etc/tb320fc/power.conf
 load=on
 polls=25
 [ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
-/usr/libexec/tb320fc/board-check || exit 0
+# Sibling helpers are not necessarily next door: the image keeps them in
+# /usr/libexec/tb320fc, a replayed fix lands in /usr/local/libexec/tb320fc, and a
+# deployment that predates modload has no modload under /usr at all, which makes the
+# module chain die with a bare "No such file or directory" (PROGRESS.md A185).
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+tb320fc_exec board-check || exit 0
 
 MODS="fsa4480 aux_hpd_bridge pmic_glink qcom_battmgr typec_ucsi ucsi_glink pmic_glink_altmode"
 if [ "${load}" = on ] ; then
-	for m in ${MODS} ; do
-		modprobe "${m}" 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=${m}"
-	done
+	tb320fc_exec modload ${MODS} || echo "${TB320FC_TAG} WARN module chain incomplete"
 fi
 
 bat=/sys/class/power_supply/qcom-battmgr-bat
 i=0
-while [ "${i}" -lt "${polls}" ; do
+while [ "${i}" -lt "${polls}" ] ; do
 	[ -e "${bat}/capacity" ] && break
 	sleep 2
 	i=$((i + 1))

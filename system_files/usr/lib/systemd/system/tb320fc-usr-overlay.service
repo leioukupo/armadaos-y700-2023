@@ -1,0 +1,14 @@
+[Unit]
+Description=TB320FC replay board-side /usr fixes staged in the stateroot var
+Documentation=file:/usr/libexec/tb320fc/usr-overlay
+DefaultDependencies=no
+After=local-fs-pre.target ostree-remount.service
+Before=sysinit.target tb320fc-modules-tree.service tb320fc-audio.service tb320fc-power.service tb320fc-input.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb320fc/usr-overlay
+
+[Install]
+WantedBy=sysinit.target

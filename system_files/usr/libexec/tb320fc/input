@@ -1,0 +1,37 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC input-side kernel modules that the OS image cannot ship to kmod.
+#
+# InputPlumber's `deck-uhid` target device - the virtual Steam Deck controller
+# the Legion G9 is remapped into, and the target the Gen 4/Gen 5 profiles use -
+# needs /dev/uhid.  The A-series kernel is configured CONFIG_UHID=m, but this
+# payload stages no uhid.ko anywhere kmod can find it, so the node never exists
+# and InputPlumber fails the target with a bare ENOENT:
+#   ERROR inputplumber::input::target] Error polling target device:
+#         DeviceError("No such file or directory (os error 2)")
+# Load it from the staged module directories (see modload).  Build it with
+# devices/lenovo-tb320fc/boot/a-series/kmod/build_uhid.sh; there is no
+# CONFIG_MODVERSIONS in this kernel, so a module from the same source tree with
+# matching vermagic ("7.3.0-rc6 SMP preempt mod_unload aarch64") loads cleanly.
+TB320FC_TAG=TB320FC-INPUT-v2
+# Sibling helpers are not necessarily next door: the image keeps them in
+# /usr/libexec/tb320fc, a replayed fix lands in /usr/local/libexec/tb320fc, and a
+# deployment that predates modload has no modload under /usr at all, which makes the
+# module chain die with a bare "No such file or directory" (PROGRESS.md A185).
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+tb320fc_exec board-check || exit 0
+
+tb320fc_exec modload uhid || echo "${TB320FC_TAG} WARN uhid unavailable, deck-uhid targets will fail"
+echo "${TB320FC_TAG} uhid dev=$(ls /dev/uhid 2>/dev/null || echo missing)"
+exit 0

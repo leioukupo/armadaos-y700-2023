@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+# The A-series boot payload re-arms y700-audio.service / y700-power.service in /etc on
+# every boot; this unit un-arms them before the image-owned tb320fc units run, so only
+# one writer touches the amplifier and PMIC GLINK chain (see the helper).
+[Unit]
+Description=TB320FC un-arm the A-series payload copies of the audio/power bring-up
+Documentation=file:/usr/libexec/tb320fc/legacy-off
+DefaultDependencies=no
+After=sysinit.target dbus.socket
+Before=tb320fc-audio.service tb320fc-power.service multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=60
+ExecStart=/usr/libexec/tb320fc/legacy-off
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

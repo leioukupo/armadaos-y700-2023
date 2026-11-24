@@ -1,0 +1,80 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC: replay the board-side /usr fixes that the flashed image does not carry.
+#
+# Why a replay and not just a write: /usr inside an ostree deployment is writable and a
+# write does survive a reboot, but it belongs to that ONE deployment directory
+# (/ostree/deploy/default/deploy/<id>.0). A rollback, or any update that composes a new
+# deployment, comes back out of the image and every in-place fix disappears - seen twice
+# here, and the Armada Tools panel went back to claiming the system booted a "flat root
+# filesystem" even though bootc does report a booted deployment.
+#
+# So the content lives in the stateroot var (shared by every deployment) using the same
+# path layout as /, and is copied back on every boot. Files that already match are left
+# alone, which keeps this a no-op once the image itself carries the fix.
+# Kill switch: touch /var/usrlocal/lib/tb320fc-usroverlay/disabled
+TB320FC_TAG=TB320FC-USR-OVERLAY
+SRC=${TB320FC_USROVERLAY_SRC:-/var/usrlocal/lib/tb320fc-usroverlay/files}
+ROOT=${TB320FC_USROVERLAY_ROOT:-/}
+
+if [ ! -d "${SRC}" ]; then
+	echo "${TB320FC_TAG} ok skip stage-missing=${SRC}"
+	exit 0
+fi
+if [ -e "$(dirname "${SRC}")/disabled" ]; then
+	echo "${TB320FC_TAG} skip disabled"
+	exit 0
+fi
+
+# Replacing the file a running shell is reading from makes the interpreter pick up the new
+# bytes at a stale offset, and the replay dies half way through with nonsense like
+# "line 49: ission: command not found" (PROGRESS.md A185 - the stage grew a newer copy of
+# this very helper). So bring the script itself up to date first, then start over; the
+# second pass sees identical content and does not loop.
+self=$0
+staged=${SRC}/usr/libexec/tb320fc/usr-overlay
+case "${self}" in
+	/*)
+		if [ -f "${staged}" ] && ! cmp -s "${staged}" "${self}"; then
+			if cp "${staged}" "${self}.new" 2>/dev/null && chmod 755 "${self}.new" 2>/dev/null && mv -f "${self}.new" "${self}" 2>/dev/null; then
+				echo "${TB320FC_TAG} restart self-updated target=${self}"
+				exec sh "${self}" "$@"
+			fi
+			rm -f "${self}.new"
+		fi
+		;;
+esac
+
+applied=0
+kept=0
+list=$(mktemp) || exit 0
+(cd "${SRC}" && find . -type f) > "${list}"
+while IFS= read -r rel; do
+	src=${SRC}/${rel#./}
+	dst=${ROOT%/}/${rel#./}
+	# Modes come from where the file lives, never from the stage: a stage assembled from a
+	# tarball (Windows, or any checkout that dropped the exec bit) hands over 666 files, and
+	# a systemd unit that execs one fails with 203/EXEC on the next boot. Inheriting the old
+	# mode would keep that damage alive, since the content already matches.
+	mode=644
+	case "${rel}" in
+		*/libexec/* | */bin/* | */sbin/*) mode=755 ;;
+	esac
+	if [ -f "${dst}" ] && cmp -s "${src}" "${dst}"; then
+		# Matching content is not a matching file: the mode still has to be normalised.
+		chmod "${mode}" "${dst}" 2>/dev/null
+		kept=$((kept + 1))
+		continue
+	fi
+	mkdir -p "$(dirname "${dst}")" 2>/dev/null || { echo "${TB320FC_TAG} WARN mkdir $(dirname "${dst}")"; continue; }
+	if cp -a "${src}" "${dst}" 2>/dev/null; then
+		chmod "${mode}" "${dst}" 2>/dev/null
+		applied=$((applied + 1))
+		echo "${TB320FC_TAG} applied ${dst} mode=$(stat -c '%a' "${dst}" 2>/dev/null)"
+		[ -d "$(dirname "${dst}")/__pycache__" ] && rm -rf "$(dirname "${dst}")/__pycache__"
+	else
+		echo "${TB320FC_TAG} WARN copy ${dst} failed (/usr read-only?)"
+	fi
+done < "${list}"
+rm -f "${list}"
+echo "${TB320FC_TAG} ok src=${SRC} applied=${applied} kept=${kept}"

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+# Make the derived Wi-Fi MAC stick for NetworkManager. Ordered after NetworkManager on
+# purpose: the board bring-up unit (tb320fc-wifi) has to load ath11k first and therefore
+# runs before NM, where nmcli has nothing to talk to.
+[Unit]
+Description=TB320FC pin the Wi-Fi MAC inside NetworkManager connections
+Documentation=file:/usr/libexec/tb320fc/wifi-mac-sync
+After=NetworkManager.service tb320fc-wifi.service
+Wants=tb320fc-wifi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=120
+ExecStart=/usr/libexec/tb320fc/wifi-mac-sync
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

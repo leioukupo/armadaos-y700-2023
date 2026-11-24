@@ -156,10 +156,22 @@ systemctl enable armada-splash-poweroff-screen.service
 # GLINK battery/Type-C chain, ath11k Wi-Fi and the touchscreen revive watcher.  Each
 # helper exits 0 unless the running board really is a TB320FC, so enabling them for every
 # device is a no-op elsewhere.
+#
+# Order matters here: modules-tree makes the staged .ko set visible to kmod and
+# usr-overlay replays the board-side /usr fixes that a fresh deployment drops, so both
+# have to be in place before audio/power/input run their module chains.  legacy-off
+# un-arms the A-series payload copies of those same jobs (y700-audio/y700-power), which
+# the payload re-arms in /etc on every boot; leaving them armed races a second writer
+# over the CS35L45 kcontrols and silences one speaker at random (PROGRESS.md A183).
+systemctl enable tb320fc-modules-tree.service
+systemctl enable tb320fc-usr-overlay.service
+systemctl enable tb320fc-legacy-off.service
 systemctl enable tb320fc-audio.service
 systemctl enable tb320fc-power.service
 systemctl enable tb320fc-wifi.service
+systemctl enable tb320fc-wifi-mac.service
 systemctl enable tb320fc-touch.service
+systemctl enable tb320fc-input.service
 
 # logind's "reboot implies set-wall-message" annotation lets Steam re-enable
 # the reboot wall past the deny rule; the pre-check fails loud on a reformat.

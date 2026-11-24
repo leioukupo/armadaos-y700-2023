@@ -11,23 +11,59 @@
 #     ath11k_pci_sw_reset() write PCIE_SOC_GLOBAL_RESET, which reboots the tablet.
 # So this unit runs on the real root, loads the module once, and never binds or
 # unbinds anything.
-TB320FC_TAG=TB320FC-WIFI-v1
+#
+# v2 (A209): the boot payload in boot_a is the asphalt 7.3.0-rc6 kernel, which has
+# no /usr/lib/modules/<ver> tree, so every modprobe here fails and Wi-Fi used to
+# stay down until the A131 loader (/usr/local/bin/y700-wifi.sh) ran ~150 s later.
+# Now modprobe failures fall back to the matching .ko in /usr/lib/y700, the conf
+# is parsed defensively, and an interface is matched as wl* because udev renames
+# wlan0 to wlp1s0 within milliseconds of the probe.
+TB320FC_TAG=TB320FC-WIFI-v6
 CONF=/etc/tb320fc/wifi.conf
 load=on
 regdom=CN
 polls=30
-[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
-/usr/libexec/tb320fc/board-check || exit 0
+ko_fallback=on
+mac=auto
+if [ -f "${CONF}" ] ; then
+	# Strip CR and any stray whitespace so a CRLF conf cannot empty ${polls}.
+	TMPC=$(mktemp 2>/dev/null || echo /tmp/tb320fc-wifi.conf.$$)
+	tr -d '\r' < "${CONF}" > "${TMPC}" 2>/dev/null && . "${TMPC}" 2>/dev/null
+	rm -f "${TMPC}"
+fi
+case "${load}" in on|off) ;; *) load=on ;; esac
+case "${ko_fallback}" in on|off) ;; *) ko_fallback=on ;; esac
+polls=$(printf '%s' "${polls}" | tr -cd '0-9')
+[ "${polls:-0}" -gt 0 ] 2>/dev/null || polls=30
+# Sibling helpers are not guaranteed to sit next to this script (see audio).
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+
+tb320fc_exec board-check || exit 0
 
 FW=/usr/lib/firmware/ath11k/WCN6855/hw2.1
+INSMOD=
+for c in /usr/bin/insmod /sbin/insmod /bin/insmod ; do
+	[ -x "${c}" ] && { INSMOD=${c}; break; }
+done
 wlan() {
-	for n in /sys/class/net/wlan*; do
+	for n in /sys/class/net/wl*; do
 		[ -e "${n}" ] && { echo "${n##*/}"; return 0; }
 	done
 	return 1
 }
 
-echo "${TB320FC_TAG} start fw=[$(ls "${FW}" 2>/dev/null | tr '\n' ',')] regdb=$([ -e /usr/lib/firmware/regulatory.db ] && echo present || echo missing) regdom=${regdom}"
+echo "${TB320FC_TAG} start ver=$(uname -r) fw=[$(ls "${FW}" 2>/dev/null | tr '\n' ',')] regdb=$([ -e /usr/lib/firmware/regulatory.db ] && echo present || echo missing) regdom=${regdom} polls=${polls} insmod=${INSMOD:-missing}"
 [ -e "${FW}/amss.bin" ] || echo "${TB320FC_TAG} FAIL ath11k firmware missing under ${FW}"
 
 # The tb320fc kernel overlay builds ATH11K/ATH11K_PCI (and the PCIe power
@@ -37,30 +73,88 @@ echo "${TB320FC_TAG} start fw=[$(ls "${FW}" 2>/dev/null | tr '\n' ',')] regdb=$(
 # gets its deferred probe before ath11k is asked to bind.
 pci_ready() {
 	for d in /sys/bus/pci/devices/*; do
-		[ -e "${d}" ] || continue
-		grep -qi 0x17cb "${d}/vendor" 2>/dev/null && { echo "${d##*/}"; return 0; }
+		[ -r "${d}/vendor" ] || continue
+		[ "$(cat "${d}/vendor" 2>/dev/null)" = 0x17cb ] || continue
+		case "$(cat "${d}/device" 2>/dev/null)" in
+			0x1100|0x1101|0x1103|0x1107) echo "${d##*/}"; return 0 ;;
+		esac
 	done
 	return 1
 }
+loaded() { grep -q "^${1} " /proc/modules 2>/dev/null; }
+load_mod() {
+	m=$1
+	loaded "${m}" && { echo "${TB320FC_TAG} loaded already module=${m}"; return 0; }
+	if modprobe "${m}" 2>/dev/null ; then
+		echo "${TB320FC_TAG} modprobe ok module=${m}"
+		return 0
+	fi
+	# No module tree for this kernel (the boot payload is not the tb320fc build):
+	# fall back to the prebuilt .ko set that matches it.  insmod does not resolve
+	# dependencies, so the providers come first.
+	if [ "${ko_fallback}" = on ] && [ -n "${INSMOD}" ] ; then
+		for m2 in ${2} ; do
+			loaded "${m2}" && continue
+			k=/usr/lib/y700/${m2}.ko
+			[ -e "${k}" ] || continue
+			timeout 240 "${INSMOD}" "${k}" 2>&1 | sed "s/^/${TB320FC_TAG} insmod: /"
+		loaded "${m2}" || echo "${TB320FC_TAG} insmod failed module=${m2} ko=${k}"
+		done
+	fi
+	return 1
+}
 if [ "${load}" = on ] ; then
-	for m in pci_pwrctrl_pwrseq pwrseq_qcom_wcn ; do modprobe "${m}" 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=${m}"; done
+	for m in pci_pwrctrl_pwrseq pwrseq_qcom_wcn ; do
+		load_mod "${m}" ""
+	done
 	j=0
-	while [ "${j}" -lt 15 ] ; do PCI=$(pci_ready) && break; sleep 1; j=$((j + 1)); done
+	PCI=
+	while [ "${j}" -lt 15 ] ; do
+		PCI=$(pci_ready) && break
+		sleep 1; j=$((j + 1))
+	done
 	echo "${TB320FC_TAG} pci_endpoint=${PCI:-none} waited=${j}s"
-	modprobe ath11k_pci 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=ath11k_pci"
+	load_mod ath11k_pci "qcom_common qcom_glink_smem qcom_pil_info qcom_q6v5 smp2p qcom_q6v5_pas qcom_pd_mapper ath11k ath11k_pci"
 fi
 
 i=0
 I=
-while [ "${i}" -lt "${polls}" ; do
+while [ "${i}" -lt "${polls}" ] ; do
 	I=$(wlan) && break
 	sleep 2
 	i=$((i + 1))
 done
-if [ -z "${I:-}" ] ; then
+if [ -z "${I}" ] ; then
 	echo "${TB320FC_TAG} FAIL no wlan interface after $((i * 2))s"
-	echo "${TB320FC_TAG} pci_drv=[$(ls /sys/bus/pci/drivers/ath11k_pci 2>/dev/null | tr '\n' ',')] net=[$(ls /sys/class/net 2>/dev/null | tr '\n' ',')] rfkill=[$(rfkill list 2>/dev/null | tr '\n' ',')]"
+	echo "${TB320FC_TAG} pci_drv=[$(ls /sys/bus/pci/drivers/ath11k_pci 2>/dev/null | tr '\n' ',')] net=[$(ls /sys/class/net 2>/dev/null | tr '\n' ',')] rfkill=[$(rfkill list 2>/dev/null | tr '\n' ',')] mods=[$(awk '{print $1}' /proc/modules 2>/dev/null | tr '\n' ',')]"
 	exit 0
+fi
+
+# WCN6855 has no BD address in its BDF, so the firmware hands ath11k a fresh address at
+# every service-ready and the tablet looks like a new client on every boot (13 boots,
+# 13 addresses). Pin a deterministic one - see wifi-mac - before anything associates.
+#
+# Pinning the netdev alone is not enough: NetworkManager defaults to
+# cloned-mac-address=preserve and copies the driver permanent address back over it a few
+# seconds later, which is exactly what the board did on the first try. So the
+# connections have to carry it as well - that is tb320fc-wifi-mac.service, which runs
+# after NetworkManager (nmcli has nothing to talk to from here, this unit is ordered
+# Before=NetworkManager.service on purpose).
+want_mac=$(tb320fc_exec wifi-mac resolve "${mac}")
+if [ -z "${want_mac}" ] ; then
+	echo "${TB320FC_TAG} WARN mac left as-is setting=${mac} (wifi-mac failed)"
+elif [ "${want_mac}" = keep ] ; then
+	echo "${TB320FC_TAG} mac keep iface=${I} mac=$(cat "/sys/class/net/${I}/address" 2>/dev/null)"
+else
+	cur=$(cat "/sys/class/net/${I}/address" 2>/dev/null)
+	if [ "${cur}" != "${want_mac}" ] ; then
+		ip link set "${I}" address "${want_mac}" 2>&1 | sed "s/^/${TB320FC_TAG} mac: /"
+		if [ "$(cat "/sys/class/net/${I}/address" 2>/dev/null)" != "${want_mac}" ] ; then
+			ip link set "${I}" down 2>&1 | sed "s/^/${TB320FC_TAG} mac-down: /"
+			ip link set "${I}" address "${want_mac}" 2>&1 | sed "s/^/${TB320FC_TAG} mac2: /"
+		fi
+	fi
+	echo "${TB320FC_TAG} mac iface=${I} was=${cur:-none} now=$(cat "/sys/class/net/${I}/address" 2>/dev/null) source=${mac}"
 fi
 
 timeout 15 ip link set "${I}" up 2>&1 | sed "s/^/${TB320FC_TAG} ip-up: /"

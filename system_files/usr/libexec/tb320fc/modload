@@ -1,0 +1,55 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC module loader: modprobe when the kernel modules are installed where
+# kmod looks, otherwise insmod from the staged copy.
+#
+# modprobe only sees /usr/lib/modules/$(uname -r).  The A-series boot payload
+# runs a kernel whose modules the OS image does not carry in that directory -
+# they are staged in /usr/lib/y700 - so every modprobe of the speaker and
+# battery chains failed and both helpers exited having loaded nothing
+# (PROGRESS.md A132-A147: "modprobe failed module=..." for the whole list).
+# Try modprobe first because it resolves dependencies, then fall back to
+# insmod; callers hand us the list already in dependency order, which is what
+# the fallback needs.  Never insmod over a module the kernel already has.
+TB320FC_TAG=TB320FC-MODLOAD
+DIRS="${TB320FC_MODDIRS:-/usr/lib/modules/$(uname -r) /usr/lib/y700 /usr/local/lib/y700}"
+
+is_loaded() {
+	grep -q "^$1 " /proc/modules
+}
+
+find_ko() {
+	for d in ${DIRS} ; do
+		[ -d "${d}" ] || continue
+		for n in "$1" "$(printf '%s' "$1" | tr '_' '-')" ; do
+			f=$(find "${d}" -maxdepth 4 -name "${n}.ko" -print -quit 2>/dev/null)
+			[ -n "${f}" ] && { printf '%s\n' "${f}"; return 0; }
+		done
+	done
+	return 1
+}
+
+rc=0
+for m in "$@" ; do
+	if is_loaded "${m}" ; then
+		echo "${TB320FC_TAG} already loaded module=${m}"
+		continue
+	fi
+	if modprobe "${m}" 2>/dev/null ; then
+		echo "${TB320FC_TAG} modprobe ok module=${m}"
+		continue
+	fi
+	ko=$(find_ko "${m}")
+	if [ -z "${ko}" ] ; then
+		echo "${TB320FC_TAG} FAIL no module file module=${m} dirs=[${DIRS}]"
+		rc=1
+		continue
+	fi
+	if insmod "${ko}" ; then
+		echo "${TB320FC_TAG} insmod ok module=${m} file=${ko}"
+	else
+		echo "${TB320FC_TAG} insmod FAIL module=${m} file=${ko} loaded=$(is_loaded "${m}" && echo yes || echo no)"
+		rc=1
+	fi
+done
+exit ${rc}

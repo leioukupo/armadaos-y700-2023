@@ -11,26 +11,87 @@
 #   * the two "Digital PCM Volume" kcontrols come up at 0, which is -102.25 dB:
 #     everything probes fine and no sound comes out. The mute=1 dBscale control
 #     rejects text forms like "-8dB", so the value is written as a raw integer.
-TB320FC_TAG=TB320FC-AUDIO-v1
+#   * one pass is not enough (PROGRESS.md A184). Applied once when the card appears, the second
+#     amplifier graph is often not settled yet and only one speaker sounds, while
+#     every kcontrol reads identically in both states. passes>1 re-arms it.
+#   * "PRIMARY_MI2S_RX Audio Mixer MultiMedia1" is a 2-element boolean that reads
+#     on,off and the second element cannot be set (1, / 1,1 / numid= / alsactl
+#     state file all leave it off): the backend's second slot ASP_RX2 is not
+#     connected in the stock ADSP graph. Both amplifiers therefore take their main
+#     input from ASP_RX1 - do not point one of them at ASP_RX2, that speaker dies.
+TB320FC_TAG=TB320FC-AUDIO-v3
 CONF=/etc/tb320fc/audio.conf
 load=on
 unmute=on
 digvol=400
 polls=40
+passes=2
+pass_gap=8
 [ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
-/usr/libexec/tb320fc/board-check || exit 0
+
+# Sibling helpers are not necessarily next door: the image keeps them in
+# /usr/libexec/tb320fc, a replayed fix lands in /usr/local/libexec/tb320fc, and a
+# deployment that predates modload has no modload under /usr at all - the module
+# chain then died with "/usr/libexec/tb320fc/modload: No such file or directory"
+# while the amplifier route still ran, which is how a boot ends up with one silent
+# speaker and a journal full of modprobe failures (PROGRESS.md A185).
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+
+tb320fc_exec board-check || exit 0
 
 MODS="qcom_glink_smem smp2p qcom_pil_info qcom_common qcom_pd_mapper qcom_q6v5 qcom_q6v5_pas snd-soc-qcom-common snd-q6dsp-common cs_dsp snd-soc-wm-adsp snd-soc-qcom-sdw q6core snd-q6apm q6apm-dai q6apm-lpass-dais q6prm q6prm-clocks snd-soc-cs35l45 snd-soc-cs35l45-i2c snd-soc-sc8280xp"
 
 ADSP_FW=/usr/lib/firmware/qcom/sm8475/lenovo/tb320fc
 CS_FW=/usr/lib/firmware/cirrus
+# This image stages the Cirrus wmfw directly under /usr/lib/firmware, not under
+# cirrus/ - pick whichever directory really holds them, otherwise this check reports
+# a missing firmware that is actually present (verified on the board: spk1/spk2 wmfw
+# are top-level, dated from the ostree commit, and the card comes up fine).
+for d in /usr/lib/firmware/cirrus /usr/lib/firmware; do
+	[ -e "$d/spk1-cs35l45-dsp1-spk-prot.wmfw" ] && CS_FW="$d" && break
+done
 echo "${TB320FC_TAG} start adsp_fw=$(ls "${ADSP_FW}" 2>/dev/null | wc -l) cs_fw=$(ls "${CS_FW}" 2>/dev/null | wc -l) remoteproc=[$(ls /sys/class/remoteproc 2>/dev/null | tr '\n' ',')]"
 [ -e "${ADSP_FW}/adsp.mdt" ] || echo "${TB320FC_TAG} FAIL adsp firmware missing under ${ADSP_FW}"
 [ -e "${CS_FW}/spk1-cs35l45-dsp1-spk-prot.wmfw" ] || echo "${TB320FC_TAG} FAIL cs35l45 protection firmware missing"
 
 if [ "${load}" = on ] ; then
-	for m in ${MODS} ; do
-		modprobe "${m}" 2>/dev/null || echo "${TB320FC_TAG} modprobe failed module=${m}"
+	tb320fc_exec modload ${MODS} || echo "${TB320FC_TAG} WARN module chain incomplete"
+fi
+
+# The ADSP protection-domain mapper is an auxiliary device in this Android-derived
+# DTB, and nothing binds it until qcom_pd_mapper exists in the kernel.  While it
+# is missing GPR/APR never appear (so no sound card) and the ADSP's PMIC GLINK
+# never serves the fuel gauge either, which is why the battery reads empty.  The
+# ordered chain above loads it before the ADSP boots; if a stale ADSP session is
+# already running, or the module was absent, load it and re-handshake the ADSP so
+# the PDR subscriptions attach to a live PD (PROGRESS.md A137, A142).
+PDM=0
+for d in /sys/bus/auxiliary/devices/qcom_common.pd-mapper.* ; do
+	[ -d "${d}" ] || continue
+	[ -e "${d}/driver" ] || PDM=1
+done
+if [ "${PDM}" = 1 ] ; then
+	tb320fc_exec modload qcom_pd_mapper || echo "${TB320FC_TAG} FAIL qcom_pd_mapper unavailable"
+fi
+if [ -z "$(ls /sys/bus/aprbus/devices 2>/dev/null)" ] ; then
+	for r in /sys/class/remoteproc/remoteproc* ; do
+		[ "$(cat "${r}/name" 2>/dev/null)" = adsp ] || continue
+		echo "${TB320FC_TAG} aprbus empty, re-handshake $(basename "${r}")"
+		echo stop > "${r}/state" 2>/dev/null
+		sleep 2
+		echo start > "${r}/state" 2>/dev/null
+		sleep 4
 	done
 fi
 
@@ -68,7 +129,7 @@ spkroute() {
 }
 
 i=0
-while [ "${i}" -lt "${polls}" ; do
+while [ "${i}" -lt "${polls}" ] ; do
 	NC=$(card_for_mixer) && break
 	sleep 2
 	i=$((i + 1))
@@ -79,5 +140,21 @@ if [ -z "${NC:-}" ] ; then
 	exit 0
 fi
 echo "${TB320FC_TAG} card ready nc=${NC} waited=$((i * 2))s"
-[ "${unmute}" = on ] && spkroute "${NC}"
+if [ "${unmute}" = on ] ; then
+	p=1
+	while [ "${p}" -le "${passes}" ] ; do
+		spkroute "${NC}"
+		echo "${TB320FC_TAG} route pass ${p}/${passes}"
+		p=$((p + 1))
+		[ "${p}" -le "${passes}" ] && sleep "${pass_gap}"
+	done
+	# One line per amplifier so the journal says which speaker is really armed;
+	# a silent speaker with identical values means the ADSP graph, not the kcontrol.
+	for s in SPK1 SPK2 ; do
+		printf '%s gate amp=%s digvol=%s mode=%s\n' "${s}" \
+			"$(amixer -c"${NC}" cget "name=${s} AMP Enable Switch" 2>/dev/null | sed -n 's/.*: values=//p')" \
+			"$(amixer -c"${NC}" cget "name=${s} Digital PCM Volume" 2>/dev/null | sed -n 's/.*: values=//p')" \
+			"$(amixer -c"${NC}" cget "name=${s} Amplifier Mode" 2>/dev/null | sed -n 's/.*: values=//p')"
+	done
+fi
 exit 0

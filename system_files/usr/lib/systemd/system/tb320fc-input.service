@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT
+# Stage the input-side modules InputPlumber needs (uhid for the deck-uhid
+# virtual Steam Deck controller).  Ordered before inputplumber.service so the
+# /dev/uhid node exists when the composite device builds its targets.
+[Unit]
+Description=TB320FC input target modules (uhid for InputPlumber)
+After=systemd-udev-trigger.service local-fs.target
+Before=inputplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb320fc/input
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

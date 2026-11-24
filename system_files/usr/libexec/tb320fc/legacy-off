@@ -1,0 +1,84 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC: un-arm the A-series payload copies of jobs the image now owns.
+#
+# The boot payload (initramfs y700-patch.sh, PROGRESS.md A131-A147) still writes its
+# bring-up units into /etc on every boot: /etc/systemd/system/y700-audio.service,
+# y700-power.service and the matching multi-user.target.wants symlinks.  The flashed
+# image runs the same jobs through tb320fc-audio/tb320fc-power (and tb320fc-wifi and the
+# tb320fc touch watchdog cover y700-wifi/y700-touchd), so
+# two writers end up driving the CS35L45 kcontrols at once - a race that shows up as
+# "left speaker silent", then "right front silent", with identical control values in
+# both states (PROGRESS.md A185).  The payload copy is also stale: the installed
+# y700-audio.sh dies on a broken line and sha256s both boot partitions for nothing.
+#
+# Masking rather than deleting: the payload re-creates the unit file next boot, and a
+# mask is a symlink to /dev/null, so its "cat > /etc/systemd/system/y700-audio.service"
+# lands nowhere and the unit stays masked.  disable runs first so the wants symlink the
+# payload just re-created is gone and no start job for a masked unit is ever queued.
+# Kill switch: touch /var/lib/tb320fc/legacy-off.disabled
+TB320FC_TAG=TB320FC-LEGACY-OFF-v1
+CONF=${TB320FC_LEGACY_CONF:-/etc/tb320fc/legacy-off.conf}
+STATE_DIR=${TB320FC_LEGACY_STATE_DIR:-/var/lib/tb320fc}
+LEGACY=${TB320FC_LEGACY:-y700-audio.service y700-power.service y700-wifi.service y700-touchd.service}
+UNIT_DIR=${TB320FC_LEGACY_UNIT_DIR:-/etc/systemd/system}
+[ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+
+# Sibling helpers are not guaranteed to sit next to this script (see audio).
+tb320fc_exec() {
+	_name=$1
+	shift
+	for _d in "$(dirname "$0")" /usr/libexec/tb320fc /usr/local/libexec/tb320fc ; do
+		if [ -x "${_d}/${_name}" ] ; then
+			"${_d}/${_name}" "$@"
+			return $?
+		fi
+	done
+	echo "${TB320FC_TAG} FAIL helper missing helper=${_name}" >&2
+	return 1
+}
+
+tb320fc_exec board-check || exit 0
+if [ -e "${STATE_DIR}/legacy-off.disabled" ] ; then
+	echo "${TB320FC_TAG} skip disabled"
+	exit 0
+fi
+
+masked=0
+skipped=0
+for u in ${LEGACY} ; do
+	was=$(systemctl is-enabled "${u}" 2>/dev/null || :)
+	[ -n "${was}" ] || was=unloaded
+	case "${was}" in
+		masked)
+			skipped=$((skipped + 1))
+			continue
+			;;
+		unloaded)
+			[ -e "${UNIT_DIR}/${u}" ] || { skipped=$((skipped + 1)); continue; }
+			;;
+	esac
+	systemctl disable --now "${u}" >/dev/null 2>&1
+	# systemd 259 refuses to mask over an existing unit file ("File ... already exists"),
+	# and the payload's copy is exactly that.  Keep it out of the way under /var/lib first:
+	# it is the payload's own file, and the next boot's "cat > /etc/systemd/system/<unit>"
+	# then writes through the /dev/null symlink and lands nowhere, which is what makes the
+	# mask stick without editing the boot payload.
+	file="${UNIT_DIR}/${u}"
+	if [ -e "${file}" ] && [ ! -L "${file}" ] ; then
+		mkdir -p "${STATE_DIR}/units" 2>/dev/null
+		cp -a "${file}" "${STATE_DIR}/units/${u}.bak" 2>/dev/null
+		rm -f "${file}" 2>/dev/null
+	fi
+	if systemctl mask "${u}" >/dev/null 2>&1 ; then
+		echo "${TB320FC_TAG} masked unit=${u} was=${was} backup=${STATE_DIR}/units/${u}.bak"
+		masked=$((masked + 1))
+	else
+		echo "${TB320FC_TAG} WARN mask failed unit=${u} was=${was} now=$(systemctl is-enabled "${u}" 2>/dev/null)"
+	fi
+done
+if [ "${masked}" -gt 0 ] ; then
+	systemctl daemon-reload >/dev/null 2>&1
+fi
+echo "${TB320FC_TAG} ok masked=${masked} skipped=${skipped} list=[${LEGACY}]"
+exit 0

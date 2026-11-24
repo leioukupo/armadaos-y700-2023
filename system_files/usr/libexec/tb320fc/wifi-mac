@@ -1,0 +1,43 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC: derive the Wi-Fi MAC address to pin.
+#
+# WCN6855 reports a fresh "permanent" address on every boot because its BDF carries no
+# valid BD address, and ath11k just takes whatever the firmware hands it at service-ready
+# (PROGRESS.md A186: 13 boots, 13 addresses, always 00:03:7f:12:xx:xx). The router then
+# sees a new client every time and the ssh helpers have to rediscover the IP.
+#
+# The address is derived from the SoC serial number, which is burnt in and survives every
+# reinstall, deployment and slot change. The vendor prefix is kept so the address still
+# reads like this board's.
+#
+#   wifi-mac              -> derived address (exit 1 if there is no stable id)
+#   wifi-mac resolve <v>  -> resolves a config value: keep -> "keep", an address -> itself,
+#                            anything else -> derived
+TB320FC_TAG=TB320FC-WIFI-MAC-v1
+PREFIX=${TB320FC_MAC_PREFIX:-00:03:7f:12}
+
+id_source() {
+	s=$(cat /sys/devices/soc0/serial_number 2>/dev/null)
+	[ -n "${s}" ] && { echo "soc0-serial:${s}"; return 0; }
+	s=$(cat /var/lib/dbus/machine-id 2>/dev/null)
+	[ -n "${s}" ] && { echo "machine-id:${s}"; return 0; }
+	s=$(cat /etc/machine-id 2>/dev/null)
+	[ -n "${s}" ] && { echo "etc-machine-id:${s}"; return 0; }
+	return 1
+}
+
+case "${1:-}" in
+	resolve)
+		want=${2:-auto}
+		case "${want}" in
+			keep) echo keep; exit 0 ;;
+			[0-9a-fA-Z][0-9a-fA-Z]:[0-9a-fA-Z][0-9a-fA-Z]:[0-9a-fA-Z][0-9a-fA-Z]:[0-9a-fA-Z][0-9a-fA-Z]:[0-9a-fA-Z][0-9a-fA-Z]:[0-9a-fA-Z][0-9a-fA-Z])
+				echo "${want}" | tr 'A-Z' 'a-z'; exit 0 ;;
+		esac
+		;;
+esac
+
+seed=$(id_source) || { echo "${TB320FC_TAG} FAIL no stable id source" >&2; exit 1; }
+h=$(printf '%s' "tb320fc:${seed}" | sha256sum | cut -c1-4)
+printf '%s:%s:%s\n' "${PREFIX}" "${h%??}" "${h#??}"
