@@ -14,7 +14,13 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINERFILE="$ROOT/Containerfile"
-BASE_PACKAGES="$ROOT/build_files/10-base-packages.sh"
+# 10-base-packages.sh only chains the three package groups, so a package claim
+# is checked against the groups that actually name the packages.
+BASE_PACKAGES=(
+    "$ROOT/build_files/10a-core.sh"
+    "$ROOT/build_files/10b-desktop.sh"
+    "$ROOT/build_files/10c-apps.sh"
+)
 VENDOR_FILES="$ROOT/build_files/40-vendor-system-files.sh"
 STEAM_SESSION="$ROOT/system_files/usr/share/gamescope-session-plus/sessions.d/steam"
 TOUCH_RULE="$ROOT/system_files/usr/lib/udev/rules.d/99-armada-tb323fu-virtual-touch.rules"
@@ -74,7 +80,8 @@ done
 # helper's gpiod tools must stay installed (weak deps are disabled).
 assert_line "$VENDOR_FILES" 'chmod 0755 /usr/libexec/tb323fu/tb323fu-usb-port'
 assert_line "$VENDOR_FILES" 'systemctl enable tb323fu-usb-port.service'
-assert_line "$BASE_PACKAGES" 'libgpiod-utils'
+grep -Fq -- 'libgpiod-utils' "${BASE_PACKAGES[@]}" ||
+    fail 'libgpiod-utils is not installed in the base image'
 
 # system_files is installed wholesale, so a rule placed there ships in the image.
 assert_line "$CONTAINERFILE" 'COPY system_files /system_files/'
