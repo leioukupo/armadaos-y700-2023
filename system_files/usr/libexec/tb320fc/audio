@@ -19,21 +19,31 @@
 #     state file all leave it off): the backend's second slot ASP_RX2 is not
 #     connected in the stock ADSP graph. Both amplifiers therefore take their main
 #     input from ASP_RX1 - do not point one of them at ASP_RX2, that speaker dies.
+#   * "AMP Enable Switch" written 0 and then 1 in the same breath does nothing. That
+#     switch is the DAPM widget whose PRE_PMD/POST_PMU hooks send CSPL PAUSE and then
+#     RESUME and re-lock the amplifier to the TDM clock, and DAPM defers the power-down
+#     by its PMD delay (500 ms by default), so back-to-back writes never leave the
+#     power domain. The route then reads armed while nothing comes out; the off gap is
+#     what makes the transition real (board, 2026-11-24: tone silent before the gap,
+#     audible after it, with every kcontrol reading identically in both states).
 #
 # Two modes:
 #   boot (default)  the whole bring-up above: modules, ADSP handshake, route.
-#   gate            rewrite the amplifier route only, and it needs no root. The ADSP
+#   gate            re-arm the amplifier route only, and it needs no root. The ADSP
 #                   graph and both amplifiers are rebuilt every time the session audio
 #                   stack (PipeWire/WirePlumber) starts - switching between Plasma and
 #                   Steam does exactly that - and a path armed before the rebuild keeps
 #                   reading AMP on, digvol 400, clocks enabled, DAPM On and CSPL RUNNING
 #                   while staying silent (PROGRESS.md A184, A189). The boot instance has
-#                   long finished by then, so the session has to re-arm it itself.
-TB320FC_TAG=TB320FC-AUDIO-v4
+#                   long finished by then, so the session has to re-arm it itself, and
+#                   re-arming means running the amplifier power cycle above.
+TB320FC_TAG=TB320FC-AUDIO-v5
 CONF=/etc/tb320fc/audio.conf
 load=on
 unmute=on
 digvol=400
+amp_cycle=on
+amp_off_gap=3
 polls=40
 passes=2
 pass_gap=8
@@ -123,12 +133,30 @@ card_for_mixer() {
 	return 1
 }
 
+amps_powered() {
+	nc=$1
+	n=0
+	for s in SPK1 SPK2 ; do
+		[ "$(amixer -c"${nc}" cget "name=${s} AMP Enable Switch" 2>/dev/null | sed -n 's/.*: values=//p')" = on ] && n=$((n + 1))
+	done
+	echo "${n}"
+}
+
 spkroute() {
 	nc=$1
+	pass=${2:-1}
 	setc() { amixer -c"${nc}" cset "name=$1" "$2" >/dev/null 2>&1 || echo "${TB320FC_TAG} route miss [$1=$2]"; }
 	setc "PRIMARY_MI2S_RX Audio Mixer MultiMedia1" 1
+	# Only the first pass pays for the power cycle; the later passes re-write the
+	# graph, which is what fixes the half-armed second amplifier (A184).
+	cycled=no
+	if [ "${pass}" -eq 1 ] && [ "${amp_cycle}" = on ] && [ "$(amps_powered "${nc}")" -gt 0 ] ; then
+		for s in SPK1 SPK2 ; do setc "$s AMP Enable Switch" 0 ; done
+		echo "${TB320FC_TAG} amp power-down card=${nc} gap=${amp_off_gap}s"
+		sleep "${amp_off_gap}"
+		cycled=yes
+	fi
 	for s in SPK1 SPK2 ; do
-		setc "$s AMP Enable Switch" 0
 		setc "$s DSP1 Firmware" Protection
 		setc "$s Amplifier Mode" SPK
 		setc "$s Analog PCM Volume" 0
@@ -145,7 +173,7 @@ spkroute() {
 		setc "$s DSP1 Preload Switch" 1
 		setc "$s AMP Enable Switch" 1
 	done
-	echo "${TB320FC_TAG} route card=${nc} digvol=${digvol} mixer=MultiMedia1"
+	echo "${TB320FC_TAG} route card=${nc} digvol=${digvol} mixer=MultiMedia1 amp_cycle=${cycled}"
 }
 
 poll_limit=${polls}
@@ -169,7 +197,7 @@ if [ "${unmute}" = on ] ; then
 	[ "${MODE}" = gate ] && { passes_run=2; gap_run=${gate_gap}; }
 	p=1
 	while [ "${p}" -le "${passes_run}" ] ; do
-		spkroute "${NC}"
+		spkroute "${NC}" "${p}"
 		echo "${TB320FC_TAG} route pass ${p}/${passes_run} mode=${MODE}"
 		p=$((p + 1))
 		[ "${p}" -le "${passes_run}" ] && sleep "${gap_run}"

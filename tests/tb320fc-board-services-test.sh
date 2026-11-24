@@ -72,6 +72,15 @@ check "audio rejects an unknown mode" grep -q 'usage: audio \[boot|gate\]' "$EXE
 check "gate mode has its own poll budget" grep -q '^gate_polls=' "$EXEC/audio"
 check "gate mode never reloads the module chain" grep -q '"${MODE}" = boot \] && \[ "${load}" = on ' "$EXEC/audio"
 check "gate mode never restarts the ADSP" grep -q '"${MODE}" = boot \] && \[ -z "$(ls /sys/bus/aprbus/devices' "$EXEC/audio"
+# The re-arm is only real if the amplifiers actually leave the DAPM power domain:
+# DAPM defers the power-down by its PMD delay, so an off/on pair written back to
+# back never sends CSPL PAUSE/RESUME and the silent path stays silent (A189 ran
+# exactly that no-op and the speakers stayed dead until the gap was added).
+check "route has an amplifier power cycle knob" grep -q '^amp_cycle=on$' "$EXEC/audio"
+check "route separates AMP off from AMP on" grep -q 'sleep "${amp_off_gap}"' "$EXEC/audio"
+check "route counts the powered amplifiers before cycling" grep -q 'amps_powered() {' "$EXEC/audio"
+check "route cycles on the first pass only" grep -q 'spkroute "${NC}" "${p}"' "$EXEC/audio"
+
 GATE="$USERUNITS/tb320fc-speaker-gate.service"
 check "session unit exists" test -f "$GATE"
 check "session unit runs gate mode" grep -q 'ExecStart=/usr/libexec/tb320fc/audio gate' "$GATE"
