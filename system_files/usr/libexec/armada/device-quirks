@@ -6,6 +6,7 @@ mem_sleep=${ARMADA_MEM_SLEEP_PATH:-/sys/power/mem_sleep}
 nm_ignore_sleep=${ARMADA_NM_IGNORE_SLEEP:-/etc/NetworkManager/ignore-sleep}
 sleep_config=${ARMADA_SLEEP_CONFIG:-/etc/armada/sleep.conf}
 iris_rule_src=${ARMADA_IRIS_V4L2_RULE:-/usr/lib/armada/wireplumber/lenovo-tb322fc-iris.conf}
+tb320fc_speaker_rule_src=${ARMADA_TB320FC_SPEAKER_RULE:-/usr/lib/armada/wireplumber/lenovo-tb320fc-speakers.conf}
 wireplumber_conf_dir=${ARMADA_WIREPLUMBER_CONFIG_DIR:-/etc/wireplumber/wireplumber.conf.d}
 
 eval "$("$device_env")"
@@ -67,34 +68,54 @@ esac
 # drop-in that keeps only that exact bus path out of camera enumeration. Every
 # failure below is reported but never fatal, so the remaining quirks in this
 # script still run.
-install_tb322fc_iris_rule() {
-    local dest="$wireplumber_conf_dir/90-armada-tb322fc-iris.conf"
+# Copy one WirePlumber drop-in into $wireplumber_conf_dir. Failures are reported but
+# never fatal, so the remaining quirks in this script still run.
+install_wireplumber_dropin() {
+    local label=$1 rule_src=$2 rule_name=$3
+    local dest="$wireplumber_conf_dir/$rule_name"
 
-    if [[ ! -r "$iris_rule_src" ]]; then
-        echo "device-quirks: $iris_rule_src not readable, skipping TB322FC WirePlumber Iris quirk" >&2
+    if [[ ! -r "$rule_src" ]]; then
+        echo "device-quirks: $rule_src not readable, skipping $label WirePlumber drop-in" >&2
         return 0
     fi
 
     if ! install -d -m 0755 "$wireplumber_conf_dir"; then
-        echo "device-quirks: failed to create $wireplumber_conf_dir, skipping TB322FC WirePlumber Iris quirk" >&2
+        echo "device-quirks: failed to create $wireplumber_conf_dir, skipping $label WirePlumber drop-in" >&2
         return 0
     fi
 
     # Leave an already-correct drop-in untouched so repeat boots do not rewrite
     # the file (stable inode/mtime); unrelated configs in this directory are
     # never removed.
-    if [[ -r "$dest" ]] && cmp -s "$iris_rule_src" "$dest"; then
+    if [[ -r "$dest" ]] && cmp -s "$rule_src" "$dest"; then
         return 0
     fi
 
-    if ! install -m 0644 "$iris_rule_src" "$dest"; then
+    if ! install -m 0644 "$rule_src" "$dest"; then
         echo "device-quirks: failed to install $dest" >&2
     fi
+}
+
+install_tb322fc_iris_rule() {
+    install_wireplumber_dropin "TB322FC Iris camera-probe" "$iris_rule_src" \
+        90-armada-tb322fc-iris.conf
+}
+
+# The header of the drop-in carries the board measurement. In short: an idle suspend of
+# the PipeWire sink takes the ADSP -> MI2S -> CS35L45 graph down and the resume does not
+# reliably bring it back, so the speakers go silent while every kcontrol still reads on.
+# Keeping the sink resident removes the trigger.
+install_tb320fc_speaker_keepalive() {
+    install_wireplumber_dropin "TB320FC speaker keep-alive" "$tb320fc_speaker_rule_src" \
+        91-armada-tb320fc-speakers.conf
 }
 
 case "${ARMADA_DEVICE_ID:-}" in
     lenovo-tb322fc)
         install_tb322fc_iris_rule
+        ;;
+    lenovo-tb320fc)
+        install_tb320fc_speaker_keepalive
         ;;
 esac
 
