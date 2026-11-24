@@ -164,6 +164,12 @@ MINIMAL = os.environ.get('Y700_MINIMAL') == '1'
 # A disabled node is skipped by of_device_is_available(), which takes it out of
 # the match list.
 EXTRA_DISABLE = [n for n in os.environ.get('Y700_EXTRA_DISABLE', '').split(',') if n]
+# Nodes the vendor DT pins off that the payload wants back on, by name.  Pass
+# Y700_ENABLE=thermal-sensor@c263000,thermal-sensor@c265000 to bring the AP TSENS
+# controllers back (PROGRESS.md A198: with them off, none of the ~40 thermal-zones
+# in this board description ever registers, so there is no hwmon temperature for
+# MangoHud/the Steam performance overlay, no GPU temperature and no mem temperature).
+ENABLE = [n for n in os.environ.get('Y700_ENABLE', '').split(',') if n]
 
 # A96: hand the applications SMMU back to Linux.  The DPU is ours now, and msm
 # refuses to bind without an IOMMU (msm_kms_init_vm(): "no IOMMU, bailing out"
@@ -731,8 +737,17 @@ def main():
     if GPU_ON:
         disabled = [n for n in disabled
                     if n not in GPU_NODES + (GPU_SMMU_NODE,)]
+    # An explicitly enabled node never gets pinned off by the sweep, whatever
+    # list it would otherwise fall in.
     for node in disabled:
+        if node in ENABLE:
+            continue
         text = set_status_disabled(text, node)
+    # set_own_prop insists the property is already there exactly once, so a node
+    # listed in Y700_ENABLE has to be a node the vendor really did pin off -
+    # which is the only reason to ask for it back.
+    for node in ENABLE:
+        text, _n = set_own_prop(text, node, 'status', 'status = "okay";')
     # 4a2. A45: the dwc3 wrapper is back on, as an HS host.
     text = usb_host(text)
 
