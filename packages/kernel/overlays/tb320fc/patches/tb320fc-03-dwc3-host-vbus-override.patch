@@ -1,0 +1,43 @@
+--- a/drivers/usb/dwc3/dwc3-qcom.c
++++ b/drivers/usb/dwc3/dwc3-qcom.c
+@@ -84,6 +84,7 @@
+ 	struct icc_path		*icc_path_ddr;
+ 	struct icc_path		*icc_path_apps;
+ 	bool			has_eusb2_phy;
++	bool			host_vbus_override;
+ };
+ 
+ #define to_dwc3_qcom(d) container_of((d), struct dwc3_qcom, dwc)
+@@ -600,7 +601,9 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	dwc3_qcom_vbus_override_enable(qcom, next_role == USB_ROLE_DEVICE);
++	dwc3_qcom_vbus_override_enable(qcom,
++				       qcom->host_vbus_override ||
++				       next_role == USB_ROLE_DEVICE);
+ 
+ 	pm_runtime_mark_last_busy(qcom->dev);
+ 	pm_runtime_put_sync(qcom->dev);
+@@ -709,7 +712,20 @@
+ 
+ 	qcom->mode = usb_get_dr_mode(dev);
+ 
+-	dwc3_qcom_vbus_override_enable(qcom, qcom->mode == USB_DR_MODE_PERIPHERAL);
++	/*
++	 * On this board nothing tells the DWC3 that a session is valid while it
++	 * owns the port as a host: CC state and VBUS sourcing live in the stock
++	 * ADSP's TCPM and no connector endpoint reaches DWC3, so QSCRATCH
++	 * UTMI_OTG_VBUS_VALID/SW_SESSVLD_SEL and LANE0_PWR_PRESENT stay cleared
++	 * and the xHCI root hub never reports a connect (portsc CCS=0,
++	 * PLS=RxDetect, PROGRESS.md A176/A184).  Opt in from the DT and keep the
++	 * override asserted for every role that is not peripheral.
++	 */
++	qcom->host_vbus_override = of_property_read_bool(dev->of_node,
++						 "armada,dwc3-host-vbus-override");
++	dwc3_qcom_vbus_override_enable(qcom,
++				       qcom->mode == USB_DR_MODE_PERIPHERAL ||
++				       qcom->host_vbus_override);
+ 
+ 	qcom->dwc.glue_ops = &dwc3_qcom_glue_ops;
+ 

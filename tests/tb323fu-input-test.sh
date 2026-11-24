@@ -105,13 +105,15 @@ awk '/^source \/usr\/lib\/armada\/storage-lib/ { exit } { print }' "$STEAM_SESSI
 assert_file "$preamble"
 [[ -s "$preamble" ]] || fail 'extracted Steam preamble is empty'
 assert_line "$preamble" 'ARMADA_PANEL_ORIENTATION'
+assert_line "$preamble" 'ARMADA_GAMESCOPE_ORIENTATION'
 
 session_orientation() {
-    local device="$1" orientation="${2-}" panel="${3-}"
+    local device="$1" orientation="${2-}" panel="${3-}" gamescope="${4-}"
     local -a cmd=(env -i "ARMADA_DEVICE_ID=$device")
 
     [[ -z "$orientation" ]] || cmd+=("ORIENTATION=$orientation")
     [[ -z "$panel" ]] || cmd+=("ARMADA_PANEL_ORIENTATION=$panel")
+    [[ -z "$gamescope" ]] || cmd+=("ARMADA_GAMESCOPE_ORIENTATION=$gamescope")
     "${cmd[@]}" "$BASH_BIN" --noprofile --norc -c \
         'source "$1"; printf "%s" "${ORIENTATION-<unset>}"' _ "$preamble"
 }
@@ -121,6 +123,11 @@ assert_eq "$(session_orientation lenovo-tb323fu left)" left 'explicit ORIENTATIO
 assert_eq "$(session_orientation lenovo-tb323fu '' left)" left 'ARMADA_PANEL_ORIENTATION honored'
 assert_eq "$(session_orientation lenovo-tb322fc)" '<unset>' 'TB322FC leaves orientation unset'
 assert_eq "$(session_orientation unknown-device)" '<unset>' 'unknown device leaves orientation unset'
+# TB320FC's desktop is rotated by KWin, so only the gamescope-specific key can
+# rotate the gaming session; without it Steam stays portrait.
+assert_eq "$(session_orientation lenovo-tb320fc '' '' right)" right 'TB320FC gamescope orientation honored'
+assert_eq "$(session_orientation lenovo-tb320fc)" '<unset>' 'TB320FC without a gamescope orientation stays unset'
+assert_eq "$(session_orientation lenovo-tb320fc left '' right)" left 'explicit ORIENTATION wins over the profile'
 
 # --- existing USB routing behavior ------------------------------------------
 command -v python3 >/dev/null || fail 'python3 is required'

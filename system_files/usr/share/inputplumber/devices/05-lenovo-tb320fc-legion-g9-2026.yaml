@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+# Lenovo Legion Y700 Gen 2 (TB320FC) with the GameSir Legion Gaming Controller
+# G9 2026 attached to the non-charging Type-C port.  Basic support only: the
+# single evdev gamepad is sourced and mapped through the lenovo_legion_g9_2026
+# capability map.  No IMU, haptics, consumer-key blocking or RGB commands.
+#
+# Same targets as the Gen 4/Gen 5 profiles (deck-uhid + keyboard), so all three
+# boards hand Steam the same virtual Steam Deck controller.  On this machine
+# that required /dev/uhid: the A-series kernel is CONFIG_UHID=m with nothing
+# staging uhid.ko, and InputPlumber then only reports
+#   Error polling target device: DeviceError("No such file or directory")
+# /usr/libexec/tb320fc/input (tb320fc-input.service, Before=inputplumber.service)
+# loads it.  Note the shipped composite_device_v1.json schema lists only "deck",
+# not "deck-uhid"; the schema is stale, the binary does implement deck-uhid
+# (src/input/target/steam_deck_uhid.rs).
+#
+# The model strings are the two spellings device-env maps to this board; the
+# running TB320FC DT says "Lenovo Legion Y700 2nd gen".
+#
+# Verified on the board: the composite spawns event7
+# "Microsoft X-Box 360 pad 0" with PRODUCT=3/28de/11ff (Valve's Steam Deck
+# controller id), and Steam drives it natively.
+version: 1
+kind: CompositeDevice
+name: Lenovo Legion Y700 Gen 2 (TB320FC) + Legion G9 2026
+matches:
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: Lenovo Legion Y700 2nd gen
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: Lenovo Legion Y700 Gen2
+single_source: false
+source_devices:
+  - group: gamepad
+    evdev:
+      name: GameSir Legion Gaming Controller G9 2026
+      vendor_id: "3537"
+      product_id: "1136"
+      handler: event*
+    capability_map_id: lenovo_legion_g9_2026
+options:
+  auto_manage: true
+target_devices:
+  - deck-uhid
+  - keyboard

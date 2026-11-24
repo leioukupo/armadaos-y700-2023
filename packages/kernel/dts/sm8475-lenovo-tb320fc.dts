@@ -127,6 +127,21 @@
 			reg = <1>;
 			power-role = "dual";
 			data-role = "dual";
+
+			/* Its own FSA4480 (0x42) serves the non-charging connector, so
+			 * reach it through the graph just like connector@0 reaches the
+			 * primary one. */
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@2 {
+					reg = <2>;
+					pmic_glink_c2_sbu: endpoint {
+						remote-endpoint = <&fsa4480_2_sbu>;
+					};
+				};
+			};
 		};
 	};
 
@@ -536,6 +551,20 @@
 	status = "okay";
 
 	/* Powered by the board; downstream does not control a supply here. */
+	/* Second FSA4480, the one behind the non-charging connector. */
+	typec-mux@42 {
+		compatible = "fcs,fsa4480";
+		reg = <0x42>;
+		mode-switch;
+		orientation-switch;
+
+		port {
+			fsa4480_2_sbu: endpoint {
+				remote-endpoint = <&pmic_glink_c2_sbu>;
+			};
+		};
+	};
+
 	typec-mux@43 {
 		compatible = "fcs,fsa4480";
 		reg = <0x43>;
@@ -560,6 +589,9 @@
 
 		/* The downstream 0xa2 repeater identifies as C2 at runtime. */
 		qcom,param-override-seq = <0x44 0x06 0x33 0x07 0x66 0x08
+					     0x02 0x09 0x03 0x0a>;
+		/* the same C2 array, applied by phy_set_mode(USB_HOST) */
+		qcom,param-override-seq-host = <0x44 0x06 0x33 0x07 0x66 0x08
 					     0x02 0x09 0x03 0x0a>;
 	};
 };
@@ -917,6 +949,14 @@
 	bluetooth {
 		compatible = "qcom,wcn6855-bt";
 
+		/* WCN6855 comes out of reset with an unprogrammed public address
+		 * (00:00:00:00:5a:ad), so the core flags hci0 as HCI_UNCONFIGURED and
+		 * bluez can never power it on.  Carrying the address here lets hci_sync
+		 * push it into the controller through qca_set_bdaddr().  The binding is
+		 * little-endian: the textual address 00:00:00:00:5a:ad is stored last
+		 * byte first. */
+		local-bd-address = [ad 5a 00 00 00 00];
+
 		vddrfacmn-supply = <&vreg_pmu_rfa_cmn_0p8>;
 		vddaon-supply = <&vreg_pmu_aon_0p8>;
 		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
@@ -929,10 +969,38 @@
 };
 
 &usb_1 {
-	dr_mode = "otg";
-	role-switch-default-mode = "peripheral";
+	/* Nothing on this board drives a DWC3 role switch: CC state and VBUS
+	 * sourcing live on the stock ADSP, and no connector endpoint reaches
+	 * DWC3, so dr_mode alone decides what the port is.  Host is what the
+	 * handheld needs - a gamepad or a dock on either Type-C port then
+	 * enumerates.  adb over USB is gone as a consequence, so debug goes
+	 * over the network.
+	 *
+	 * dr_mode alone is not enough: dwc3-qcom only asserts the QSCRATCH
+	 * UTMI_OTG_VBUS_VALID / SW_SESSVLD_SEL / LANE0_PWR_PRESENT overrides
+	 * while it is a peripheral, so with a hard host role the xHCI root hub
+	 * never reports a connect (PROGRESS.md A176/A184 - a GameSir G9 sat
+	 * there with portsc CCS=0, PLS=RxDetect).  Ask the glue to keep those
+	 * bits set; the property is opt-in, so boards whose TCPM does drive
+	 * the session stay untouched. */
+	dr_mode = "host";
+	armada,dwc3-host-vbus-override;
 	maximum-speed = "super-speed-plus";
 	status = "okay";
+};
+
+&tlmm {
+	/* TLMM 88 is the enable of the USB2 data switch in front of the second
+	 * (non-charging) Type-C connector.  Stock Android drives it high for every
+	 * connector-2 session ("set gpio88,con == 2,a=1" in its kmsg) and never
+	 * writes 0, so hold it high from the DT: without it that connector only
+	 * ever powers a device and D+/D- never reach the eUSB2 repeater. */
+	usb2_c2_switch_hog: usb2-c2-switch-hog {
+		gpio-hog;
+		gpios = <88 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb-c2-switch";
+	};
 };
 
 &usb_1_hsphy {
