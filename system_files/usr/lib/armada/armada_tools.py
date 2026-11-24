@@ -56,19 +56,44 @@ def connection_info():
     return {"addresses": network_addresses(json.loads(result.stdout))}
 
 
+def steam_manifest_version(manifest):
+    """The version a steam_client_*.manifest declares, or None.
+
+    The manifest starts with the config block, so a 64 KiB read is plenty; a
+    truncated or unreadable file returns None rather than guessing.
+    """
+    try:
+        with manifest.open("rb") as stream:
+            contents = stream.read(65536)
+    except OSError:
+        return None
+    match = re.match(rb'\s*"linuxarm64"\s*\{\s*"version"\s*"([1-9][0-9]*)"', contents)
+    return match[1].decode("ascii") if match else None
+
+
 def steam_client_version():
     package = Path.home() / ".local/share/Steam/package"
-    versions = set()
+    # Steam keeps one manifest per branch it has ever downloaded, so a client
+    # that has switched branches carries several: this board has
+    # steamdeck_stable at 1792618285 and steamdeck_publicbeta at 1788652215 at
+    # the same time. The branch in use is the one named in package/beta, so ask
+    # that manifest first instead of refusing to answer (PROGRESS.md A197: the
+    # row read "Unknown" precisely because two branches disagreed).
     try:
-        for manifest in package.glob("steam_client_*linuxarm64.manifest"):
-            with manifest.open("rb") as stream:
-                contents = stream.read(65536)
-            match = re.match(rb'\s*"linuxarm64"\s*\{\s*"version"\s*"([1-9][0-9]*)"', contents)
-            if not match:
-                return "Unknown"
-            versions.add(match[1].decode("ascii"))
+        branch = (package / "beta").read_text(errors="replace").strip()
     except OSError:
-        return "Unknown"
+        branch = ""
+    if branch:
+        version = steam_manifest_version(
+            package / ("steam_client_%s_linuxarm64.manifest" % branch))
+        if version:
+            return version
+    versions = set()
+    for manifest in package.glob("steam_client_*linuxarm64.manifest"):
+        version = steam_manifest_version(manifest)
+        if version is None:
+            return "Unknown"
+        versions.add(version)
     return versions.pop() if len(versions) == 1 else "Unknown"
 
 

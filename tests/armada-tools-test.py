@@ -230,6 +230,26 @@ class ToolsTests(unittest.TestCase):
             installed.write_text("truncated")
             self.assertEqual(backend.steam_client_version(), "Unknown")
 
+    def test_client_version_uses_the_branch_named_in_the_beta_file(self):
+        package = self.home / ".local/share/Steam/package"
+        package.mkdir(parents=True)
+        (package / "steam_client_steamdeck_stable_linuxarm64.manifest").write_text(
+            '"linuxarm64" { "version" "1792618285" }')
+        (package / "steam_client_steamdeck_publicbeta_linuxarm64.manifest").write_text(
+            '"linuxarm64" { "version" "1788652215" }')
+        with patch.object(backend.Path, "home", return_value=self.home):
+            # Two branches on their own stay "Unknown": nothing says which one runs.
+            self.assertEqual(backend.steam_client_version(), "Unknown")
+            (package / "beta").write_text("steamdeck_stable\n")
+            self.assertEqual(backend.steam_client_version(), "1792618285")
+            (package / "beta").write_text("steamdeck_publicbeta\n")
+            self.assertEqual(backend.steam_client_version(), "1788652215")
+            # A branch name without a manifest falls back to the unambiguous case.
+            (package / "beta").write_text("steamdeck_nextrelease\n")
+            self.assertEqual(backend.steam_client_version(), "Unknown")
+            (package / "steam_client_steamdeck_publicbeta_linuxarm64.manifest").unlink()
+            self.assertEqual(backend.steam_client_version(), "1792618285")
+
     def test_client_version_does_not_guess_between_conflicting_installed_manifests(self):
         package = self.home / ".local/share/Steam/package"
         package.mkdir(parents=True)
