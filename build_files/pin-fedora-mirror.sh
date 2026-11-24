@@ -8,12 +8,15 @@ set -u
 
 MIRROR="${ARMADA_FEDORA_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/fedora}"
 
-# A pinned baseurl is now a single host: a TB320FC dev build died on
-# "Cannot download Packages/p/python3-cairo-1.28.0-5.fc44.aarch64.rpm: All mirrors
-# were tried" while that exact RPM answered 200 on tuna, ustc, bfsu, nju, zju and
-# aliyun - one stalled connection had nothing to fall back to. Restoring librepo's
-# retry list costs nothing: preferred mirror first, then the other CN mirrors, each
-# one probed so a dead host never enters the list.
+# Two things about a CN build network: the pinned mirror is reached 140x faster
+# directly than through the Clash proxy the rest of the build uses (9.2 MB/s vs
+# 66 KB/s for one wpa_supplicant RPM), and a pinned baseurl is a single host with no
+# retry list. A TB320FC dev build died on "Cannot download
+# Packages/p/python3-cairo-1.28.0-5.fc44.aarch64.rpm: All mirrors were tried" while
+# that same RPM answered HTTP 200 from tuna, ustc, bfsu, nju, zju and aliyun - one
+# stalled connection had nothing to fall back to.
+# Restoring librepo's retry list costs nothing: preferred mirror first, then the other
+# CN mirrors, each one probed so a dead host never enters the list.
 FALLBACKS=(
     https://mirrors.ustc.edu.cn/fedora
     https://mirrors.bfsu.edu.cn/fedora
@@ -26,7 +29,7 @@ pin_file() {
     [ -f "${file}" ] || return 0
     sed -ri "/^\\[${section}\\]\$/,/^\\[/ {
         s|^metalink=|#metalink=|
-        s|^#baseurl=http://download\\.example/pub/fedora/linux/(.*)$|${BASEURLS}|
+        s|^#baseurl=http://download\\.example/pub/fedora/linux/(.*)$|${BASEURLS}${PROXY_LINE}|
     }" "${file}"
 }
 
@@ -53,6 +56,16 @@ for mirror in "${BASE_LIST[@]}"; do
     BASEURLS="${BASEURLS}baseurl=${mirror}/\\1\\n"
 done
 BASEURLS="${BASEURLS%\\n}"
+
+# dnf5's own repo option, so the fix does not depend on how librepo parses NO_PROXY:
+# a leading-dot entry did not bypass the proxy here, and these mirrors are exactly the
+# hosts the proxy is useless for. ARMADA_FEDORA_PROXY=_none_ keeps that behaviour
+# selectable for a host that really does need the proxy for them.
+REPO_PROXY="${ARMADA_FEDORA_PROXY-_none_}"
+PROXY_LINE=""
+if [ -n "${REPO_PROXY}" ]; then
+    PROXY_LINE="\\nproxy=${REPO_PROXY}"
+fi
 
 pin_file /etc/yum.repos.d/fedora.repo fedora
 pin_file /etc/yum.repos.d/fedora-updates.repo updates
