@@ -217,6 +217,13 @@ build $target_image=image_name $tag=default_tag:
         [ -f "${dir}/build.sh" ] || continue
         hash="$(packages/package-hash.sh "${pkg}")"
         var="$(echo "${pkg}" | tr '[:lower:]-' '[:upper:]_')_REF"
+        # A package that no Containerfile stage asks for is still built and
+        # published by the packages workflow, but the image build has no ARG to
+        # hand it to, and counting it would break the ref check below.
+        if ! grep -q "^ARG ${var}$" Containerfile; then
+            echo "note: ${pkg} is built but not referenced by the Containerfile"
+            continue
+        fi
         local_ref="localhost/armada/pkg/${pkg}:${hash}"
         if podman image exists "${local_ref}" 2>/dev/null; then
             # A local image is only usable if it was built for the arch the image
