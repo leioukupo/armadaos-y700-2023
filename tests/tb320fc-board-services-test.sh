@@ -301,8 +301,10 @@ if [ "$1" = -g ] && [ "$2" = 802-11-wireless.mac-address ]; then
     exit 0
 fi
 if [ "$1" = connection ] && [ "$2" = modify ]; then
-    if [ "$5" = -802-11-wireless.mac-address ]; then rm -f "$st/$3.bind"; else echo "$5" > "$st/$3"; fi
-    echo "modify $3 $5" >> "$st/log"
+    # "modify <uuid> <prop> <value>" sets, "modify <uuid> -<prop>" removes: the property is
+    # $4 either way, only the removal has no value and a leading dash.
+    if [ "$4" = -802-11-wireless.mac-address ]; then rm -f "$st/$3.bind"; else echo "$5" > "$st/$3"; fi
+    echo "modify $3 $4" >> "$st/log"
     exit 0
 fi
 if [ "$1" = device ] && [ "$2" = reapply ]; then
