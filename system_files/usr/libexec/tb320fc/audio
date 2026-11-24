@@ -190,9 +190,15 @@ spkroute() {
 
 if [ "${MODE}" = watch ] ; then
 	seen=
+	NC=
 	i=0
 	while [ "${i}" -lt "${watch_polls}" ] ; do
-		NC=$(card_for_mixer)
+		# Resolve the card once and only look again when its stream node disappears,
+		# so the resident loop costs one /proc read every watch_gap seconds.
+		if [ -z "${NC}" ] || [ ! -r "/proc/asound/card${NC}/pcm0p/sub0/status" ] ; then
+			NC=$(card_for_mixer)
+			seen=
+		fi
 		if [ -n "${NC}" ] ; then
 			st=$(sed -n 's/^state:[[:space:]]*//p' "/proc/asound/card${NC}/pcm0p/sub0/status" 2>/dev/null)
 			trig=$(sed -n 's/^trigger_time:[[:space:]]*//p' "/proc/asound/card${NC}/pcm0p/sub0/status" 2>/dev/null)
