@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Re-lock the TB320FC amplifiers to the ALSA stream that starts after the session.
+#
+# tb320fc-speaker-gate re-arms the route when PipeWire/WirePlumber start, and that is
+# not enough: UCM powers the CS35L45s up when the device is opened, before q6apm
+# triggers the backend, so the amplifiers never get a TDM frame to lock to. Every
+# control then reads armed - AMP on, digvol 400, PRI_MI2S clocks enabled, CSPL
+# running, pcm0p RUNNING - and nothing comes out (PROGRESS.md A184, A189, A190).
+# Measured on the board 2026-11-24: the same tone was silent through PipeWire and
+# audible through aplay -D hw:0,0 seconds later, and a power cycle run while the PCM
+# was still closed changed nothing while the same cycle after the stream started
+# restored it. So the re-lock has to follow the stream, not the session: this unit
+# stays resident with the audio stack and cycles the amplifiers once per stream.
+# The first playback of a session loses amp_off_gap seconds; silence is the alternative.
+
+[Unit]
+Description=Re-lock the TB320FC amplifiers to each new ALSA stream
+After=pipewire.service wireplumber.service
+BindsTo=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tb320fc/audio watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=pipewire.service wireplumber.service

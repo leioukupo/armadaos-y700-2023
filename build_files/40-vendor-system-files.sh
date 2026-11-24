@@ -171,6 +171,8 @@ systemctl enable tb320fc-audio.service
 # session audio stack starts, so a Plasma/Steam switch does not leave the
 # speakers armed and silent.
 systemctl --global enable tb320fc-speaker-gate.service
+# and the resident half, which re-locks the amplifiers once each new stream is up
+systemctl --global enable tb320fc-speaker-watch.service
 systemctl enable tb320fc-power.service
 systemctl enable tb320fc-wifi.service
 systemctl enable tb320fc-wifi-mac.service

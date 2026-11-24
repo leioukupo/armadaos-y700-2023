@@ -20,6 +20,7 @@ EXEC="$ROOT/system_files/usr/libexec/tb320fc"
 UNITS="$ROOT/system_files/usr/lib/systemd/system"
 USERUNITS="$ROOT/system_files/usr/lib/systemd/user"
 BUILD="$ROOT/build_files/40-vendor-system-files.sh"
+PUSH="$ROOT/devices/lenovo-tb320fc/usr-overlay/push.sh"
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -68,7 +69,7 @@ check "audio is the only route writer for its card" grep -q '^passes=' "$EXEC/au
 # armed-but-not-re-armed path is silent while every kcontrol reads like the
 # working one (PROGRESS.md A184, A189). So the session re-arms through gate mode.
 check "audio takes a boot/gate mode" grep -q 'MODE=${1:-boot}' "$EXEC/audio"
-check "audio rejects an unknown mode" grep -q 'usage: audio \[boot|gate\]' "$EXEC/audio"
+check "audio rejects an unknown mode" grep -q 'usage: audio \[boot|gate|watch\]' "$EXEC/audio"
 check "gate mode has its own poll budget" grep -q '^gate_polls=' "$EXEC/audio"
 check "gate mode never reloads the module chain" grep -q '"${MODE}" = boot \] && \[ "${load}" = on ' "$EXEC/audio"
 check "gate mode never restarts the ADSP" grep -q '"${MODE}" = boot \] && \[ -z "$(ls /sys/bus/aprbus/devices' "$EXEC/audio"
@@ -80,6 +81,21 @@ check "route has an amplifier power cycle knob" grep -q '^amp_cycle=on$' "$EXEC/
 check "route separates AMP off from AMP on" grep -q 'sleep "${amp_off_gap}"' "$EXEC/audio"
 check "route counts the powered amplifiers before cycling" grep -q 'amps_powered() {' "$EXEC/audio"
 check "route cycles on the first pass only" grep -q 'spkroute "${NC}" "${p}"' "$EXEC/audio"
+# A cycle that runs while the PCM is still closed does nothing: UCM powers the
+# amplifiers up before q6apm triggers the backend, so they never lock to the TDM
+# frame. The re-lock has to follow the stream (A190).
+check "audio takes a watch mode" grep -q 'usage: audio \[boot|gate|watch\]' "$EXEC/audio"
+check "watch mode tracks the running stream" grep -q '"${st}" = RUNNING ' "$EXEC/audio"
+check "watch mode cycles once per stream" grep -q '[ "${NC}/${trig}" != "${seen}" ]' "$EXEC/audio"
+check "watch mode never reloads the module chain" grep -q '^watch_polls=' "$EXEC/audio"
+WATCH="$USERUNITS/tb320fc-speaker-watch.service"
+check "watch unit exists" test -f "$WATCH"
+check "watch unit runs watch mode" grep -q 'ExecStart=/usr/libexec/tb320fc/audio watch' "$WATCH"
+check "watch unit stays resident" grep -q 'Type=simple' "$WATCH"
+check "watch unit starts after the audio stack" grep -q 'After=pipewire.service wireplumber.service' "$WATCH"
+check "watch unit dies with the audio stack" grep -q 'BindsTo=pipewire.service wireplumber.service' "$WATCH"
+check "image enables the watcher globally" grep -Fxq 'systemctl --global enable tb320fc-speaker-watch.service' "$BUILD"
+check "push carries the watcher unit" grep -q 'usr/lib/systemd/user/tb320fc-speaker-watch.service' "$PUSH"
 
 GATE="$USERUNITS/tb320fc-speaker-gate.service"
 check "session unit exists" test -f "$GATE"

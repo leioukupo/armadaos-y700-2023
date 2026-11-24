@@ -42,6 +42,7 @@ usr/libexec/tb320fc/slot-attrs
 "
 UNITS="
 usr/lib/systemd/user/tb320fc-speaker-gate.service
+usr/lib/systemd/user/tb320fc-speaker-watch.service
 usr/lib/systemd/system/tb320fc-modules-tree.service
 usr/lib/systemd/system/tb320fc-usr-overlay.service
 usr/lib/systemd/system/tb320fc-legacy-off.service
@@ -73,7 +74,7 @@ STALE="/usr/local/libexec/tb320fc/audio /usr/local/libexec/tb320fc/power /usr/lo
 ARM="tb320fc-modules-tree.service tb320fc-usr-overlay.service tb320fc-legacy-off.service tb320fc-input.service tb320fc-audio.service tb320fc-power.service tb320fc-wifi.service tb320fc-wifi-mac.service tb320fc-touch.service"
 # The session half of the audio chain: a user unit, enabled with --global so systemd
 # writes the wants symlinks under /etc/systemd/user.
-GLOBAL="tb320fc-speaker-gate.service"
+GLOBAL="tb320fc-speaker-gate.service tb320fc-speaker-watch.service"
 # Workarounds that the fixed helpers replace: they point ExecStart at /usr/local copies.
 HACKS="/etc/systemd/system/tb320fc-audio.service.d /etc/systemd/system/tb320fc-power.service.d"
 

@@ -26,6 +26,10 @@
 #     power domain. The route then reads armed while nothing comes out; the off gap is
 #     what makes the transition real (board, 2026-11-24: tone silent before the gap,
 #     audible after it, with every kcontrol reading identically in both states).
+#   * and the cycle only has an effect while a stream is running. UCM powers the amplifiers
+#     up when the ALSA device is opened, before q6apm triggers the backend, so they never see
+#     a TDM frame to lock to: running the cycle with the PCM closed changed nothing on the
+#     board, running it two seconds after the stream started brought the tone back.
 #
 # Two modes:
 #   boot (default)  the whole bring-up above: modules, ADSP handshake, route.
@@ -37,7 +41,10 @@
 #                   while staying silent (PROGRESS.md A184, A189). The boot instance has
 #                   long finished by then, so the session has to re-arm it itself, and
 #                   re-arming means running the amplifier power cycle above.
-TB320FC_TAG=TB320FC-AUDIO-v5
+#   watch           stay resident and run that power cycle once for every new ALSA stream,
+#                   which is the only moment where it does anything. The first playback of a
+#                   session loses the gap; permanent silence is the alternative.
+TB320FC_TAG=TB320FC-AUDIO-v6
 CONF=/etc/tb320fc/audio.conf
 load=on
 unmute=on
@@ -50,10 +57,15 @@ pass_gap=8
 # gate mode waits shorter: the card is up already when a session starts.
 gate_polls=15
 gate_gap=3
+# watch mode stays resident: 10800 x 2 s is six hours, and the unit is pulled
+# down with the audio stack long before that.
+watch_polls=10800
+watch_gap=2
+watch_settle=1
 [ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
 MODE=${1:-boot}
-if [ "${MODE}" != boot ] && [ "${MODE}" != gate ] ; then
-	echo "${TB320FC_TAG} usage: audio [boot|gate]" >&2
+if [ "${MODE}" != boot ] && [ "${MODE}" != gate ] && [ "${MODE}" != watch ] ; then
+	echo "${TB320FC_TAG} usage: audio [boot|gate|watch]" >&2
 	exit 2
 fi
 
@@ -175,6 +187,27 @@ spkroute() {
 	done
 	echo "${TB320FC_TAG} route card=${nc} digvol=${digvol} mixer=MultiMedia1 amp_cycle=${cycled}"
 }
+
+if [ "${MODE}" = watch ] ; then
+	seen=
+	i=0
+	while [ "${i}" -lt "${watch_polls}" ] ; do
+		NC=$(card_for_mixer)
+		if [ -n "${NC}" ] ; then
+			st=$(sed -n 's/^state:[[:space:]]*//p' "/proc/asound/card${NC}/pcm0p/sub0/status" 2>/dev/null)
+			trig=$(sed -n 's/^trigger_time:[[:space:]]*//p' "/proc/asound/card${NC}/pcm0p/sub0/status" 2>/dev/null)
+			if [ "${st}" = RUNNING ] && [ -n "${trig}" ] && [ "${NC}/${trig}" != "${seen}" ] ; then
+				seen="${NC}/${trig}"
+				echo "${TB320FC_TAG} watch stream up card=${NC} trigger=${trig} re-locking amplifiers"
+				sleep "${watch_settle}"
+				spkroute "${NC}" 1
+			fi
+		fi
+		sleep "${watch_gap}"
+		i=$((i + 1))
+	done
+	exit 0
+fi
 
 poll_limit=${polls}
 poll_gap=2
