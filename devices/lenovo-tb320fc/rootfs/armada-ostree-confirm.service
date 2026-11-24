@@ -1,0 +1,28 @@
+[Unit]
+Description=Confirm the composed OSTree boot
+Documentation=file:/usr/lib/armada/armada-ostree-stage1.sh
+# Only the composed root has the boot record, and only a pivot left /sysroot as
+# the physical root, so a flat boot can never mark a composed attempt as good.
+ConditionPathExists=/run/ostree-booted
+ConditionPathExists=/sysroot/armada-ostree/attempt
+# Start as early as the root filesystem allows.  The first version ran
+# After=multi-user.target and was only pulled in by it, so a composed boot that
+# stalled on some unit before multi-user never started this service at all: the
+# attempt stayed unconfirmed, stage-1 counted it as a dead boot, and after two of
+# those the kill switch turned the composed root off by itself.  The confirm loop
+# waits for reachability on its own, so it needs neither network-online nor
+# multi-user - it only needs the real root to be mounted.
+After=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The logic is a file, not an ExecStart one-liner: systemd expands "$name" inside
+# ExecStart, which silently emptied the retry counter of the first version.
+ExecStart=/usr/lib/armada/armada-ostree-confirm.sh
+# ath11k probes ~150 s into the boot and a Wi-Fi scan can hang for tens of
+# minutes, so the confirm loop needs room to see the system come up.
+TimeoutStartSec=720
+
+[Install]
+WantedBy=basic.target

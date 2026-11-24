@@ -1,0 +1,19 @@
+#!/bin/sh
+# /init for the Y700 Gen 2 UFS root.
+#
+# The boot_a initramfs chooses the root's init from /init, /sbin/init,
+# /usr/lib/systemd/systemd, in that order, so this file is the only hook the
+# installed system has before PID 1 - which is exactly what the ostree stage-1
+# needs to compose the deployment into the root. Keep it a launcher: what it
+# calls can be replaced, updated or removed without touching the boot partition,
+# and if it is not there the board boots the flat root exactly as before.
+if [ -x /usr/lib/armada/armada-ostree-stage1.sh ]; then
+    exec /usr/lib/armada/armada-ostree-stage1.sh "$@"
+fi
+for cand in /sbin/init /usr/lib/systemd/systemd; do
+    if [ -x "$cand" ]; then
+        exec "$cand" "$@"
+    fi
+done
+echo "armada-ostree init: no init to exec" > /dev/kmsg 2>/dev/null
+exec /bin/sh
