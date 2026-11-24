@@ -1,0 +1,129 @@
+--- a/sound/soc/codecs/cs35l45.h
++++ b/sound/soc/codecs/cs35l45.h
+@@ -501,6 +501,7 @@
+ 	unsigned int i2c_addr;
+ 	enum control_bus_type bus_type;
+ 	struct regmap_irq_chip_data *irq_data;
++	struct delayed_work relock_work;
+ };
+ 
+ extern const struct dev_pm_ops cs35l45_pm_ops;
+--- a/sound/soc/codecs/cs35l45.c
++++ b/sound/soc/codecs/cs35l45.c
+@@ -10,6 +10,7 @@
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/property.h>
++#include <linux/workqueue.h>
+ #include <linux/firmware.h>
+ #include <linux/regulator/consumer.h>
+ #include <sound/core.h>
+@@ -169,6 +170,55 @@
+ 	return 0;
+ }
+ 
++/*
++ * Lenovo Y700 Gen 2 (TB320FC): the speakers hang off AudioReach -> PRIMARY_MI2S ->
++ * two CS35L45. UCM powers the amplifiers up when the ALSA device is opened, before
++ * the ADSP graph has been started, so the ASP RX never gets a TDM frame to lock to.
++ * The path then reads perfectly healthy - AMP on, DSP1 running, PRI_MI2S clock at
++ * 1536000, pcm0p RUNNING with hw_ptr advancing in real time - and nothing comes out.
++ * Only running the power sequence again while a stream is actually running recovers
++ * it, so do it here, in process context, right after the backend has started.
++ */
++static int relock_delay_ms = 100;
++module_param(relock_delay_ms, int, 0644);
++MODULE_PARM_DESC(relock_delay_ms, "ms after a stream starts before the amplifiers are re-locked, 0 disables");
++
++static int relock_gap_ms = 200;
++module_param(relock_gap_ms, int, 0644);
++MODULE_PARM_DESC(relock_gap_ms, "ms the amplifiers stay powered down inside a re-lock");
++
++static void cs35l45_relock_amps(struct work_struct *work)
++{
++	struct cs35l45_private *cs35l45 = container_of(to_delayed_work(work),
++						       struct cs35l45_private,
++						       relock_work);
++	int ret;
++
++	if (!cs35l45->dsp.cs_dsp.running)
++		return;
++
++	dev_info(cs35l45->dev, "re-locking amplifiers after stream start\n");
++
++	ret = pm_runtime_get_sync(cs35l45->dev);
++	if (ret < 0) {
++		pm_runtime_put_noidle(cs35l45->dev);
++		dev_err(cs35l45->dev, "re-lock failed to resume the device: %d\n", ret);
++		return;
++	}
++
++	cs35l45_set_cspl_mbox_cmd(cs35l45, cs35l45->regmap, CSPL_MBOX_CMD_PAUSE);
++	msleep(relock_gap_ms);
++	regmap_write(cs35l45->regmap, CS35L45_GLOBAL_ENABLES, 0);
++	msleep(5);
++	regmap_write(cs35l45->regmap, CS35L45_GLOBAL_ENABLES, CS35L45_GLOBAL_EN_MASK);
++	usleep_range(CS35L45_POST_GLOBAL_EN_US, CS35L45_POST_GLOBAL_EN_US + 100);
++	ret = cs35l45_set_cspl_mbox_cmd(cs35l45, cs35l45->regmap, CSPL_MBOX_CMD_RESUME);
++	if (ret)
++		dev_err(cs35l45->dev, "re-lock failed to resume CSPL: %d\n", ret);
++
++	pm_runtime_put_autosuspend(cs35l45->dev);
++}
++
+ static int cs35l45_activate_ctl(struct snd_soc_component *component,
+ 				const char *ctl_name, bool active)
+ {
+@@ -846,12 +896,34 @@
+ 	return 0;
+ }
+ 
++static int cs35l45_asp_dai_trigger(struct snd_pcm_substream *substream, int cmd,
++				   struct snd_soc_dai *dai)
++{
++	struct snd_soc_component *component = dai->component;
++	struct cs35l45_private *cs35l45 = snd_soc_component_get_drvdata(component);
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		if (relock_delay_ms > 0)
++			schedule_delayed_work(&cs35l45->relock_work,
++					      msecs_to_jiffies(relock_delay_ms));
++		break;
++	default:
++		break;
++	}
++
++	return 0;
++}
++
+ static const struct snd_soc_dai_ops cs35l45_asp_dai_ops = {
+ 	.set_fmt = cs35l45_asp_set_fmt,
+ 	.hw_params = cs35l45_asp_hw_params,
+ 	.set_tdm_slot = cs35l45_asp_set_tdm_slot,
+ 	.set_sysclk = cs35l45_asp_set_sysclk,
+ 	.mute_stream = cs35l45_mute_stream,
++	.trigger = cs35l45_asp_dai_trigger,
+ };
+ 
+ static struct snd_soc_dai_driver cs35l45_dai[] = {
+@@ -1383,6 +1455,8 @@
+ 	unsigned long irq_pol = IRQF_ONESHOT | IRQF_SHARED;
+ 	int ret, i, irq;
+ 
++	INIT_DELAYED_WORK(&cs35l45->relock_work, cs35l45_relock_amps);
++
+ 	cs35l45->vdd_batt = devm_regulator_get(dev, "vdd-batt");
+ 	if (IS_ERR(cs35l45->vdd_batt))
+ 		return dev_err_probe(dev, PTR_ERR(cs35l45->vdd_batt),
+@@ -1494,6 +1568,8 @@
+ 
+ void cs35l45_remove(struct cs35l45_private *cs35l45)
+ {
++	cancel_delayed_work_sync(&cs35l45->relock_work);
++
+ 	pm_runtime_get_sync(cs35l45->dev);
+ 	pm_runtime_disable(cs35l45->dev);
+ 	wm_adsp2_remove(&cs35l45->dsp);

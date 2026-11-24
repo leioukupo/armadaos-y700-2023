@@ -88,6 +88,14 @@ check "audio takes a watch mode" grep -q 'usage: audio \[boot|gate|watch\]' "$EX
 check "watch mode tracks the running stream" grep -q '"${st}" = RUNNING ' "$EXEC/audio"
 check "watch mode cycles once per stream" grep -q '[ "${NC}/${trig}" != "${seen}" ]' "$EXEC/audio"
 check "watch mode never reloads the module chain" grep -q '^watch_polls=' "$EXEC/audio"
+# The patched payload driver re-locks the amplifiers from the codec DAI trigger: same
+# power sequence, but about 100 ms after the backend starts and with a 200 ms gap
+# instead of three seconds. Both userspace paths have to get out of the way then, and
+# they read the kernel parameter on every use so the switch works at runtime (A192).
+check "audio detects the in-kernel re-lock" grep -q 'kernel_relock() {' "$EXEC/audio"
+check "route skips its power cycle for the in-kernel re-lock" grep -q '! kernel_relock &&' "$EXEC/audio"
+check "watch skips its cycle for the in-kernel re-lock" grep -q 'skipped, kernel re-locks the amplifiers' "$EXEC/audio"
+check "the kernel re-lock patch is kept for the payload build" test -f "$ROOT/devices/lenovo-tb320fc/patches/kernel/0001-cs35l45-relock-amps-after-stream-start.patch"
 WATCH="$USERUNITS/tb320fc-speaker-watch.service"
 check "watch unit exists" test -f "$WATCH"
 check "watch unit runs watch mode" grep -q 'ExecStart=/usr/libexec/tb320fc/audio watch' "$WATCH"

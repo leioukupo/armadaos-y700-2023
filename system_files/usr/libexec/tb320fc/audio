@@ -44,7 +44,15 @@
 #   watch           stay resident and run that power cycle once for every new ALSA stream,
 #                   which is the only moment where it does anything. The first playback of a
 #                   session loses the gap; permanent silence is the alternative.
-TB320FC_TAG=TB320FC-AUDIO-v6
+#
+# Both paths stand down on their own when the loaded cs35l45 re-locks the amplifiers in
+# the kernel (devices/lenovo-tb320fc/patches/kernel/
+# 0001-cs35l45-relock-amps-after-stream-start.patch, PROGRESS.md A192): that version runs
+# the same power sequence about 100 ms after the backend starts, with a 200 ms gap
+# instead of three seconds, so it costs nothing audible. The switch is live - writing 0
+# to /sys/module/snd_soc_cs35l45/parameters/relock_delay_ms brings userspace back on the
+# next stream without restarting anything.
+TB320FC_TAG=TB320FC-AUDIO-v7
 CONF=/etc/tb320fc/audio.conf
 load=on
 unmute=on
@@ -145,6 +153,15 @@ card_for_mixer() {
 	return 1
 }
 
+# Is the amplifier re-lock already handled in the kernel? Read the parameter every
+# time so it stays a runtime switch: an unpatched module has no such file, and a
+# patched one can be turned off with "echo 0 > parameters/relock_delay_ms".
+kernel_relock() {
+	_v=$(cat /sys/module/snd_soc_cs35l45/parameters/relock_delay_ms 2>/dev/null)
+	case "${_v}" in ''|*[!0-9]*) return 1 ;; esac
+	[ "${_v}" -gt 0 ]
+}
+
 amps_powered() {
 	nc=$1
 	n=0
@@ -162,7 +179,7 @@ spkroute() {
 	# Only the first pass pays for the power cycle; the later passes re-write the
 	# graph, which is what fixes the half-armed second amplifier (A184).
 	cycled=no
-	if [ "${pass}" -eq 1 ] && [ "${amp_cycle}" = on ] && [ "$(amps_powered "${nc}")" -gt 0 ] ; then
+	if [ "${pass}" -eq 1 ] && [ "${amp_cycle}" = on ] && ! kernel_relock && [ "$(amps_powered "${nc}")" -gt 0 ] ; then
 		for s in SPK1 SPK2 ; do setc "$s AMP Enable Switch" 0 ; done
 		echo "${TB320FC_TAG} amp power-down card=${nc} gap=${amp_off_gap}s"
 		sleep "${amp_off_gap}"
@@ -204,9 +221,13 @@ if [ "${MODE}" = watch ] ; then
 			trig=$(sed -n 's/^trigger_time:[[:space:]]*//p' "/proc/asound/card${NC}/pcm0p/sub0/status" 2>/dev/null)
 			if [ "${st}" = RUNNING ] && [ -n "${trig}" ] && [ "${NC}/${trig}" != "${seen}" ] ; then
 				seen="${NC}/${trig}"
-				echo "${TB320FC_TAG} watch stream up card=${NC} trigger=${trig} re-locking amplifiers"
-				sleep "${watch_settle}"
-				spkroute "${NC}" 1
+				if kernel_relock ; then
+					echo "${TB320FC_TAG} watch stream up card=${NC} trigger=${trig} skipped, kernel re-locks the amplifiers"
+				else
+					echo "${TB320FC_TAG} watch stream up card=${NC} trigger=${trig} re-locking amplifiers"
+					sleep "${watch_settle}"
+					spkroute "${NC}" 1
+				fi
 			fi
 		fi
 		sleep "${watch_gap}"
