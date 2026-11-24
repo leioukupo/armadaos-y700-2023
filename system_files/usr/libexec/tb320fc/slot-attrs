@@ -154,7 +154,20 @@ if [ -z "$LBASIZE" ]; then
   if [ -r "$SYS/queue/logical_block_size" ]; then
     LBASIZE=$(cat "$SYS/queue/logical_block_size")
   else
-    LBASIZE=$(blockdev --getss "$DISK" 2>/dev/null || die "cannot size $DISK; pass --lba-size")
+    LBASIZE=$(blockdev --getss "$DISK" 2>/dev/null)
+    if [ -z "$LBASIZE" ]; then
+      # A regular file - a saved GPT dump - carries no block geometry, so look
+      # for the header signature: it sits one logical block into the LU whatever
+      # size the dump was taken with.  This is a measurement, not a guess, and
+      # every CRC downstream still has to agree before anything is written.
+      for cand in 4096 2048 1024 512; do
+        if [ "$(dd if="$DISK" bs=$cand skip=1 count=1 2>/dev/null | head -c 8)" = "EFI PART" ]; then
+          LBASIZE=$cand
+          break
+        fi
+      done
+    fi
+    [ -n "$LBASIZE" ] || die "cannot size $DISK; pass --lba-size"
   fi
 fi
 case $LBASIZE in 512|1024|2048|4096) ;; *) die "unsupported logical block size $LBASIZE" ;; esac
@@ -295,6 +308,12 @@ fi
 # keeps the write to the one pair that actually drifts.
 : > "$W/plan"
 cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
+  if [ -n "$ONLY" ]; then
+    case ",$ONLY," in
+      *",$stem,"*) ;;
+      *) continue ;;
+    esac
+  fi
   ra=$(awk -v n="$stem" '$1==n && $2=="a"' "$W/ents")
   rb=$(awk -v n="$stem" '$1==n && $2=="b"' "$W/ents")
   [ -n "$ra" ] && [ -n "$rb" ] || continue

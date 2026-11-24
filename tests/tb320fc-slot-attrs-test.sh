@@ -219,6 +219,7 @@ grep_ok "vendor_boot_a prio=15" "$v" "pin --pair boot leaves the firmware pairs 
 out=$(run pin --slot b --pair boot --commit)
 grep_ok "written=0 already_pinned=1" "$out" "running pin again changes nothing"
 
+cp "$IMG.orig" "$IMG"
 out=$(run pin --slot b)
 grep_ok "entries_to_change=$ENTRIES written=0" "$out" "pin without --pair plans every slot pair"
 out=$(run pin --slot b --pair nosuchpair --commit)
@@ -236,6 +237,9 @@ printf '%s\n' "$out" | grep -q "0-15" && ok "--prio rejects a value outside 0-15
 # DT, and hands slot-attrs the pin arguments.  All three inputs are overridable,
 # so the whole ExecStart path is exercised against the fixture image here.
 # ---------------------------------------------------------------------------
+out=$(sh "$TOOL" report --disk "$IMG" 2>&1)
+grep_ok "lba=4096" "$out" "sizes a saved GPT dump by its own header signature"
+
 HELPER=system_files/usr/libexec/tb320fc/slot-pin
 UNIT=system_files/usr/lib/systemd/system/tb320fc-slot-pin.service
 CONF=system_files/etc/tb320fc/slot-pin.conf
