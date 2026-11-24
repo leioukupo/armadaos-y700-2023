@@ -382,6 +382,7 @@ check "ipv6=keep reports nothing to do" grep -q 'ipv6=0' <<<"$out"
 check "ipv6=keep never touches the method" bash -c "! grep -q 'modify cc33 ipv6.method' '$work/nmstate/log'"
 printf 'mac=auto\nmac_nm=on\n' > "$work/sync.conf"
 printf 'manual\n' > "$work/nmstate/aa11.v6"
+printf 'auto\n' > "$work/nmstate/cc33.v6"
 out="$(run_sync)"
 check "a manual IPv6 method is never overridden" grep -q 'ipv6=0' <<<"$out"
 
