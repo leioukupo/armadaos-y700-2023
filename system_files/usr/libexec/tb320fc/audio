@@ -19,7 +19,17 @@
 #     state file all leave it off): the backend's second slot ASP_RX2 is not
 #     connected in the stock ADSP graph. Both amplifiers therefore take their main
 #     input from ASP_RX1 - do not point one of them at ASP_RX2, that speaker dies.
-TB320FC_TAG=TB320FC-AUDIO-v3
+#
+# Two modes:
+#   boot (default)  the whole bring-up above: modules, ADSP handshake, route.
+#   gate            rewrite the amplifier route only, and it needs no root. The ADSP
+#                   graph and both amplifiers are rebuilt every time the session audio
+#                   stack (PipeWire/WirePlumber) starts - switching between Plasma and
+#                   Steam does exactly that - and a path armed before the rebuild keeps
+#                   reading AMP on, digvol 400, clocks enabled, DAPM On and CSPL RUNNING
+#                   while staying silent (PROGRESS.md A184, A189). The boot instance has
+#                   long finished by then, so the session has to re-arm it itself.
+TB320FC_TAG=TB320FC-AUDIO-v4
 CONF=/etc/tb320fc/audio.conf
 load=on
 unmute=on
@@ -27,7 +37,15 @@ digvol=400
 polls=40
 passes=2
 pass_gap=8
+# gate mode waits shorter: the card is up already when a session starts.
+gate_polls=15
+gate_gap=3
 [ -f "${CONF}" ] && . "${CONF}" 2>/dev/null
+MODE=${1:-boot}
+if [ "${MODE}" != boot ] && [ "${MODE}" != gate ] ; then
+	echo "${TB320FC_TAG} usage: audio [boot|gate]" >&2
+	exit 2
+fi
 
 # Sibling helpers are not necessarily next door: the image keeps them in
 # /usr/libexec/tb320fc, a replayed fix lands in /usr/local/libexec/tb320fc, and a
@@ -61,11 +79,13 @@ CS_FW=/usr/lib/firmware/cirrus
 for d in /usr/lib/firmware/cirrus /usr/lib/firmware; do
 	[ -e "$d/spk1-cs35l45-dsp1-spk-prot.wmfw" ] && CS_FW="$d" && break
 done
-echo "${TB320FC_TAG} start adsp_fw=$(ls "${ADSP_FW}" 2>/dev/null | wc -l) cs_fw=$(ls "${CS_FW}" 2>/dev/null | wc -l) remoteproc=[$(ls /sys/class/remoteproc 2>/dev/null | tr '\n' ',')]"
-[ -e "${ADSP_FW}/adsp.mdt" ] || echo "${TB320FC_TAG} FAIL adsp firmware missing under ${ADSP_FW}"
-[ -e "${CS_FW}/spk1-cs35l45-dsp1-spk-prot.wmfw" ] || echo "${TB320FC_TAG} FAIL cs35l45 protection firmware missing"
+if [ "${MODE}" = boot ] ; then
+	echo "${TB320FC_TAG} start adsp_fw=$(ls "${ADSP_FW}" 2>/dev/null | wc -l) cs_fw=$(ls "${CS_FW}" 2>/dev/null | wc -l) remoteproc=[$(ls /sys/class/remoteproc 2>/dev/null | tr '\n' ',')]"
+	[ -e "${ADSP_FW}/adsp.mdt" ] || echo "${TB320FC_TAG} FAIL adsp firmware missing under ${ADSP_FW}"
+	[ -e "${CS_FW}/spk1-cs35l45-dsp1-spk-prot.wmfw" ] || echo "${TB320FC_TAG} FAIL cs35l45 protection firmware missing"
+fi
 
-if [ "${load}" = on ] ; then
+if [ "${MODE}" = boot ] && [ "${load}" = on ] ; then
 	tb320fc_exec modload ${MODS} || echo "${TB320FC_TAG} WARN module chain incomplete"
 fi
 
@@ -81,10 +101,10 @@ for d in /sys/bus/auxiliary/devices/qcom_common.pd-mapper.* ; do
 	[ -d "${d}" ] || continue
 	[ -e "${d}/driver" ] || PDM=1
 done
-if [ "${PDM}" = 1 ] ; then
+if [ "${MODE}" = boot ] && [ "${PDM}" = 1 ] ; then
 	tb320fc_exec modload qcom_pd_mapper || echo "${TB320FC_TAG} FAIL qcom_pd_mapper unavailable"
 fi
-if [ -z "$(ls /sys/bus/aprbus/devices 2>/dev/null)" ] ; then
+if [ "${MODE}" = boot ] && [ -z "$(ls /sys/bus/aprbus/devices 2>/dev/null)" ] ; then
 	for r in /sys/class/remoteproc/remoteproc* ; do
 		[ "$(cat "${r}/name" 2>/dev/null)" = adsp ] || continue
 		echo "${TB320FC_TAG} aprbus empty, re-handshake $(basename "${r}")"
@@ -128,25 +148,31 @@ spkroute() {
 	echo "${TB320FC_TAG} route card=${nc} digvol=${digvol} mixer=MultiMedia1"
 }
 
+poll_limit=${polls}
+poll_gap=2
+[ "${MODE}" = gate ] && { poll_limit=${gate_polls}; poll_gap=1; }
 i=0
-while [ "${i}" -lt "${polls}" ] ; do
+while [ "${i}" -lt "${poll_limit}" ] ; do
 	NC=$(card_for_mixer) && break
-	sleep 2
+	sleep "${poll_gap}"
 	i=$((i + 1))
 done
 if [ -z "${NC:-}" ] ; then
-	echo "${TB320FC_TAG} FAIL no sound card with PRIMARY_MI2S_RX after $((i * 2))s"
+	echo "${TB320FC_TAG} FAIL no sound card with PRIMARY_MI2S_RX mode=${MODE} waited=$((i * poll_gap))s"
 	echo "${TB320FC_TAG} cards=[$(sed -n '2,10p' /proc/asound/cards 2>/dev/null | tr -s '\n\t' ' ')]"
 	exit 0
 fi
-echo "${TB320FC_TAG} card ready nc=${NC} waited=$((i * 2))s"
+echo "${TB320FC_TAG} card ready mode=${MODE} nc=${NC} waited=$((i * poll_gap))s"
 if [ "${unmute}" = on ] ; then
+	passes_run=${passes}
+	gap_run=${pass_gap}
+	[ "${MODE}" = gate ] && { passes_run=2; gap_run=${gate_gap}; }
 	p=1
-	while [ "${p}" -le "${passes}" ] ; do
+	while [ "${p}" -le "${passes_run}" ] ; do
 		spkroute "${NC}"
-		echo "${TB320FC_TAG} route pass ${p}/${passes}"
+		echo "${TB320FC_TAG} route pass ${p}/${passes_run} mode=${MODE}"
 		p=$((p + 1))
-		[ "${p}" -le "${passes}" ] && sleep "${pass_gap}"
+		[ "${p}" -le "${passes_run}" ] && sleep "${gap_run}"
 	done
 	# One line per amplifier so the journal says which speaker is really armed;
 	# a silent speaker with identical values means the ADSP graph, not the kcontrol.

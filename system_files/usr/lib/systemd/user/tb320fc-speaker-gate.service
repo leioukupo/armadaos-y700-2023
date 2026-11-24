@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# Re-arm the TB320FC speaker amplifiers alongside the session audio stack.
+#
+# The ADSP graph and the two CS35L45 amplifiers are rebuilt whenever PipeWire and
+# WirePlumber start, and switching sessions (Plasma -> Steam -> Plasma) does exactly
+# that. An amplifier path armed before the rebuild keeps reading AMP on, digvol 400,
+# clocks enabled, DAPM On and CSPL RUNNING while staying silent, which is the same
+# "the meters lie" signature as the idle-suspend case (PROGRESS.md A184, A189).
+# tb320fc-audio.service runs once at boot and has long finished by then, so the
+# session re-arms the route itself. The session user is in the audio group, so this
+# needs no root, and gate mode touches no modules and never restarts the ADSP.
+[Unit]
+Description=Re-arm the TB320FC speaker amplifiers with the session audio stack
+After=pipewire.service wireplumber.service
+BindsTo=pipewire.service wireplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tb320fc/audio gate
+
+[Install]
+WantedBy=pipewire.service wireplumber.service

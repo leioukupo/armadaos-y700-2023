@@ -167,6 +167,10 @@ systemctl enable tb320fc-modules-tree.service
 systemctl enable tb320fc-usr-overlay.service
 systemctl enable tb320fc-legacy-off.service
 systemctl enable tb320fc-audio.service
+# Session-side half of the same job: re-arms the amplifiers every time the
+# session audio stack starts, so a Plasma/Steam switch does not leave the
+# speakers armed and silent.
+systemctl --global enable tb320fc-speaker-gate.service
 systemctl enable tb320fc-power.service
 systemctl enable tb320fc-wifi.service
 systemctl enable tb320fc-wifi-mac.service

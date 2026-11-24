@@ -18,6 +18,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 EXEC="$ROOT/system_files/usr/libexec/tb320fc"
 UNITS="$ROOT/system_files/usr/lib/systemd/system"
+USERUNITS="$ROOT/system_files/usr/lib/systemd/user"
 BUILD="$ROOT/build_files/40-vendor-system-files.sh"
 
 fail() {
@@ -62,6 +63,22 @@ check "legacy-off precedes the power chain" grep -q 'Before=.*tb320fc-power.serv
 check "legacy-off precedes multi-user (payload units live there)" grep -q 'Before=.*multi-user.target' "$UNITS/tb320fc-legacy-off.service"
 check "legacy-off is armed at sysinit" grep -q 'WantedBy=sysinit.target' "$UNITS/tb320fc-legacy-off.service"
 check "audio is the only route writer for its card" grep -q '^passes=' "$EXEC/audio"
+# The arm-at-boot half is not enough on its own: the ADSP graph and both
+# amplifiers are rebuilt every time the session audio stack starts, and an
+# armed-but-not-re-armed path is silent while every kcontrol reads like the
+# working one (PROGRESS.md A184, A189). So the session re-arms through gate mode.
+check "audio takes a boot/gate mode" grep -q 'MODE=${1:-boot}' "$EXEC/audio"
+check "audio rejects an unknown mode" grep -q 'usage: audio \[boot|gate\]' "$EXEC/audio"
+check "gate mode has its own poll budget" grep -q '^gate_polls=' "$EXEC/audio"
+check "gate mode never reloads the module chain" grep -q '"${MODE}" = boot \] && \[ "${load}" = on ' "$EXEC/audio"
+check "gate mode never restarts the ADSP" grep -q '"${MODE}" = boot \] && \[ -z "$(ls /sys/bus/aprbus/devices' "$EXEC/audio"
+GATE="$USERUNITS/tb320fc-speaker-gate.service"
+check "session unit exists" test -f "$GATE"
+check "session unit runs gate mode" grep -q 'ExecStart=/usr/libexec/tb320fc/audio gate' "$GATE"
+check "session unit starts after the audio stack" grep -q 'After=pipewire.service wireplumber.service' "$GATE"
+check "session unit is pulled in by the audio stack" grep -q 'WantedBy=pipewire.service wireplumber.service' "$GATE"
+check "session unit dies with the audio stack" grep -q 'BindsTo=pipewire.service wireplumber.service' "$GATE"
+check "image enables the session unit globally" grep -Fxq 'systemctl --global enable tb320fc-speaker-gate.service' "$BUILD"
 for u in tb320fc-modules-tree tb320fc-usr-overlay tb320fc-legacy-off tb320fc-audio tb320fc-power tb320fc-wifi tb320fc-wifi-mac tb320fc-touch tb320fc-input; do
     check "image enables $u.service" grep -Fxq "systemctl enable $u.service" "$BUILD"
 done
@@ -78,7 +95,7 @@ check "push normalises staged unit and config modes" grep -q "service. -o -name 
 # variable reads as an empty string there, and set -eu then kills the push half way through
 # (STALE was referenced but never passed).
 remote_body="$(sed -n '/^cat > "$script" <<REMOTE$/,/^REMOTE$/p' "$PUSH")"
-for v in STAGE TAR ARM HACKS STALE; do
+for v in STAGE TAR ARM HACKS STALE GLOBAL; do
     check "board half defines $v" grep -Eq "^[[:space:]]*${v}=" <<<"$remote_body"
     check "board half uses $v" grep -Eq "[\\$]\\{?${v}\\}?" <<<"$remote_body"
 done
@@ -88,6 +105,8 @@ check "push retires stale /usr/local helper copies" grep -q "/usr/local/libexec/
 check "push only retires copies that differ from /usr" grep -q "cmp -s .*basename" "$PUSH"
 check "push moves the stale /etc unit copies aside" grep -q 'units/\\\$u.etcbak' "$PUSH"
 check "push re-arms every board unit after the move" grep -q "systemctl enable" "$PUSH"
+check "push carries the session audio unit" grep -q 'usr/lib/systemd/user/tb320fc-speaker-gate.service' "$PUSH"
+check "push enables the session unit for the user" grep -q 'systemctl --global enable' "$PUSH"
 for u in tb320fc-modules-tree.service tb320fc-usr-overlay.service tb320fc-legacy-off.service tb320fc-input.service; do
     check "push carries $u" grep -q "$u" "$PUSH"
 done

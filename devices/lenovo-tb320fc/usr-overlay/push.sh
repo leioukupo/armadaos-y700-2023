@@ -41,6 +41,7 @@ usr/libexec/tb320fc/touch-revive
 usr/libexec/tb320fc/slot-attrs
 "
 UNITS="
+usr/lib/systemd/user/tb320fc-speaker-gate.service
 usr/lib/systemd/system/tb320fc-modules-tree.service
 usr/lib/systemd/system/tb320fc-usr-overlay.service
 usr/lib/systemd/system/tb320fc-legacy-off.service
@@ -70,6 +71,9 @@ FILES="$HELPERS $UNITS $CONFS $ARMADA_DATA"
 STALE="/usr/local/libexec/tb320fc/audio /usr/local/libexec/tb320fc/power /usr/local/libexec/tb320fc/input /usr/local/libexec/tb320fc/modload /usr/local/libexec/tb320fc/modules-tree"
 # Units that must be enabled; drop-ins and /etc copies matching these names are removed.
 ARM="tb320fc-modules-tree.service tb320fc-usr-overlay.service tb320fc-legacy-off.service tb320fc-input.service tb320fc-audio.service tb320fc-power.service tb320fc-wifi.service tb320fc-wifi-mac.service tb320fc-touch.service"
+# The session half of the audio chain: a user unit, enabled with --global so systemd
+# writes the wants symlinks under /etc/systemd/user.
+GLOBAL="tb320fc-speaker-gate.service"
 # Workarounds that the fixed helpers replace: they point ExecStart at /usr/local copies.
 HACKS="/etc/systemd/system/tb320fc-audio.service.d /etc/systemd/system/tb320fc-power.service.d"
 
@@ -92,6 +96,7 @@ TAR=/tmp/tb320fc-push.tar
 ARM="$ARM"
 HACKS="$HACKS"
 STALE="$STALE"
+GLOBAL="$GLOBAL"
 [ -s "\$TAR" ] || { echo "PUSH FAIL no payload at \$TAR"; exit 1; }
 
 mkdir -p "\$STAGE"
@@ -132,6 +137,9 @@ systemctl daemon-reload
 for u in \$ARM; do
 	systemctl enable "\$u" >/dev/null 2>&1 || echo "PUSH WARN enable \$u"
 done
+for u in \$GLOBAL; do
+	systemctl --global enable "\$u" >/dev/null 2>&1 || echo "PUSH WARN global enable \$u"
+done
 systemctl daemon-reload
 
 for f in \$STALE; do
@@ -146,6 +154,11 @@ echo "PUSH verify:"
 printf '  unit-state'
 for u in y700-audio.service y700-power.service tb320fc-legacy-off.service tb320fc-audio.service tb320fc-input.service tb320fc-usr-overlay.service; do
 	printf ' %s=%s' "\$u" "\$(systemctl is-enabled "\$u" 2>/dev/null || echo -)"
+done
+echo
+printf '  global-enable'
+for u in \$GLOBAL; do
+	printf ' %s=%s' "\$u" "\$(test -e /etc/systemd/user/pipewire.service.wants/\$u && echo yes || echo no)"
 done
 echo
 for u in tb320fc-audio.service tb320fc-power.service tb320fc-input.service tb320fc-usr-overlay.service tb320fc-modules-tree.service; do
