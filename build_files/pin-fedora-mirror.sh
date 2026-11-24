@@ -26,7 +26,7 @@ pin_file() {
     [ -f "${file}" ] || return 0
     sed -ri "/^\\[${section}\\]\$/,/^\\[/ {
         s|^metalink=|#metalink=|
-        s|^#baseurl=http://download\\.example/pub/fedora/linux/|${BASEURLS}|
+        s|^#baseurl=http://download\\.example/pub/fedora/linux/(.*)$|${BASEURLS}|
     }" "${file}"
 }
 
@@ -35,16 +35,26 @@ if ! curl -fsSIL -m 20 "${MIRROR}/releases/" -o /dev/null; then
     exit 0
 fi
 
-BASEURLS="baseurl=${MIRROR}/"
+# The example line carries the repo path (releases/$releasever/Everything/$basearch/os/
+# for fedora, updates/$releasever/Everything/$basearch/ for updates) and the two
+# sections differ, so every mirror has to re-attach it through \1. Attaching it to the
+# last entry only leaves the others pointing at the mirror root, which reads as a
+# working retry list and 404s on every package.
+BASE_LIST=("${MIRROR}")
 for candidate in "${FALLBACKS[@]}"; do
     if curl -fsSIL -m 20 "${candidate}/releases/" -o /dev/null; then
-        BASEURLS="${BASEURLS}\nbaseurl=${candidate}/"
+        BASE_LIST+=("${candidate}")
     else
         echo "pin-fedora-mirror: ${candidate} unreachable, left out" >&2
     fi
 done
+BASEURLS=""
+for mirror in "${BASE_LIST[@]}"; do
+    BASEURLS="${BASEURLS}baseurl=${mirror}/\\1\\n"
+done
+BASEURLS="${BASEURLS%\\n}"
 
 pin_file /etc/yum.repos.d/fedora.repo fedora
 pin_file /etc/yum.repos.d/fedora-updates.repo updates
-echo "pin-fedora-mirror: fedora and updates pinned to $(tr '\n' ' ' <<<"${BASEURLS}")"
+echo "pin-fedora-mirror: fedora and updates pinned to ${BASE_LIST[*]}"
 grep -nE "^(baseurl|metalink)=" /etc/yum.repos.d/fedora.repo /etc/yum.repos.d/fedora-updates.repo
