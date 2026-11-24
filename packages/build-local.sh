@@ -12,7 +12,7 @@ pkg="${1:?usage: build-local.sh <package>}"
 
 source ./toolchain.env
 
-platform=linux/aarch64
+platform="$(bash "${PKGROOT}/target-platform.sh" "${pkg}")"
 image="${BUILDER_IMAGE}"
 run_args=()
 # Optional second phase, run after build.sh with its own podman flags.
@@ -20,11 +20,8 @@ phase2=()
 phase2_args=()
 
 case "${pkg}" in
-    # These cross-build to arm64 from an x86_64 host.
-    mesa-android|lepton)
-        platform=linux/amd64 ;;
+    # mesa-x86 builds for the x86_64 guest rootfs, so it needs that image.
     mesa-x86)
-        platform=linux/amd64
         source "${pkg}/BASE.env"
         image="${GUEST_BUILDER_IMAGE}" ;;
     # ccache opt-in: CI persists it in a cache mount, dev builds keep it
@@ -42,8 +39,8 @@ case "${pkg}" in
         phase2_args=(--network none) ;;
 esac
 
-if [ "${platform}" = linux/aarch64 ] && [ "$(uname -m)" != aarch64 ]; then
-    echo "warning: ${pkg} builds aarch64 under emulation on $(uname -m); expect it to be very slow" >&2
+if [ "${platform}" = linux/arm64 ] && [ "$(uname -m)" != aarch64 ]; then
+    echo "warning: ${pkg} builds arm64 under emulation on $(uname -m); expect it to be very slow" >&2
 fi
 
 rm -rf "${pkg}/out"

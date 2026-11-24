@@ -77,6 +77,15 @@ test-edl-package:
             python3 -m unittest discover -s tests -p "test_edl*.py"
             python3 tests/test_split_package_archive.py'
 
+# Adopting a flat root into an ostree sysroot needs a loop device, mount and
+# ostree, so this is the explicit privileged entry point. `just test` runs the
+# same script, where it skips (exit 0) on hosts that cannot do it.
+[group('Test')]
+test-ostree-adopt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash tests/ostree-adopt-test.sh
+
 [group('Just')]
 fix:
     #!/usr/bin/bash
@@ -135,8 +144,13 @@ package name:
     source packages/toolchain.env
     source packages/mesa-x86/BASE.env
     [ -d "packages/{{ name }}" ] || { echo "unknown package: {{ name }}" >&2; exit 1; }
+    platform="$(bash packages/target-platform.sh {{ name }})"
+    if [[ "${platform}" == "linux/arm64" && "$(uname -m)" != "aarch64" ]]; then
+        echo "note: {{ name }} builds arm64 under emulation on $(uname -m); expect it to be slow" >&2
+    fi
     hash="$(packages/package-hash.sh {{ name }})"
     buildah build \
+        --platform "${platform}" \
         -f packages/Containerfile \
         --target "out-{{ name }}" \
         --layers \
@@ -205,6 +219,17 @@ build $target_image=image_name $tag=default_tag:
         var="$(echo "${pkg}" | tr '[:lower:]-' '[:upper:]_')_REF"
         local_ref="localhost/armada/pkg/${pkg}:${hash}"
         if podman image exists "${local_ref}" 2>/dev/null; then
+            # A local image is only usable if it was built for the arch the image
+            # build expects; an x86_64 package silently installed into an arm64
+            # rootfs is a much later and much louder failure.
+            if [[ "$(bash packages/target-platform.sh "${pkg}")" == "linux/arm64" ]]; then
+                arch="$(podman image inspect "${local_ref}" |
+                    sed -n 's/.*"Architecture": *"\([a-z0-9_]*\)".*/\1/p' | head -1)"
+                if [[ "${arch}" != "arm64" ]]; then
+                    echo "${local_ref} is a ${arch} image, but the image is arm64: rebuild it with 'just package ${pkg}'" >&2
+                    exit 1
+                fi
+            fi
             echo "${var}=${local_ref}" >> "${REFS}"
             continue
         fi
