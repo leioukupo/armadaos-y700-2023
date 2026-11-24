@@ -46,3 +46,4 @@ __pycache__/
 /y700-*.txt
 /build_files/vendor/*.py
 /devices/lenovo-tb323fu/boot/kshim-success-source/_splice.py
+/artifacts/
