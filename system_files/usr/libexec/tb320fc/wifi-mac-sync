@@ -14,7 +14,7 @@
 # talk to at that point. Writing the property is enough for later boots; the current boot
 # only needs one reapply, and only while the address still differs.
 # Kill switch: mac=keep (or mac_nm=off) in /etc/tb320fc/wifi.conf
-TB320FC_TAG=TB320FC-WIFI-MAC-SYNC-v3
+TB320FC_TAG=TB320FC-WIFI-MAC-SYNC-v4
 CONF=${TB320FC_WIFI_CONF:-/etc/tb320fc/wifi.conf}
 mac=auto
 mac_nm=on
@@ -79,7 +79,9 @@ while IFS= read -r u ; do
 	# is already tied to the interface by tb320fc-wifi's own pinning (mac_bind=on restores
 	# a binding for a board that really has a fixed BD address).
 	if [ "${mac_bind}" != on ] ; then
-		bound=$(nmcli -g 802-11-wireless.mac-address connection show "${u}" 2>/dev/null | tr -d ' \r')
+		# nmcli -g escapes the colons of a hardware address ("00\:03\:7F\:..."), so compare
+		# unescaped lower-case values or every connection looks stale on every boot.
+		bound=$(nmcli -g 802-11-wireless.mac-address connection show "${u}" 2>/dev/null | tr -d '\r' | tr -d '\\')
 		if [ -n "${bound}" ] ; then
 			# Clear it with an empty value: nmcli's "-<setting>.<property>" form only removes
 			# list-valued properties, and on a scalar it fails with "value ... is missing"
@@ -93,7 +95,7 @@ while IFS= read -r u ; do
 	fi
 	# NM normalises the property to upper case, so compare case-insensitively or every boot
 	# looks like it changed something.
-	have=$(nmcli -g 802-11-wireless.cloned-mac-address connection show "${u}" 2>/dev/null | tr 'A-Z' 'a-z')
+	have=$(nmcli -g 802-11-wireless.cloned-mac-address connection show "${u}" 2>/dev/null | tr -d '\\' | tr 'A-Z' 'a-z')
 	[ "${have}" = "${want}" ] && continue
 	if nmcli connection modify "${u}" 802-11-wireless.cloned-mac-address "${want}" >/dev/null 2>&1 ; then
 		set_changed=$((set_changed + 1))

@@ -293,11 +293,12 @@ if [ "$1" = -t ] && [ "$2" = -f ] && [ "$3" = UUID,TYPE ] && [ "$4" = connection
     exit 0
 fi
 if [ "$1" = -g ] && [ "$2" = 802-11-wireless.cloned-mac-address ]; then
-    cat "$st/$5" 2>/dev/null || true
+    # real nmcli -g escapes the colons of a hardware address
+    sed 's/:/\\:/g' "$st/$5" 2>/dev/null || true
     exit 0
 fi
 if [ "$1" = -g ] && [ "$2" = 802-11-wireless.mac-address ]; then
-    cat "$st/$5.bind" 2>/dev/null || true
+    sed 's/:/\\:/g' "$st/$5.bind" 2>/dev/null || true
     exit 0
 fi
 if [ "$1" = connection ] && [ "$2" = modify ]; then
