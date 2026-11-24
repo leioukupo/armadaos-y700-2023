@@ -17,11 +17,15 @@ MIRROR="${ARMADA_FEDORA_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/fedora}"
 # stalled connection had nothing to fall back to.
 # Restoring librepo's retry list costs nothing: preferred mirror first, then the other
 # CN mirrors, each one probed so a dead host never enters the list.
+# Ranked by what they actually served from this network (range GET, same file):
+# nju 1.5 MB/s, bfsu 0.90 MB/s, aliyun 0.82 MB/s, tuna 0.40 MB/s, ustc 0.25 MB/s,
+# zju 0.11 MB/s. zju is dropped entirely: two builds ended in "All mirrors were tried"
+# on files it served under 1 KB/s, and it is the only one with no peer at that speed.
 FALLBACKS=(
-    https://mirrors.ustc.edu.cn/fedora
-    https://mirrors.bfsu.edu.cn/fedora
     https://mirrors.nju.edu.cn/fedora
-    https://mirrors.zju.edu.cn/fedora
+    https://mirrors.bfsu.edu.cn/fedora
+    https://mirrors.ustc.edu.cn/fedora
+    https://mirrors.aliyun.com/fedora
 )
 
 pin_file() {
@@ -29,7 +33,7 @@ pin_file() {
     [ -f "${file}" ] || return 0
     sed -ri "/^\\[${section}\\]\$/,/^\\[/ {
         s|^metalink=|#metalink=|
-        s|^#baseurl=http://download\\.example/pub/fedora/linux/(.*)$|${BASEURLS}${PROXY_LINE}|
+        s|^#baseurl=http://download\\.example/pub/fedora/linux/(.*)$|${BASEURLS}${PROXY_LINE}\nretries=${RETRIES}|
     }" "${file}"
 }
 
@@ -61,6 +65,9 @@ BASEURLS="${BASEURLS%\\n}"
 # a leading-dot entry did not bypass the proxy here, and these mirrors are exactly the
 # hosts the proxy is useless for. ARMADA_FEDORA_PROXY=_none_ keeps that behaviour
 # selectable for a host that really does need the proxy for them.
+# One stalled connection must not end the transaction: librepo gave up after two
+# attempts on wpa_supplicant and fuse while the same RPMs sit on four other mirrors.
+RETRIES="${ARMADA_FEDORA_RETRIES-8}"
 REPO_PROXY="${ARMADA_FEDORA_PROXY-_none_}"
 PROXY_LINE=""
 if [ -n "${REPO_PROXY}" ]; then
@@ -70,4 +77,4 @@ fi
 pin_file /etc/yum.repos.d/fedora.repo fedora
 pin_file /etc/yum.repos.d/fedora-updates.repo updates
 echo "pin-fedora-mirror: fedora and updates pinned to ${BASE_LIST[*]}"
-grep -nE "^(baseurl|metalink)=" /etc/yum.repos.d/fedora.repo /etc/yum.repos.d/fedora-updates.repo
+grep -nE "^(baseurl|proxy|retries|metalink)=" /etc/yum.repos.d/fedora.repo /etc/yum.repos.d/fedora-updates.repo
