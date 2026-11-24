@@ -20,6 +20,12 @@
   文件头的大段注释就是各轮（A21/A22/A23/A24/A29/A33/A34）的推理链，是这份快照最有价值的部分。
 - `patch_round.py` —— 给 initramfs `/init` 打补丁的两阶段写法（先把所有 `count==1` 校验完，再落盘）。
 - `bootimg/mk_a1_dtb.py` —— 从 Lenovo 原厂 DTB 出发做设备树手术（见下节）。
+- `bootimg/patch_dtb_inplace.py` —— 改**已经在板上的那份** payload DTB（append 在内核 Image 尾页，
+  实测在 boot 容器偏移 `0x3ab2000`，119461 B）。只重写字符串属性的**值字节**，属性长度、
+  `totalsize`、所有 struct 偏移一律不动，所以它不走 dtc 重编。理由：A 槽 handover stub 是按
+  编译期固定字节偏移去戳 DTB 里 `kshim-append` 的 reg，布局一变就是 c45 那轮的
+  `OF: fdt: Error -11 processing FDT`。`mk_a1_dtb.py` 的 dtc 路子只在**构建期**（stub 偏移还没
+  固化）安全。宿主测试 `tests/dtb-inplace-patch-test.py`（18 项）。
 - `bootimg/build_e15.py`、`bootimg/mk_e15_stub.py`、`bootimg/e15_layout.py` —— 把 kernel + dtb +
   ramdisk 装进 Android boot.img（GKI v4 header，保留 AVB footer）的打包器与 4 KiB 入口 stub。
 - `initramfs/init` —— 诊断用 initramfs 的 PID 1（361 行）：SD 控制器 unbind/bind 重试、rescan、挂载、
