@@ -81,7 +81,10 @@ while IFS= read -r u ; do
 	if [ "${mac_bind}" != on ] ; then
 		bound=$(nmcli -g 802-11-wireless.mac-address connection show "${u}" 2>/dev/null | tr -d ' \r')
 		if [ -n "${bound}" ] ; then
-			if nmcli connection modify "${u}" -802-11-wireless.mac-address >/dev/null 2>&1 ; then
+			# Clear it with an empty value: nmcli's "-<setting>.<property>" form only removes
+			# list-valued properties, and on a scalar it fails with "value ... is missing"
+			# (measured with NetworkManager-1.58.1-2.fc44.armada).
+			if nmcli connection modify "${u}" 802-11-wireless.mac-address "" >/dev/null 2>&1 ; then
 				set_unbound=$((set_unbound + 1))
 			else
 				echo "${TB320FC_TAG} WARN unbind failed uuid=${u}"

@@ -156,7 +156,7 @@ check "the wifi bring-up stays before NetworkManager" grep -q "Before=NetworkMan
 check "the wifi helper pins the NetworkManager default as well" grep -q '90-tb320fc-wifi-mac.conf' "$EXEC/wifi"
 check "the wifi helper applies that pin from the resolved address" grep -q 'nm_conf "${want_mac}"' "$EXEC/wifi"
 check "the wifi helper drops the pin when mac is keep" grep -q 'nm_conf off' "$EXEC/wifi"
-check "the sync drops per-boot address bindings" grep -q -- '-802-11-wireless.mac-address' "$EXEC/wifi-mac-sync"
+check "the sync clears address bindings the way nmcli accepts" grep -q '802-11-wireless.mac-address ""' "$EXEC/wifi-mac-sync"
 check "the wifi conf carries mac_nm" grep -q "^mac_nm=on$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
 check "the wifi conf turns address bindings off" grep -q "^mac_bind=off$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
 check "the wifi conf documents the pin" grep -q "^mac=auto$" "$ROOT/system_files/etc/tb320fc/wifi.conf"
@@ -301,9 +301,15 @@ if [ "$1" = -g ] && [ "$2" = 802-11-wireless.mac-address ]; then
     exit 0
 fi
 if [ "$1" = connection ] && [ "$2" = modify ]; then
-    # "modify <uuid> <prop> <value>" sets, "modify <uuid> -<prop>" removes: the property is
-    # $4 either way, only the removal has no value and a leading dash.
-    if [ "$4" = -802-11-wireless.mac-address ]; then rm -f "$st/$3.bind"; else echo "$5" > "$st/$3"; fi
+    # NetworkManager 1.58 rejects "-<setting>.<property>" for a scalar ("value ... is
+    # missing"); a scalar is cleared by giving it an empty value. Refuse the dash form here
+    # so a helper that reaches for it fails the test instead of silently doing nothing.
+    case "$4" in -*) printf 'Error: value for '%s' is missing.\n' "$4" >&2; exit 2 ;; esac
+    if [ "$4" = 802-11-wireless.mac-address ]; then
+        if [ "$5" = "" ]; then rm -f "$st/$3.bind"; else echo "$5" > "$st/$3.bind"; fi
+    else
+        echo "$5" > "$st/$3"
+    fi
     echo "modify $3 $4" >> "$st/log"
     exit 0
 fi
