@@ -20,16 +20,34 @@ install_plugin armada-control /packages/decky-dist /ctx/decky/freedom-control/de
 install_plugin armada-store /packages/decky-store-dist
 chmod 0755 /usr/lib/decky-loader/armada-decky-sync
 
+# The release list is unauthenticated GitHub API traffic. From a shared egress IP it
+# answers 403 while every download URL is still reachable, and the whole image build
+# then dies on a piece of metadata (observed on the TB320FC dev host, both through the
+# direct route and through its proxy). A staged copy of that JSON is tried first, under
+# the same /mirror convention build.sh already mounts for assets; ARMADA_DECKY_RELEASES
+# overrides the path for a host with no mirror. The validation below stays identical, so
+# a staged list still has to name an undeleted preview release with one arm64 asset and
+# a sha256 digest that the downloaded PluginLoader really matches.
+decky_releases=""
+for decky_list in "${ARMADA_DECKY_RELEASES:-}" /mirror/decky-loader-releases.json; do
+    [[ -n "${decky_list}" && -r "${decky_list}" ]] || continue
+    echo "decky release list staged: ${decky_list}" >&2
+    decky_releases="$(cat -- "${decky_list}")"
+    break
+done
+[[ -n "${decky_releases}" ]] ||
+    decky_releases="$(
+        curl --retry 12 --retry-delay 10 -fsSL \
+            'https://api.github.com/repos/SteamDeckHomebrew/decky-loader/releases?per_page=100'
+    )"
 decky_release="$(
-    curl --retry 12 --retry-delay 10 -fsSL \
-        'https://api.github.com/repos/SteamDeckHomebrew/decky-loader/releases?per_page=100' |
-        jq -ce '
-            [.[] | select(.draft != true and .prerelease == true)]
-            | if length == 0
-              then error("no Decky Loader preview release found")
-              else max_by(.published_at)
-              end
-        '
+    jq -ce '
+        [.[] | select(.draft != true and .prerelease == true)]
+        | if length == 0
+          then error("no Decky Loader preview release found")
+          else max_by(.published_at)
+          end
+    ' <<<"${decky_releases}"
 )"
 decky_version="$(jq -er '.tag_name | select(type == "string" and length > 0)' <<<"${decky_release}")"
 [[ "${decky_version}" =~ ^[A-Za-z0-9._+-]+$ ]]

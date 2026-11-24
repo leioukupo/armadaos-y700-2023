@@ -34,8 +34,13 @@ sed \
     -e "s|/usr/share/decky-loader|$FAKE/usr/share/decky-loader|g" \
     -e "s|/usr/lib/decky-loader/armada-decky-sync|$FAKE/usr/lib/decky-loader/armada-decky-sync|g" \
     -e "s|/etc/systemd/system/plugin_loader.service|$FAKE/etc/systemd/system/plugin_loader.service|g" \
+    -e "s|/mirror/decky-loader-releases.json|$FAKE/mirror/decky-loader-releases.json|g" \
     "$SRC" >"$WORK/build-under-test.sh"
 chmod +x "$WORK/build-under-test.sh"
+# The script under test sources its GitHub fetch helper next door, so the rewritten
+# copy needs it beside it; without this the whole suite dies on "gh-fetch.sh: No such
+# file or directory" and every case reports a missing release-list request.
+cp "$ROOT/build_files/gh-fetch.sh" "$WORK/gh-fetch.sh"
 
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -52,6 +57,14 @@ while (($#)); do
 done
 [[ -n "$url" ]] || { echo "curl stub: no URL" >&2; exit 2; }
 printf '%s\n' "$url" >>"$CURL_LOG"
+
+# A mirror prefix is an operational fallback for a stalled connection, not part of
+# the contract: refuse the mirrored form so the fetcher ends up at the origin URL
+# the assertions below check.
+if [[ "$url" =~ ^https?://[^/]+/https?:// ]]; then
+    echo "curl stub: refusing mirrored URL $url" >&2
+    exit 22
+fi
 
 emit() {
     if [[ -n "$out" ]]; then cp -- "$1" "$out"; else cat -- "$1"; fi
@@ -376,7 +389,7 @@ success_case() {
     assert_absent "$FAKE/usr/share/decky-plugins/freedom-control"
 
     local downloads
-    downloads=$(grep -c '/releases/download/' "$CURL_LOG" || true)
+    downloads=$(grep -c '^https://github.com/SteamDeckHomebrew/decky-loader/releases/download/' "$CURL_LOG" || true)
     [[ "$downloads" -eq 1 ]] || case_fail "expected exactly one release asset download, got $downloads"
     grep -qxF "https://github.com/SteamDeckHomebrew/decky-loader/releases/download/$TARGET_TAG/PluginLoader-arm64" "$CURL_LOG" ||
         case_fail "did not download PluginLoader-arm64 from $TARGET_TAG"
@@ -436,7 +449,7 @@ refusal_case() {
             ;;
         no-preview)
             local downloads
-            downloads=$(grep -c '/releases/download/' "$CURL_LOG" || true)
+            downloads=$(grep -c '^https://github.com/SteamDeckHomebrew/decky-loader/releases/download/' "$CURL_LOG" || true)
             [[ "$downloads" -eq 0 ]] ||
                 case_fail "attempted $downloads asset download(s) without an eligible preview"
             if grep -qE '/PluginLoader(-arm64)?$' "$CURL_LOG"; then
@@ -471,7 +484,38 @@ make_fixtures "$FIXTURES/_expected" success
 sed 's#${HOMEBREW_FOLDER}#/var/home/armada/homebrew#g' \
     "$FIXTURES/_expected/service-prerelease.txt" >"$WORK/service.expected"
 
+staged_case() {
+    setup_case staged
+    make_fixtures "$FIXTURES/staged" success
+
+    # The staged list stands in for the API response; the download and the service
+    # unit still have to come from the tag that list names.
+    mkdir -p "$FAKE/mirror"
+    cp "$FIXTURES/staged/releases.json" "$FAKE/mirror/decky-loader-releases.json"
+
+    local rc=0
+    run_bundle || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        case_fail "script exited $rc"
+        tail -n 20 "$WORK/$CASE.log" >&2 || true
+        return
+    fi
+    if grep -qF 'api.github.com' "$CURL_LOG"; then
+        case_fail "staged release list ignored: $(grep -F 'api.github.com' "$CURL_LOG" | head -1)"
+    fi
+    if ! cmp -s "$FIXTURES/staged/arm64.bin" "$FAKE/usr/share/decky-loader/PluginLoader"; then
+        case_fail "installed loader is not the staged list's PluginLoader-arm64 asset"
+    fi
+    if [[ "$(<"$FAKE/usr/share/decky-loader/.loader.version")" != "$TARGET_TAG" ]]; then
+        case_fail "staged list did not decide the loader version"
+    fi
+    if ! cmp -s "$WORK/service.expected" "$FAKE/etc/systemd/system/plugin_loader.service"; then
+        case_fail "service unit does not match the $TARGET_TAG fixture"
+    fi
+}
+
 run_case success success_case
+run_case staged-list staged_case
 run_case missing-arm64 refusal_case missing-arm64
 run_case digest-mismatch refusal_case digest-mismatch
 run_case wrong-arch refusal_case wrong-arch
