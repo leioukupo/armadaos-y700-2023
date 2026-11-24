@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +20,8 @@ def fixture():
                 "serial": 0, "stateroot": "default", "incompatible": False}
     return {"booted": entry("current", "a" * 64), "rollback": entry("previous", "b" * 64),
             "staged": None, "rollback_queued": False, "channel": "stable",
-            "repository": "ghcr.io/mydanyi/armadaos-freedom", "channels": ["stable", "beta", "preview"]}
+            "repository": "ghcr.io/mydanyi/armadaos-freedom", "channels": ["stable", "beta", "preview"],
+            "deployment": True, "bootc": True}
 
 
 def staged_entry(image, version="queued"):
@@ -42,6 +44,9 @@ class OperationTests(unittest.TestCase):
         patch.object(maintenance, "snapshot", side_effect=self.snapshot).start()
         self.command = patch.object(maintenance, "command", side_effect=self.fake_command).start()
         self.run = patch.object(maintenance.subprocess, "run", side_effect=self.fake_run).start()
+        # snapshot() only asks bootc when an OSTree sysroot exists, and the tests below
+        # feed it a sysroot regardless of the machine running the tests.
+        patch.object(maintenance, "has_deployment", return_value=True).start()
 
     def snapshot(self):
         return copy.deepcopy(self.state)
@@ -237,6 +242,115 @@ class OperationTests(unittest.TestCase):
         self.run.side_effect = lambda *args, **kwargs: None
         with self.assertRaisesRegex(RuntimeError, "not selected"):
             self.perform("rollback")
+
+
+class UnmanagedDeploymentTests(unittest.TestCase):
+    """A deployment booted from a bare refspec, so bootc has no image behind it.
+
+    This is the adopted Y700 root: libostree boots a real deployment and prints a
+    version stamp, while bootc reports the deployment without any image, so there
+    is nothing to update, no channel to select and nothing to roll back to.
+    """
+
+    CHECKSUM = "d69549724c5cdb900a9c5d9e44ac76420fe08212281970e3087cd1f9ea12dfaa"
+    OTHER = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ADMIN_STATUS = ("* default                                {booted}.0\n"
+                    "        Version: 20261116.2fc282e\n"
+                    "        origin refspec: armadaos\n"
+                    "  default                                {other}.0\n"
+                    "        Version: 20261101.1111111\n"
+                    "        origin refspec: armadaos\n").format(booted=CHECKSUM, other=OTHER)
+
+    def setUp(self):
+        self.addCleanup(patch.stopall)
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.record = str(Path(self.directory.name, "ostree-booted"))
+        self.booted_record(True)
+        patch.object(maintenance, "BOOTED_RECORD", self.record).start()
+        patch.object(maintenance, "has_deployment", return_value=True).start()
+        patch.object(maintenance, "build_id", return_value="20261116.2fc282e").start()
+        self.command = patch.object(maintenance, "command", side_effect=self.fake_command).start()
+        self.bootc = {"booted": {"ostree": {"checksum": self.CHECKSUM, "deploySerial": 0, "stateroot": "default"},
+                                 "rollback": None, "staged": None, "rollbackQueued": False}}
+
+    def booted_record(self, exists):
+        if exists:
+            Path(self.record).write_text("u" * 55, encoding="utf-8")
+        elif Path(self.record).exists():
+            Path(self.record).unlink()
+
+    def fake_command(self, arguments, **kwargs):
+        if arguments[0] == maintenance.OSTREE:
+            return self.ADMIN_STATUS
+        if arguments == ["/usr/bin/bootc", "status", "--format", "json"]:
+            return json.dumps({"status": self.bootc})
+        if arguments[0] == "/bin/bash":
+            # The adopted root has no container origin, so the shared target
+            # resolver reports nothing and no update channel is offered.
+            return ""
+        raise AssertionError("unexpected command {0}".format(arguments))
+
+    def test_panel_names_the_deployment_that_ostree_knows(self):
+        state = maintenance.status()
+        self.assertTrue(state["deployment"])
+        self.assertEqual(state["booted"]["version"], "20261116.2fc282e")
+        self.assertEqual(state["booted"]["checksum"], self.CHECKSUM)
+        self.assertEqual(state["booted"]["stateroot"], "default")
+        self.assertEqual(state["channels"], [])
+        self.assertFalse(state["reboot_ready"])
+        self.assertIn("d69549724c5cdb900a9c5d9e44ac76420fe08212281970e3087cd1f9ea12dfaa"[:9], state["note"])
+        self.assertIn("no container image manages yet", state["note"])
+
+    def test_updates_and_rollback_stay_refused_without_an_image(self):
+        with self.assertRaisesRegex(RuntimeError, "no container image behind it"):
+            maintenance.execute("update")
+        with self.assertRaisesRegex(RuntimeError, "No compatible previous"):
+            maintenance.execute("rollback", self.CHECKSUM)
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            maintenance.select_channel("stable")
+
+    def test_bootc_silence_falls_back_to_the_ostree_deployment(self):
+        self.bootc = {}
+        state = maintenance.status()
+        self.assertTrue(state["deployment"])
+        self.assertFalse(state["bootc"])
+        self.assertEqual(state["booted"]["version"], "20261116.2fc282e")
+        self.assertEqual(state["booted"]["checksum"], self.CHECKSUM)
+        self.assertIn("boots OSTree deployment default", state["note"])
+        with self.assertRaisesRegex(RuntimeError, "no container image behind it"):
+            maintenance.execute("update")
+
+    def test_a_deployment_that_never_booted_says_so(self):
+        self.booted_record(False)
+        self.bootc = {}
+        state = maintenance.status()
+        self.assertFalse(state["deployment"])
+        self.assertEqual(state["booted"]["version"], "20261116.2fc282e")
+        self.assertIn("did not boot", state["note"] + state["refusal"])
+        with self.assertRaisesRegex(RuntimeError, "did not boot"):
+            maintenance.execute("update")
+
+
+class FlatInstallationTests(unittest.TestCase):
+    """A plain root filesystem with no OSTree sysroot at all."""
+
+    def setUp(self):
+        self.addCleanup(patch.stopall)
+        patch.object(maintenance, "has_deployment", return_value=False).start()
+        self.build = patch.object(maintenance, "build_id", return_value="20261116.2fc282e").start()
+        self.command = patch.object(maintenance, "command").start()
+
+    def test_panel_shows_the_build_id_and_keeps_changes_unavailable(self):
+        state = maintenance.status()
+        self.assertFalse(state["deployment"])
+        self.assertEqual(state["booted"]["version"], "20261116.2fc282e")
+        self.assertEqual(state["channels"], [])
+        self.assertFalse(state["reboot_ready"])
+        self.assertIn("plain root filesystem", state["note"])
+        self.command.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "no OSTree deployment"):
+            maintenance.execute("update")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ import time
 import tomllib
 import traceback
 
+# GTK picks the Vulkan renderer by default, and turnip's glyph atlas drops glyph
+# fragments on this GPU, so keep the GL renderer unless the caller picked one.
+os.environ.setdefault("GSK_RENDERER", "gl")
+
 MIB = 1024**2
 GIB = 1024**3
 ESP_SIZE, BOOT_SIZE, ROOT_MIN, ANDROID_MIN = 512 * MIB, GIB, 32 * GIB, 8 * GIB

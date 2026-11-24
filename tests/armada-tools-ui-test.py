@@ -8,6 +8,8 @@ import tempfile
 import time
 from unittest.mock import patch
 
+os.environ.setdefault("GSK_RENDERER", "cairo")
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "system_files/usr/lib/armada"))
 loader = importlib.machinery.SourceFileLoader("tools_ui", str(ROOT / "system_files/usr/lib/armada/armada_tools_ui.py"))
@@ -16,6 +18,7 @@ loader.exec_module(ui)
 ui.Gtk.init()
 ui.Gtk.Settings.get_default().set_property("gtk-font-name", "Sans 10")
 ui.Gtk.Settings.get_default().set_property("gtk-xft-dpi", 96 * 1024)
+assert ui.GSK_RENDERER_DEFAULT == "gl", "GTK must not default to the Vulkan renderer"
 
 
 def wait_for(condition):
@@ -125,7 +128,7 @@ with tempfile.TemporaryDirectory() as directory, \
         patch.object(ui.backend, "privileged_request", side_effect=os_request), \
         patch.object(ui.backend, "privileged_command", side_effect=os_command), \
         patch.object(ui.backend, "connection_info", return_value={"addresses": [("wlan0", "192.0.2.44")]}), \
-        patch.object(ui.backend, "system_info", return_value={"Device": "AYN Odin 2 Portal", "Kernel": "6.18.0-armada", "Storage": "42.0 GiB free of 128.0 GiB"}), \
+        patch.object(ui.backend, "system_info", return_value={"Device": "AYN Odin 2 Portal", "CPU": "SM8475P: 1x Cortex-X2", "Kernel": "6.18.0-armada", "Storage": "42.0 GiB free of 128.0 GiB"}), \
         patch.object(ui.backend.Path, "home", return_value=Path(directory)):
     operation_script = Path(directory) / "os-operation"
     operation_script.write_text('#!/bin/sh\necho "70%"\nsleep 0.5\nif [ "$1" = 0 ]; then echo "OS operation completed"; else echo "Download failed"; fi\nexit "$1"\n')
@@ -151,8 +154,26 @@ with tempfile.TemporaryDirectory() as directory, \
         until = time.monotonic() + 0.2
         wait_for(lambda: time.monotonic() >= until)
 
+    def header_title_label():
+        def find(widget):
+            if isinstance(widget, ui.Gtk.Label) and widget.get_text() == "Armada Tools":
+                return widget
+            child = widget.get_first_child()
+            while child:
+                if (found := find(child)) is not None:
+                    return found
+                child = child.get_next_sibling()
+            return None
+
+        label = find(window)
+        assert label is not None, "header title label is missing"
+        return label
+
     def check_landscape():
         print("Layout", window.get_width(), window.get_height(), flush=True)
+        title = header_title_label()
+        natural = title.measure(ui.Gtk.Orientation.HORIZONTAL, -1)[1]
+        assert title.get_width() >= natural, (title.get_width(), natural)
         allocations = [section.compute_bounds(window.sections_grid)[1] for section in window.sections]
         assert allocations[0].get_x() == allocations[1].get_x() < allocations[2].get_x() == allocations[3].get_x()
         assert allocations[0].get_y() == allocations[2].get_y()
@@ -361,6 +382,21 @@ with tempfile.TemporaryDirectory() as directory, \
     assert not updates.channel.get_use_subtitle()
     assert not updates.channel.get_subtitle()
     assert updates.channel.get_selected_item().get_string() == os_state["channel"].title()
+
+    flat = {"booted": {"version": "20261116.2fc282e", "image": "", "checksum": None, "serial": None,
+                       "stateroot": None, "incompatible": False},
+            "rollback": None, "staged": None, "rollback_queued": False, "channel": "", "repository": "",
+            "channels": [], "deployment": False, "reboot_ready": False,
+            "note": "This installation is a plain root filesystem without an OSTree deployment."}
+    updates.render(flat)
+    assert updates.current.get_subtitle() == "20261116.2fc282e"
+    assert "No previous" in updates.previous.get_subtitle()
+    assert not updates.update.get_sensitive() and not updates.rollback.get_sensitive()
+    assert not updates.channel.get_activatable()
+    assert updates.channel.get_selected_item().get_string() == "Unavailable"
+    assert updates.message.get_visible()
+    assert "plain root filesystem" in updates.message.get_text()
+    updates.render(os_state.copy())
 
     resize(400, 620)
     allocations = [section.compute_bounds(window.sections_grid)[1] for section in window.sections]

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import collections
 import importlib.machinery
 import importlib.util
 import io
@@ -31,6 +32,54 @@ class ToolsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name)
         self.addCleanup(patch.stopall)
+
+    MIDR_TB320FC = {0: "0x00000000410fd463", 1: "0x00000000410fd463",
+                    2: "0x00000000410fd463", 3: "0x00000000410fd463",
+                    4: "0x00000000412fd470", 5: "0x00000000412fd470",
+                    6: "0x00000000412fd470", 7: "0x00000000412fd480"}
+
+    def fake_board(self, policies=True):
+        """A TB320FC-shaped sysfs: 4x A510 + 3x A710 + 1x X2 under one SM8475P."""
+        cpu_root = Path(self.home) / "cpu"
+        for cpu, midr in self.MIDR_TB320FC.items():
+            ident = cpu_root / f"cpu{cpu}" / "regs" / "identification"
+            ident.mkdir(parents=True)
+            (ident / "midr_el1").write_text(midr + "\n")
+        if policies:
+            for policy, cpus, low, high in (("policy0", "0 1 2 3", 441600, 2016000),
+                                            ("policy4", "4 5 6", 633600, 2745600),
+                                            ("policy7", "7", 787200, 3187200)):
+                node = cpu_root / "cpufreq" / policy
+                node.mkdir(parents=True)
+                (node / "affected_cpus").write_text(cpus + "\n")
+                (node / "cpuinfo_min_freq").write_text(f"{low}\n")
+                (node / "cpuinfo_max_freq").write_text(f"{high}\n")
+        soc = Path(self.home) / "soc0"
+        soc.mkdir()
+        (soc / "machine").write_text("SM8475P\n")
+        return cpu_root, soc
+
+    def test_cpu_info_names_the_soc_and_every_cluster_clock(self):
+        cpu_root, soc = self.fake_board()
+        self.assertEqual(
+            backend.cpu_info(cpu_root, soc),
+            "SM8475P: 1x Cortex-X2 0.79-3.19 GHz, 3x Cortex-A710 0.63-2.75 GHz, "
+            "4x Cortex-A510 0.44-2.02 GHz")
+
+    def test_cpu_info_reports_a_missing_freq_server_instead_of_blanks(self):
+        cpu_root, soc = self.fake_board(policies=False)
+        self.assertEqual(
+            backend.cpu_info(cpu_root, soc),
+            "SM8475P: 4x Cortex-A510, 3x Cortex-A710, 1x Cortex-X2 (no cpufreq policy)")
+
+    def test_system_info_carries_the_cpu_row(self):
+        cpu_root, soc = self.fake_board()
+        uname = collections.namedtuple("uname", "sysname nodename release version machine")
+        with patch.object(backend, "cpu_info", return_value="SM8475P: 1x Cortex-X2") as info,                 patch.object(backend.os, "uname", lambda: uname("", "", "", "", "aarch64"), create=True):
+            rows = backend.system_info()
+        info.assert_called_once_with()
+        self.assertEqual(list(rows), ["Device", "CPU", "Kernel", "Storage"])
+        self.assertEqual(rows["CPU"], "SM8475P: 1x Cortex-X2")
 
     def test_helper_rejects_unknown_commands_and_extra_arguments(self):
         for arguments in ([], ["write_config"], ["enable-ssh", "sshd"], ["rollback-os"],

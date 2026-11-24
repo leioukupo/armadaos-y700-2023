@@ -72,6 +72,84 @@ def steam_client_version():
     return versions.pop() if len(versions) == 1 else "Unknown"
 
 
+# arm64 publishes no CPU model string at all: /proc/cpuinfo only carries the MIDR
+# fields, so the core names have to come out of the part number and the SoC name
+# out of the vendor soc0 node.  The part numbers below are the Arm TRM ones for
+# implementer 0x41; an unlisted part still prints as its number rather than a
+# blank, and Qualcomm-implemented cores (0x51) are Oryon.
+ARM_PARTS = {
+    0xD03: "Cortex-A53", 0xD05: "Cortex-A55", 0xD07: "Cortex-A57",
+    0xD08: "Cortex-A72", 0xD09: "Cortex-A73", 0xD0A: "Cortex-A75",
+    0xD0B: "Cortex-A76", 0xD0D: "Cortex-A77", 0xD0E: "Cortex-X1",
+    0xD44: "Cortex-X1", 0xD46: "Cortex-A510", 0xD47: "Cortex-A710",
+    0xD48: "Cortex-X2", 0xD4D: "Cortex-A715", 0xD4E: "Cortex-X3",
+    0xD80: "Cortex-A520", 0xD81: "Cortex-A720", 0xD82: "Cortex-X4",
+}
+
+
+def _attribute(path):
+    try:
+        return int(path.read_text().strip(), 10)
+    except (OSError, ValueError):
+        return 0
+
+
+def cpu_info(cpu_root=Path("/sys/devices/system/cpu"), soc_root=Path("/sys/devices/soc0")):
+    """Spell the CPU out: SoC, then one entry per cluster with its clock range.
+
+    Frequency limits come from the cpufreq policies.  A board whose freq-server
+    node is disabled in DT has no policy at all, and that is named here instead
+    of leaving the row blank - the cores still print, because their names come
+    from midr_el1 and not from cpufreq.
+    """
+    names = {}
+    for path in cpu_root.glob("cpu[0-9]*/regs/identification/midr_el1"):
+        try:
+            midr = int(path.read_text().strip(), 16)
+            cpu = int(path.parent.parent.parent.name.removeprefix("cpu"))
+        except (OSError, ValueError):
+            continue
+        implementer, part = (midr >> 24) & 0xFF, (midr >> 4) & 0xFFF
+        if implementer == 0x51:
+            names[cpu] = "Oryon"
+        elif implementer == 0x41 and part in ARM_PARTS:
+            names[cpu] = ARM_PARTS[part]
+        else:
+            names[cpu] = "part 0x%03x" % part
+
+    clusters, clocked = [], False
+    for policy in sorted((cpu_root / "cpufreq").glob("policy[0-9]*")):
+        cpus = []
+        try:
+            cpus = [int(c) for c in (policy / "affected_cpus").read_text().split() if c.isdigit()]
+        except OSError:
+            pass
+        if not cpus:
+            continue
+        high, low = _attribute(policy / "cpuinfo_max_freq"), _attribute(policy / "cpuinfo_min_freq")
+        clusters.append((names.get(cpus[0], "cluster"), len(cpus), low, high))
+        clocked = clocked or high > 0
+    if not clusters:
+        counts = {}
+        for name in names.values():
+            counts[name] = counts.get(name, 0) + 1
+        clusters = [(name, count, 0, 0) for name, count in counts.items()]
+    clusters.sort(key=lambda entry: (-entry[3], -entry[1], entry[0]))
+
+    parts = []
+    for name, count, low, high in clusters:
+        parts.append("%dx %s %.2f-%.2f GHz" % (count, name, low / 1e6, high / 1e6)
+                     if high else "%dx %s" % (count, name))
+    text = ", ".join(parts) or "Unknown"
+    if not clocked:
+        text += " (no cpufreq policy)"
+    try:
+        soc = (soc_root / "machine").read_text().strip()
+    except OSError:
+        soc = ""
+    return f"{soc}: {text}" if soc else text
+
+
 def system_info():
     def read(path, default="Unknown"):
         try:
@@ -83,6 +161,7 @@ def system_info():
     gib = 1024 ** 3
     return {
         "Device": read("/proc/device-tree/model", os.uname().machine),
+        "CPU": cpu_info(),
         "Kernel": os.uname().release,
         "Storage": f"{disk.free / gib:.1f} GiB free of {disk.total / gib:.1f} GiB",
     }

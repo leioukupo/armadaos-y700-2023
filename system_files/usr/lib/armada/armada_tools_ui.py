@@ -1,6 +1,12 @@
+import os
 import re
 import sys
 import threading
+
+# GTK picks the Vulkan renderer by default, and turnip's glyph atlas drops glyph
+# fragments on this GPU, so keep the GL renderer unless the caller picked one.
+GSK_RENDERER_DEFAULT = "gl"
+os.environ.setdefault("GSK_RENDERER", GSK_RENDERER_DEFAULT)
 
 import gi
 
@@ -9,6 +15,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 import armada_tools as backend
+
+DPI = 96 * 1024
 
 
 class OperationDialog(Adw.Window):
@@ -19,7 +27,7 @@ class OperationDialog(Adw.Window):
         self.succeeded = False
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         header = Adw.HeaderBar(show_end_title_buttons=False)
-        self.heading = Adw.WindowTitle(title=title)
+        self.heading = Adw.WindowTitle(title=title, hexpand=True)
         header.set_title_widget(self.heading)
         box.append(header)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
@@ -172,7 +180,7 @@ class UpdatesGroup(Adw.PreferencesGroup):
                 self.show_message(
                     f"Unsupported pending update from {state['staged']['image']}.")
         else:
-            self.show_message("")
+            self.show_message(state.get("note", ""))
         if hasattr(self.window, "repair_button"):
             self.window.set_steam_sensitive(idle and not self.window.repair_running)
 
@@ -264,7 +272,10 @@ class ToolsWindow(Adw.ApplicationWindow):
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title="Armada Tools"))
+        # Adw.HeaderBar hands the centered title only its natural width, and the
+        # windowtitle node spends 24 px of that on padding, so the label came out
+        # 24 px short and Pango ellipsized the first letters away.
+        header.set_title_widget(Adw.WindowTitle(title="Armada Tools", hexpand=True))
         box.append(header)
         self.scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.sections_grid = Gtk.Grid(column_spacing=16, row_spacing=16, column_homogeneous=True,
@@ -306,7 +317,7 @@ class ToolsWindow(Adw.ApplicationWindow):
         info_grid = Gtk.Grid(column_spacing=12, row_spacing=8,
                              margin_top=12, margin_bottom=12, margin_start=14, margin_end=14)
         self.info_rows = {}
-        for index, title in enumerate(("Device", "Kernel", "Storage")):
+        for index, title in enumerate(("Device", "CPU", "Kernel", "Storage")):
             label = Gtk.Label(label=title, xalign=0, valign=Gtk.Align.START)
             value = Gtk.Label(label="Checking…", xalign=0, valign=Gtk.Align.START, hexpand=True,
                               wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
@@ -503,9 +514,20 @@ class ToolsApplication(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         settings = Gtk.Settings.get_default()
-        font = Pango.FontDescription.from_string(settings.get_property("gtk-font-name"))
-        font.set_size(14 * Pango.SCALE)
-        settings.set_property("gtk-font-name", font.to_string())
+        # The desktop pushes font and DPI settings after startup, which leaves
+        # header bar titles measured with one font and drawn with another. Pin
+        # the values this app is designed for and re-assert them if they change.
+        def assert_style(*_):
+            font = Pango.FontDescription.from_string(settings.get_property("gtk-font-name"))
+            font.set_size(14 * Pango.SCALE)
+            if settings.get_property("gtk-font-name") != font.to_string():
+                settings.set_property("gtk-font-name", font.to_string())
+            if settings.get_property("gtk-xft-dpi") != DPI:
+                settings.set_property("gtk-xft-dpi", DPI)
+
+        assert_style()
+        settings.connect("notify::gtk-font-name", assert_style)
+        settings.connect("notify::gtk-xft-dpi", assert_style)
 
     def do_activate(self):
         if self.window is None:
