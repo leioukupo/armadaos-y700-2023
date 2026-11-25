@@ -1,22 +1,9 @@
 From: Armada <noreply@armada>
 Subject: [PATCH] msm_dpu metrics: fdinfo memory, gpu thermal names, honest cpu power
 
-The preset Steam enables on ARM handhelds (preset 2) asks for vram,
-gpu_core_clock and cpu_power. On this board all three read as 0:
-
- - gpu_fdinfo never picked a memory key for msm_dpu, even though the msm
-   driver writes drm-total-memory / drm-resident-memory into every client's
-   fdinfo, and the vram element reads sys_vram_used (device-wide), which no
-   msm sysfs ever fills. Adreno has no dedicated VRAM, so the resident GEM
-   bytes are the honest device-wide number.
- - msm_metrics::Temperatures matched gpuss_N_N_thermal / gpu_thermal / gpu,
-   but thermal-hwmon names zones after the DT node: this tree registers
-   gpu_top_thermal and gpu_bottom_thermal, so regex_match found nothing.
- - memory temp only accepted spd5118 / ddr_thermal; the DT zone here is
-   mem_thermal.
- - cpu_power printed GetCPUDataTotal().power unconditionally. There is no
-   k10temp/zenpower/zenergy/rapl/amdgpu/xgene sensor on SM8450, so the row
-   showed a fabricated 0 W next to a real battery wattage.
+It also refuses to print a GPU memory clock for msm_dpu: Adreno shares system
+memory with the CPU and has no separate memory clock, so preset 3's
+gpu_mem_clock column was a permanent 0 MHz next to a real core clock.
 
 diff --git a/src/cpu.h b/src/cpu.h
 --- a/src/cpu.h
@@ -33,6 +20,20 @@ diff --git a/src/cpu.h b/src/cpu.h
  private:
     unsigned long long int m_boottime = 0;
     std::vector<CPUData> m_cpuData;
+diff --git a/src/gpu.h b/src/gpu.h
+--- a/src/gpu.h
++++ b/src/gpu.h
+@@ -112,6 +112,10 @@ class GPU {
+             return !fdinfo || fdinfo->has_voltage();
+         }
+ 
++        bool has_mem_clock() const {
++            return !fdinfo || fdinfo->has_mem_clock();
++        }
++
+         std::shared_ptr<Throttling> throttling() {
+             if (nvidia)
+                 return nvidia->throttling;
 diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
 --- a/src/gpu_fdinfo.cpp
 +++ b/src/gpu_fdinfo.cpp
@@ -63,6 +64,20 @@ diff --git a/src/gpu_fdinfo.h b/src/gpu_fdinfo.h
              init_kgsl();
          } else if (module == "msm_drm") {
              init_kgsl();
+@@ -267,6 +269,13 @@ public:
+         return voltage != hwmon_sensors.end() && voltage->second.stream.is_open();
+     }
+ 
++    // Adreno shares system memory with the CPU: there is no separate memory
++    // clock to read, so gpu_mem_clock would render a permanent 0 MHz.
++    bool has_mem_clock() const
++    {
++        return module != "msm_dpu";
++    }
++
+     void pause()
+     {
+         paused = true;
 diff --git a/src/hud_elements.cpp b/src/hud_elements.cpp
 --- a/src/hud_elements.cpp
 +++ b/src/hud_elements.cpp
@@ -89,6 +104,18 @@ diff --git a/src/hud_elements.cpp b/src/hud_elements.cpp
              ImGui::SameLine(0, 1.0f);
              ImGui::PushFont(HUDElements.sw_stats->font_small);
              HUDElements.TextColored(HUDElements.colors.text, "W");
+@@ -678,7 +682,10 @@ void HudElements::vram(){
+ 
+                 if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_clock]){
+                     ImguiNextColumnOrNewRow();
+-                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", gpu->metrics.MemClock);
++                    if (gpu->has_mem_clock())
++                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", gpu->metrics.MemClock);
++                    else
++                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "N/A");
+                     ImGui::SameLine(0, 1.0f);
+                     ImGui::PushFont(HUDElements.sw_stats->font_small);
+                     HUDElements.TextColored(HUDElements.colors.text, "MHz");
 diff --git a/src/memory.cpp b/src/memory.cpp
 --- a/src/memory.cpp
 +++ b/src/memory.cpp
