@@ -1,0 +1,119 @@
+From: Armada <noreply@armada>
+Subject: [PATCH] msm_dpu metrics: fdinfo memory, gpu thermal names, honest cpu power
+
+The preset Steam enables on ARM handhelds (preset 2) asks for vram,
+gpu_core_clock and cpu_power. On this board all three read as 0:
+
+ - gpu_fdinfo never picked a memory key for msm_dpu, even though the msm
+   driver writes drm-total-memory / drm-resident-memory into every client's
+   fdinfo, and the vram element reads sys_vram_used (device-wide), which no
+   msm sysfs ever fills. Adreno has no dedicated VRAM, so the resident GEM
+   bytes are the honest device-wide number.
+ - msm_metrics::Temperatures matched gpuss_N_N_thermal / gpu_thermal / gpu,
+   but thermal-hwmon names zones after the DT node: this tree registers
+   gpu_top_thermal and gpu_bottom_thermal, so regex_match found nothing.
+ - memory temp only accepted spd5118 / ddr_thermal; the DT zone here is
+   mem_thermal.
+ - cpu_power printed GetCPUDataTotal().power unconditionally. There is no
+   k10temp/zenpower/zenergy/rapl/amdgpu/xgene sensor on SM8450, so the row
+   showed a fabricated 0 W next to a real battery wattage.
+
+diff --git a/src/cpu.h b/src/cpu.h
+--- a/src/cpu.h
++++ b/src/cpu.h
+@@ -192,6 +192,11 @@ public:
+    const CPUData& GetCPUDataTotal() const {
+       return m_cpuDataTotal;
+    }
++   // No ARM SoC here exposes a package power sensor, so InitCpuPowerData leaves
++   // the power source null; without this the overlay draws a silent 0 W.
++   bool hasCpuPower() const {
++      return m_cpuPowerData != nullptr;
++   }
+ private:
+    unsigned long long int m_boottime = 0;
+    std::vector<CPUData> m_cpuData;
+diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -794,6 +794,11 @@ void GPU_fdinfo::main_thread()
+         metrics.load = get_gpu_load();
+         metrics.proc_vram_used = get_memory_used();
+ 
++        if (module == "msm_dpu")
++            // Adreno has no dedicated VRAM: the resident GEM bytes are the only
++            // device-wide memory accounting the msm driver publishes.
++            metrics.sys_vram_used = metrics.proc_vram_used;
++
+         metrics.powerUsage = get_power_usage();
+         metrics.powerLimit = static_cast<float>(hwmon_sensors["power_limit"].val) / 1'000'000;
+ 
+diff --git a/src/gpu_fdinfo.h b/src/gpu_fdinfo.h
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -151,8 +151,10 @@ public:
+             drm_engine_type = "drm-engine-gfx";
+             drm_memory_type = "drm-memory-vram";
+         } else if (module == "msm_dpu") {
+-            // msm driver does not report vram usage
++            // msm has no kgsl-style sysfs, but it does report per-client GEM
++            // accounting in fdinfo: drm-total-memory / drm-resident-memory.
+             drm_engine_type = "drm-engine-gpu";
++            drm_memory_type = "drm-resident-memory";
+             init_kgsl();
+         } else if (module == "msm_drm") {
+             init_kgsl();
+diff --git a/src/hud_elements.cpp b/src/hud_elements.cpp
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -482,12 +482,16 @@ void HudElements::cpu_stats(){
+ 
+         if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_power]){
+             ImguiNextColumnOrNewRow();
+-            char str[16];
+-            snprintf(str, sizeof(str), "%.1f", cpuStats.GetCPUDataTotal().power);
+-            if (strlen(str) > 4)
+-                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", cpuStats.GetCPUDataTotal().power);
+-            else
+-                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", cpuStats.GetCPUDataTotal().power);
++            if (cpuStats.hasCpuPower()) {
++                char str[16];
++                snprintf(str, sizeof(str), "%.1f", cpuStats.GetCPUDataTotal().power);
++                if (strlen(str) > 4)
++                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", cpuStats.GetCPUDataTotal().power);
++                else
++                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", cpuStats.GetCPUDataTotal().power);
++            } else {
++                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "N/A");
++            }
+             ImGui::SameLine(0, 1.0f);
+             ImGui::PushFont(HUDElements.sw_stats->font_small);
+             HUDElements.TextColored(HUDElements.colors.text, "W");
+diff --git a/src/memory.cpp b/src/memory.cpp
+--- a/src/memory.cpp
++++ b/src/memory.cpp
+@@ -44,7 +44,8 @@ void update_mem_temp() {
+         auto dirs = ls(path.c_str(), "hwmon", LS_DIRS);
+         for (auto &dir : dirs) {
+             const auto name = read_line(path + dir + "/name");
+-            if (name == "spd5118" || name == "ddr_thermal")
++            if (name == "spd5118" || name == "ddr_thermal" ||
++                name == "mem_thermal")
+                 mem_temp_files.emplace_back(path + dir + "/temp1_input");
+         }
+         if (mem_temp_files.empty())
+diff --git a/src/msm_metrics.h b/src/msm_metrics.h
+--- a/src/msm_metrics.h
++++ b/src/msm_metrics.h
+@@ -40,7 +40,10 @@ public:
+     {
+         namespace fs = std::filesystem;
+         std::error_code error;
+-        const std::regex gpu_name("gpuss_[0-9]+_thermal|gpu_thermal|gpu");
++        // thermal-hwmon names each zone after its DT node, so an SM8450-class
++        // board reports gpu_top_thermal / gpu_bottom_thermal.
++        const std::regex gpu_name(
++            "gpuss_[0-9]+_thermal|gpu[a-z0-9_]*thermal|gpu");
+         const std::regex temperature_file("temp[0-9]+_input");
+         for (fs::directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
+             std::ifstream name_file(it->path() / "name");
