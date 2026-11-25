@@ -6,7 +6,7 @@
 # entirely; if the mirror is unreachable we keep the stock metalink instead.
 set -u
 
-MIRROR="${ARMADA_FEDORA_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/fedora}"
+MIRROR="${ARMADA_FEDORA_MIRROR:-https://mirrors.nju.edu.cn/fedora}"
 
 # Two things about a CN build network: the pinned mirror is reached 140x faster
 # directly than through the Clash proxy the rest of the build uses (9.2 MB/s vs
@@ -19,12 +19,15 @@ MIRROR="${ARMADA_FEDORA_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/fedora}"
 # CN mirrors, each one probed so a dead host never enters the list.
 # Ranked by what they actually served from this network (range GET, same file):
 # nju 1.5 MB/s, bfsu 0.90 MB/s, aliyun 0.82 MB/s, tuna 0.40 MB/s, ustc 0.25 MB/s,
-# zju 0.11 MB/s. zju is dropped entirely: two builds ended in "All mirrors were tried"
+# zju 0.11 MB/s. The ranking moves: the 2026-11-25 dev build pinned to tuna pulled
+# 57 KB/s there while nju served 407 KB/s for the same 400 KB range, and the build
+# died on pipewire at under 1 KB/s. The fastest host measured here is the default,
+# the previous one stays in the retry list. zju is dropped entirely: two builds ended in "All mirrors were tried"
 # on files it served under 1 KB/s, and it is the only one with no peer at that speed.
 FALLBACKS=(
-    https://mirrors.nju.edu.cn/fedora
     https://mirrors.bfsu.edu.cn/fedora
     https://mirrors.ustc.edu.cn/fedora
+    https://mirrors.tuna.tsinghua.edu.cn/fedora
     https://mirrors.aliyun.com/fedora
 )
 
@@ -37,9 +40,15 @@ pin_file() {
     }" "${file}"
 }
 
-if ! curl -fsSIL -m 20 "${MIRROR}/releases/" -o /dev/null; then
-    echo "pin-fedora-mirror: ${MIRROR} unreachable, keeping Fedora metalink" >&2
-    exit 0
+# A dead primary must not cost us the whole retry list: probe it like every other
+# candidate and fall through to the next one.
+probe() { curl -fsSIL -m 20 "$1/releases/" -o /dev/null; }
+
+BASE_LIST=()
+if probe "${MIRROR}"; then
+    BASE_LIST+=("${MIRROR}")
+else
+    echo "pin-fedora-mirror: ${MIRROR} unreachable, falling through to the probe list" >&2
 fi
 
 # The example line carries the repo path (releases/$releasever/Everything/$basearch/os/
@@ -47,14 +56,17 @@ fi
 # sections differ, so every mirror has to re-attach it through \1. Attaching it to the
 # last entry only leaves the others pointing at the mirror root, which reads as a
 # working retry list and 404s on every package.
-BASE_LIST=("${MIRROR}")
 for candidate in "${FALLBACKS[@]}"; do
-    if curl -fsSIL -m 20 "${candidate}/releases/" -o /dev/null; then
+    if probe "${candidate}"; then
         BASE_LIST+=("${candidate}")
     else
         echo "pin-fedora-mirror: ${candidate} unreachable, left out" >&2
     fi
 done
+if [ "${#BASE_LIST[@]}" -eq 0 ]; then
+    echo "pin-fedora-mirror: no mirror answered, keeping Fedora metalink" >&2
+    exit 0
+fi
 BASEURLS=""
 for mirror in "${BASE_LIST[@]}"; do
     BASEURLS="${BASEURLS}baseurl=${mirror}/\\1\\n"
@@ -68,11 +80,18 @@ BASEURLS="${BASEURLS%\\n}"
 # One stalled connection must not end the transaction: librepo gave up after two
 # attempts on wpa_supplicant and fuse while the same RPMs sit on four other mirrors.
 RETRIES="${ARMADA_FEDORA_RETRIES-8}"
+# librepo sits on a stalled connection instead of failing over, and that is what
+# ended the last TB320FC build on pipewire ("Operation too slow. Less than 1000
+# bytes/sec transferred the last 30 seconds") while four other mirrors had the
+# same RPM. Give up on a throttled host and rotate through the list instead.
+XFER_TIMEOUT="${ARMADA_FEDORA_TIMEOUT-60}"
+XFER_MINRATE="${ARMADA_FEDORA_MINRATE-2048}"
 REPO_PROXY="${ARMADA_FEDORA_PROXY-_none_}"
 PROXY_LINE=""
 if [ -n "${REPO_PROXY}" ]; then
     PROXY_LINE="\\nproxy=${REPO_PROXY}"
 fi
+PROXY_LINE="${PROXY_LINE}\\ntimeout=${XFER_TIMEOUT}\\nminrate=${XFER_MINRATE}"
 
 pin_file /etc/yum.repos.d/fedora.repo fedora
 pin_file /etc/yum.repos.d/fedora-updates.repo updates
