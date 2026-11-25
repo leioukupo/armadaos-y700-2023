@@ -136,6 +136,15 @@ export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
 # Enable horizontal mangoapp bar
 export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
 
+# Steam dims the panel to ~3 % of the backlight range after an idle timeout, which on
+# the Legion Y700 Gen2 sits under the visible threshold: the tablet looks switched off
+# with only the perf overlay burning on top of it. Devices that cannot show that dim
+# pin the timers in their profile, and this runs before Steam reads its config.
+if [[ -n "${ARMADA_STEAM_IDLE_DIM_SECONDS:-}" ]]; then
+    "${ARMADA_STEAM_IDLE_DIM_HELPER:-/usr/libexec/armada/armada-steam-idle-dim}" \
+        >/dev/null 2>&1 || true
+fi
+
 # Scaling support
 export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
 
