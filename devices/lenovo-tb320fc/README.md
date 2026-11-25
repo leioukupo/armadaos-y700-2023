@@ -41,7 +41,7 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 
 活动槽不在 `misc`（整 1 MiB 只有偏移 8 处一个 `-bootloader` 残留和 0x8000 处 5 个字节，`--set-active` 前后逐字节相同），也不是 EFI 变量（两个系统里都没有 `/sys/firmware/efi/efivars`）。它就是承载 `boot_a/boot_b` 的那个 UFS LU 的 **GPT 分区条目属性位**：bit48-51 优先级、52 successful、53 boot-failed、55 dont-boot-again。本机 27 对 `_a/_b` 分区都带这些位，`fastboot --set-active` 会同时改主备两份 GPT。
 
-要紧的是**失败的启动会自己降权**：连续失败的槽 priority 递减并被打上 `dont-boot-again`；两边都被降权之后 XBL 没有可试的对象，屏幕就停在 fastboot 界面。这才是"一直卡在 fastboot""选过一次 ArmadaOS 之后启动项消失"的真身，与 `y700-*` 单元被 mask 无关 —— mask 状态下 ArmadaOS 照样正常起（A187 实测）。
+要紧的是**失败的启动会自己降权**：连续失败的槽 priority 递减并被打上 `dont-boot-again`；两边都被降权之后 XBL 没有可试的对象，屏幕就停在 fastboot 界面。这是"选过一次 ArmadaOS 之后启动项消失"的机制，与 `y700-*` 单元被 mask 无关 —— mask 状态下 ArmadaOS 照样正常起（A187 实测）。但**别把"一直回 fastboot"一律归到降权头上**：A203 实测属性位完全正常（`boot_b` Flags `0x002f000000000000` = priority 15、`dont-boot-again` 已清）时照样起不来，还有 `misc` 里的 `ffbm-00` 锁和电池过放两条独立原因，见下面「开机回 fastboot 的取证顺序」。
 
 `/usr/libexec/tb320fc/slot-attrs` 是这一层的读数与修复工具：
 
@@ -51,7 +51,32 @@ ArmadaOS Freedom 为 Y700 二代提供 kShimC 多系统启动、Steam 游戏模�
 
 语义是幂等的：把每对里较高的优先级给目标槽、较低的给另一个，并清掉目标槽的 `dont-boot-again`/`boot-failed`、置上 `successful`；对已经首选的槽跑一遍会直接报 `already_preferred=1`，一个字节都不写。主备两份拷贝任一 CRC 不过、或两份不一致时它直接拒绝 —— 不猜哪半边可信。于是"卡在 fastboot、但另一个槽的系统还能 SSH"这种情况不用再把手放到板子上。测试见 `tests/tb320fc-slot-attrs-test.sh`（合成 GPT，21 项，覆盖写入路径、幂等、两类拒绝）。
 
-两个坑：`fastboot getvar all` 会把这台 XBL 的 fastboot 会话彻底卡死（之后连 `getvar unlocked` 都不回话，只能重新复位），要读数就发单条 `getvar`；`getvar current-slot` 同样不实现，会挂住。
+两个坑：`fastboot getvar all` 会把这台 XBL 的 fastboot 会话彻底卡死（之后连 `getvar unlocked` 都不回话，只能重新复位），要读数就发单条 `getvar`；`getvar current-slot` 同样不实现，会挂住。`fastboot --set-active` 在 platform-tools 34 只认 `--set-active=b`，写成 `--set-active b` 会报 unknown command。另外 `18d1:d00d` 是这台机器在 fastboot 下的 USB ID（`lsusb` 别名写成 "Xiaomi Mi/Redmi 2 (fastboot)"），别把它当成"已经进系统"。
+
+### 开机回 fastboot 的取证顺序（A203）
+
+四条原因都会产生同一个现象，按下面的顺序查，每一步都有只读手段：
+
+1. **供电**。低电量下 ABL 拒绝拉起任何系统，但 fastboot/EDL 还能用；电量再掉连 fastboot 都不枚举（`lsusb` 里没有 `18d1:d00d`，所有 `getvar` 都 `<waiting>`）。长时间把平板挂在 PC 的数据口（尤其非充电口）跑刷写，电池会被耗光 —— 先充 ≥40 min 再谈别的。
+2. **`misc` 的 FFBM 锁**。`misc`（LUN 0，`0x15d88000`）开头是 `ffbm-00` 时，ABL 每次都跳那个 `boot qmmi / boot FFBM / POWER OFF / RECOVERY MODE / RESTART BOOTLOADER` 菜单，与槽位、镜像内容无关。清零：`edl ws 89480 zeros_1m.bin --lun=0`（4 KiB 扇区 × 256），写完读回比对 sha。
+3. **GPT 属性位**。`slot-attrs report`（板内）或 EDL `printgpt --lun=4` 看 `boot_a/boot_b` 的 Flags；`fastboot --set-active=<slot>` 会把目标槽 priority 抬到 15 并清掉 `dont-boot-again`。
+4. **分区内容**。EDL 读回算 sha 与本机存档对拍（A203 实测 `r boot_b` 读回 100663296 字节 == `boot_b-c61e.img` 的 `1f4c808d…`，顺带证明 `fastboot flash boot_b` 没有盖到另一个槽）。
+5. **data/FBE 状态**。前四条全绿、镜像内容也全对之后，还剩 `userdata`+`metadata` 这一条：`super` 换了版本、`userdata` 容量被改过、或 `metadata` 里留着旧 FBE keyblob，init 都会在挂载 data 时失败，而 ABL 层的表现和"完全起不来"一模一样。这台机器没有日志通道可判（`logfs`/`logdump`/`qmcs` 全是空的），别绕，直接擦：`fastboot erase userdata`、`erase metadata`、`erase misc`，再 `--set-active=<slot>`。UFS 上 `erase` 走 UNMAP，450 GiB 只花 2.1 s。
+
+对照实验必须同版本：手头的 `zui_15.0.737` EDL 包与机器原装（`oemowninfo` 里是 `ZUI_16.0.688_250125`，Android 14）差一代，所以拿包内单个 `boot.img` 去判"能不能起"是无效实验（A203 踩过）—— 要判就整槽全刷，而且全刷完必须按上面第 5 条擦 data（A204 走通了，见下）。也别整包 `qfil`：`patch*.xml` 会拿包内那份按小容量盘生成的 LUN 0 GPT 覆盖设备表（`userdata` 长度是 0），要改容量就照 A204 那样在设备自己的表上做手术并分片写主备。
+
+EDL 在二代的可用姿势：loader 用 **`xbl_s_devprg_ns.melf`**（`contents.xml` 里的 `<device_programmer>`；用 `prog_firehose_ddr.elf` 会在 Sahara 阶段报 `0x29`）；进 9008 只有 **`fastboot oem reboot-edl`** 可靠（`fastboot reboot edl`、`fastboot oem edl` 都不支持）；`edl reset` 不能带 `--memory=ufshcd`；boot 系列分区在 **LUN 4**（`boot_b` = `0x5b6ef000` → 起始扇区 374511），`super`/`misc`/`userdata`/`linuxroot`（Type `EFI_LINUX_DAYA`）在 **LUN 0**。
+
+### 全量回安卓（EDL 全覆盖，A204）
+
+"所有空间给安卓、ArmadaOS 不再存在"这条路的完整走法已实机成功：起进 ZUI 15.0.737 首次引导，`lsusb` 出现 `17ef:7e51 Lenovo Legion Tab Y700`（MTP），`userdata` 450.1 GiB，GPT 里已经没有 `linuxroot`。A203 归因的"电池过放"是错的 —— 电量 3696–3707 mV、属性位正常、`misc` 干净、镜像 sha 全对，机器照样每次回 fastboot。
+
+1. 按 rom 自己的 `start_sector` 写全部 52 条镜像（`rawprogram1/2/3` + `rawprogram_unsparse0/4`，LUN 用 `--lun=` 指定），**不要**整包 `qfil`：它的 `patch*.xml` 会用 rom 自带的 LUN 0 GPT 覆盖，而那份 GPT 是按小容量盘生成的（`userdata` 长度为 0），会把分区表写坏。
+2. GPT 用设备自己那份改：删掉 `linuxroot` 条目，把 `userdata` 末扇区改到 `121268218`（450.1 GiB），主备两份都重算 CRC32。备份表必须**分片写** —— 先写条目（`@121268219`）再写头（`@121268223`），10 扇区一把写会被 firehose 拒绝。
+3. 别漏 rom 自己的一条：`rawprogram3.xml` 用 `zeros_5sectors.bin` 把 **LUN 3 的 `ddr`**（`@64`，256 扇区）清零 —— 那是 XBL 缓存的 DDR 训练参数，rom 作者的意图就是抹掉它强制重训。批量脚本按"文件名为空就跳过"筛 `rawprogram` 时容易把它丢掉（那个文件只有 5 扇区，实际要写满 1 MiB 零）。
+4. 最后一步不能省：**擦 `userdata` + `metadata` + `misc`，再 `--set-active`**。只做 1–3 时机器仍然每次回 fastboot；rom 自带的 `userdata_*.img`/`metadata.img` 是老几何的 data 与旧 FBE metadata，跟改过容量的分区配不上，擦掉让 init 自己格式化才起得来。
+
+顺带补的读数点：`uefivarstore`（LUN 4 `@666527`，128 扇区，头是 `PTBL` + EDK2 `VAR2`）里只有 `ConIn/ConOut/ErrOut/HwErrRecSupport/MTC/RTCInfo/RunCycles`，没有任何 fastboot/rescue 变量；`lenovolock` 全零、`xbl_sc_test_mode` 全零。`fastboot reboot recovery` 在这颗 ABL 上不会进 recovery，而是把机器直接送进 FFBM/firehose（`05c6:9008`，edl 侧 `Mode detected: firehose`）。`fetch` 不支持，`slot-retry-count`/`slot-successful`/`slot-suffix` 都没实现 —— 看槽位状态只能读 GPT 属性位。原机固件版本串在 `oemowninfo`（LUN 0 `@8328`）里，判"EDL 包比机器旧"就看这一条（本机是 `ZUI_16.0.688_250125`，包是 15.0.737；两版 xbl 版本串相同，`BOOT.MXF.2.0-00925.2-WAIPIO-1.30409.3`，字节不同，且 XBL/UEFI/ABL 都能加载 → ARB 没被触发）。
 
 ## 整机进镜像（A150 起）
 
