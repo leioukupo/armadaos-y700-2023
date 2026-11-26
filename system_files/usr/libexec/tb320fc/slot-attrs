@@ -32,7 +32,7 @@
 # usage:
 #   slot-attrs report [--disk DEV] [--lba-size N]
 #   slot-attrs set --slot a|b [--disk DEV] [--lba-size N] [--commit]
-#   slot-attrs pin --slot a|b [--pair NAME] [--prio N] [--peer-prio N]
+#   slot-attrs pin --slot a|b [--pair NAME] [--prio N] [--peer-prio N] [--peer-dont on|off]
 #                  [--disk DEV] [--lba-size N] [--commit]
 #
 # Rewriting a GPT is destructive, so the defaults are deliberately cautious:
@@ -58,7 +58,7 @@ die() { printf '%s: %s\n' "$VER" "$1" >&2; exit 1; }
 usage() {
   printf 'usage: %s report [--disk DEV] [--lba-size N]\n' "$PROG" >&2
   printf '       %s set --slot a|b [--disk DEV] [--lba-size N] [--commit]\n' "$PROG" >&2
-  printf '       %s pin --slot a|b [--pair NAME] [--prio N] [--peer-prio N] [--commit]\n' "$PROG" >&2
+  printf '       %s pin --slot a|b [--pair NAME] [--prio N] [--peer-prio N] [--peer-dont on|off] [--commit]\n' "$PROG" >&2
   exit 2
 }
 
@@ -106,7 +106,7 @@ flags_of() { # HI32 -> readable form of the upper half of the attribute bits
 # ---- arguments ------------------------------------------------------------
 # The subcommand may come before or after the options; typing
 # `slot-attrs --disk /dev/sdd report` should just work.
-CMD= DISK= LBASIZE= SLOT= COMMIT=0 ONLY= PRIO= PEERPRIO=
+CMD= DISK= LBASIZE= SLOT= COMMIT=0 ONLY= PRIO= PEERPRIO= PEERDONT=on
 while [ $# -gt 0 ]; do
   case $1 in
     --disk)       [ $# -ge 2 ] || usage; DISK=$2; shift 2 ;;
@@ -115,6 +115,7 @@ while [ $# -gt 0 ]; do
     --pair|--only) [ $# -ge 2 ] || usage; ONLY="$ONLY,$2"; shift 2 ;;
     --prio)       [ $# -ge 2 ] || usage; PRIO=$2; shift 2 ;;
     --peer-prio)  [ $# -ge 2 ] || usage; PEERPRIO=$2; shift 2 ;;
+    --peer-dont)  [ $# -ge 2 ] || usage; PEERDONT=$2; shift 2 ;;
     --commit)     COMMIT=1; shift ;;
     report|set|pin) [ -z "$CMD" ] || usage; CMD=$1; shift ;;
     -h|--help)  usage ;;
@@ -133,6 +134,7 @@ if [ -n "$PEERPRIO" ]; then
   case $PEERPRIO in *[!0-9]*) die "--peer-prio takes a slot priority of 0-15" ;; esac
   [ "$PEERPRIO" -le 15 ] || die "--peer-prio takes a slot priority of 0-15"
 fi
+case $PEERDONT in on|off) ;; *) die "--peer-dont takes on or off" ;; esac
 ONLY=${ONLY#,}
 
 # ---- which LU carries boot_a/boot_b ---------------------------------------
@@ -308,6 +310,16 @@ fi
 # vendor resting state 15/11 with dont-boot-again on the inactive side).  Writing
 # the vendor resting state every boot makes that decay harmless, and --pair boot
 # keeps the write to the one pair that actually drifts.
+#
+# Two corrections measured on HA1WZJJ5 (PROGRESS A207).  First, the vendor
+# resting priority is not enough for a payload slot: with boot_a back at 10 (what
+# pin restored) and dont-boot-again set on boot_b, ABL parked the board on the
+# fastboot screen twice with misc all zero; with boot_a at 15 the same image
+# booted twice.  So the payload slot wants prio 15, not the resting 10.  Second,
+# dont-boot-again on the peer also hides that slot from this board's kshimc menu
+# (the Android entry in the menu disappeared while boot_b carried the bit), so
+# --peer-dont off keeps the peer visible and selectable while the target stays the
+# only slot ABL will pick on its own.
 : > "$W/plan"
 cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
   if [ -n "$ONLY" ]; then
@@ -343,19 +355,21 @@ cut -d' ' -f1 "$W/ents" | sort -u | while read -r stem; do
   # ht/hl are this pair's own current max/min, so "already preferred" and "already
   # at these priorities" are the same test.  pin also asks for a clean
   # boot-failed counter on the target and dont-boot-again on the peer.
+  wanted_dp=1
+  if [ "$CMD" = pin ] && [ "$PEERDONT" = off ]; then wanted_dp=0; fi
   if [ "$pt" -eq "$ht" ] && [ "$po" -eq "$hl" ] && [ "$dt" = 0 ]; then
     if [ "$CMD" != pin ]; then continue; fi
-    if [ "$ft" = 0 ] && [ "$dp" = 1 ]; then continue; fi
+    if [ "$ft" = 0 ] && [ "$dp" = "$wanted_dp" ]; then continue; fi
   fi
   if [ "$SLOT" = a ]; then new_a=$ht; new_b=$hl; else new_a=$hl; new_b=$ht; fi
   na=$(( (ha & ~PRIO_MASK) | (new_a << PRIO_SHIFT) ))
   nb=$(( (hb & ~PRIO_MASK) | (new_b << PRIO_SHIFT) ))
   if [ "$SLOT" = a ]; then
     na=$(( (na & ~BIT_DONTBOOT & ~BIT_FAILED) | BIT_SUCCESSFUL ))
-    if [ "$CMD" = pin ]; then nb=$(( nb | BIT_DONTBOOT )); fi
+    if [ "$CMD" = pin ]; then if [ "$PEERDONT" = on ]; then nb=$(( nb | BIT_DONTBOOT )); else nb=$(( nb & ~BIT_DONTBOOT )); fi; fi
   else
     nb=$(( (nb & ~BIT_DONTBOOT & ~BIT_FAILED) | BIT_SUCCESSFUL ))
-    if [ "$CMD" = pin ]; then na=$(( na | BIT_DONTBOOT )); fi
+    if [ "$CMD" = pin ]; then if [ "$PEERDONT" = on ]; then na=$(( na | BIT_DONTBOOT )); else na=$(( na & ~BIT_DONTBOOT )); fi; fi
   fi
   if [ "$na" != "$ha" ] || [ "$nb" != "$hb" ]; then
     printf '%s %s %s\n' "$stem" "$ia" "$na" >> "$W/plan"

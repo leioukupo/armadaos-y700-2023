@@ -16,7 +16,9 @@
 #
 # The payload cannot stop XBL from decrementing, but re-writing the vendor resting
 # state after a boot that reached multi-user.target makes the decay harmless, and
-# raising dont-boot-again on the other side keeps the menu on one slot.  Both
+# raising dont-boot-again on the other side keeps the menu on one slot (peer_dont=off
+# leaves the peer visible in kshimc instead, which is what you want when the other
+# slot holds a system you still need to be able to pick by hand).  Both
 # jobs are done by `slot-attrs pin`, which is idempotent and refuses to write
 # anything it cannot prove is consistent.
 #
@@ -33,6 +35,7 @@ slot=b
 pairs=boot
 prio=
 peer_prio=
+peer_dont=on
 commit=on
 if [ -f "${CONF}" ] ; then
 	TMPC=$(mktemp 2>/dev/null || echo /tmp/tb320fc-slot-pin.conf.$$)
@@ -48,6 +51,10 @@ sh "$(dirname "$0")/board-check" || { echo "${TB320FC_TAG} skip board-mismatch" 
 case ${slot} in
 	a|b) ;;
 	*) echo "${TB320FC_TAG} FAIL slot=${slot} wants a or b" >&2 ; exit 1 ;;
+esac
+case ${peer_dont} in
+	on|off) ;;
+	*) echo "${TB320FC_TAG} FAIL peer_dont=${peer_dont} wants on or off" >&2 ; exit 1 ;;
 esac
 
 # slot-attrs locates the LU through the by-partlabel link, so the link has to be
@@ -100,9 +107,10 @@ done
 IFS=${OLDIFS}
 if [ -n "${prio}" ] ; then set -- "$@" --prio "${prio}" ; fi
 if [ -n "${peer_prio}" ] ; then set -- "$@" --peer-prio "${peer_prio}" ; fi
+set -- "$@" --peer-dont "${peer_dont}"
 if [ "${commit}" = on ] ; then set -- "$@" --commit ; fi
 
-echo "${TB320FC_TAG} start slot=${slot} pairs=${pairs} commit=${commit}"
+echo "${TB320FC_TAG} start slot=${slot} pairs=${pairs} prio=${prio:-pair-default} peer_prio=${peer_prio:-pair-default} peer_dont=${peer_dont} commit=${commit}"
 sh "${SA}" "$@"
 rc=$?
 echo "${TB320FC_TAG} done rc=${rc}"

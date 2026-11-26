@@ -232,6 +232,30 @@ grep_ok "boot_a prio=0" "$v" "--peer-prio demotes the other side to an explicit 
 out=$(run pin --slot b --pair boot --prio 16)
 printf '%s\n' "$out" | grep -q "0-15" && ok "--prio rejects a value outside 0-15" || bad "prio range: $(printf '%s' "$out" | tail -1)"
 
+# --peer-dont is a choice, not a constant.  dont-boot-again on the peer is where
+# Android leaves an inactive slot, but this board's kshimc hides every slot that
+# carries the bit: with boot_b marked, the Android entry vanished from the menu
+# (PROGRESS A207).  off keeps the peer selectable and the target still wins on
+# priority alone.
+out=$(run pin --slot b --pair boot --prio 15 --peer-prio 11 --peer-dont off --commit)
+v=$(verify)
+grep_ok "boot_b prio=15 dont=0" "$v" "peer-dont off still prefers the pinned slot"
+grep_ok "boot_a prio=11 dont=0" "$v" "peer-dont off leaves the peer selectable"
+out=$(run pin --slot b --pair boot --prio 15 --peer-prio 11 --peer-dont off --commit)
+grep_ok "written=0 already_pinned=1" "$out" "peer-dont off is idempotent"
+
+# off also has to clear a bit an earlier default pin left behind, otherwise
+# changing the setting would do nothing on a board that was pinned before.
+cp "$IMG.orig" "$IMG"
+run pin --slot b --pair boot --commit >/dev/null
+grep_ok "boot_a prio=2 dont=1" "$(verify)" "the default pin marks the peer"
+out=$(run pin --slot b --pair boot --prio 15 --peer-prio 11 --peer-dont off --commit)
+grep_ok "boot_a prio=11 dont=0" "$(verify)" "peer-dont off clears the bit an earlier pin set"
+out=$(run pin --slot b --pair boot --prio 15 --peer-prio 11 --peer-dont off --commit)
+grep_ok "written=0 already_pinned=1" "$out" "clearing the peer bit is idempotent too"
+out=$(run pin --slot b --pair boot --peer-dont maybe)
+printf '%s\n' "$out" | grep -q "peer-dont takes on or off" && ok "--peer-dont rejects other values" || bad "--peer-dont accepted a bad value: $(printf '%s' "$out" | tail -1)"
+
 # ---------------------------------------------------------------------------
 # slot-pin is what the systemd unit execs: it reads the conf, gates on the board
 # DT, and hands slot-attrs the pin arguments.  All three inputs are overridable,
@@ -252,7 +276,10 @@ for f in usr/libexec/tb320fc/slot-pin usr/lib/systemd/system/tb320fc-slot-pin.se
   grep -q "$f" devices/lenovo-tb320fc/usr-overlay/push.sh && ok "push.sh carries $f" || bad "push.sh does not carry $f"
 done
 grep -q "^pin=on$" "$CONF" && ok "conf ships with the repair armed" || bad "conf default pin"
-grep -q "^slot=b$" "$CONF" && ok "conf names the payload slot" || bad "conf default slot"
+grep -q "^slot=a$" "$CONF" && ok "conf names the payload slot" || bad "conf default slot"
+grep -q "^prio=15$" "$CONF" && ok "conf pins the payload slot to the priority ABL needs" || bad "conf default prio"
+grep -q "^peer_prio=11$" "$CONF" && ok "conf keeps the peer below it" || bad "conf default peer_prio"
+grep -q "^peer_dont=off$" "$CONF" && ok "conf leaves the peer visible to kshimc" || bad "conf default peer_dont"
 grep -q "^pairs=boot$" "$CONF" && ok "conf narrows the write to the boot pair" || bad "conf default pairs"
 
 printf 'lenovo,tb320fc\0' > "$W/compat"
@@ -260,7 +287,7 @@ pinconf() { printf 'slot=b\npairs=boot\ncommit=%s\n%s\n' "$1" "$2" > "$W/pin.con
 cp "$IMG.orig" "$IMG"
 pinconf on ""
 out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
-grep_ok "TB320FC-SLOT-PIN-v1 start slot=b pairs=boot commit=on" "$out" "slot-pin logs the settings it used"
+grep_ok "TB320FC-SLOT-PIN-v1 start slot=b pairs=boot prio=pair-default peer_prio=pair-default peer_dont=on commit=on" "$out" "slot-pin logs every setting it used"
 grep_ok "SLOTATTRS-OK cmd=pin slot=b entries_written=2 verified=1" "$out" "slot-pin drives pin to a verified write"
 grep_ok "TB320FC-SLOT-PIN-v1 done rc=0" "$out" "slot-pin reports success"
 grep_ok "boot_a prio=2 dont=1" "$(verify)" "slot-pin left the boot pair pinned to slot b"
@@ -275,6 +302,22 @@ pinconf off ""
 out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
 grep_ok "cmd=pin slot=b entries_to_change=2 written=0 (dry run" "$out" "commit=off keeps the unit in dry run"
 cmp -s "$IMG" "$IMG.orig" && ok "dry-run unit left the image untouched" || bad "commit=off wrote anyway"
+
+# The payload-slot conf keys as the unit sees them: prio 15 on the target and a
+# clean peer, so kshimc still shows the other system.  This runs at
+# multi-user.target on every boot, so it has to be idempotent as well as correct.
+cp "$IMG.orig" "$IMG"
+pinconf on "prio=15
+peer_prio=11
+peer_dont=off"
+out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
+grep_ok "prio=15 peer_prio=11 peer_dont=off commit=on" "$out" "slot-pin logs the overrides it passed on"
+v=$(verify)
+grep_ok "boot_b prio=15 dont=0" "$v" "slot-pin applied the conf priorities"
+grep_ok "boot_a prio=11 dont=0" "$v" "slot-pin left the peer selectable"
+out=$(TB320FC_DT_COMPATIBLE="$W/compat" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
+grep_ok "already_pinned=1" "$out" "the same conf is a no-op on the next boot"
+cp "$IMG.orig" "$IMG"   # hand the fixture back untouched: the board-gate case below compares against .orig
 
 printf 'tb320fc-not-this-board\0' > "$W/compat-other"
 out=$(TB320FC_DT_COMPATIBLE="$W/compat-other" TB320FC_SLOT_PIN_CONF="$W/pin.conf" TB320FC_SLOT_DEV="$IMG" sh "$HELPER" 2>&1)
