@@ -45,6 +45,7 @@
 | 安卓的 `boot_b/vendor_boot_b/dtbo_b/vbmeta_b` 原样备份 | **只能从跑着的系统里 dd**（fastboot 没有 `fetch`） | `install/board-backup.sh` | 这是 kShimC 打包的 `--stock-boot` base，也是 vbmeta 的唯一回滚点。**rom 里同名文件不是备份**：设备 OTA 过之后二者的 sha 全不同（A203/A204 已实测） |
 | kShimC 源码与 runtime | 另一棵源码树（gen2 shim） | `devices/lenovo-tb320fc/boot/kshim-slots/build_runtime.sh <轮次> <a\|b>` → 4 MiB bin | 打包 base 必须是**当天从这台机 dump 的那份**；把已经带 shim 的镜像再打一次 = 叠两层，第二层永远不执行 |
 | 内核 payload（7.3.0-rc6 + appended DTB + initramfs） | `packages/kernel/scripts/build-kernel.sh` 的产物 | 组 boot 容器时 vmlinuz 要带 DTB，且 cmdline 里的 `root=` 必须指向本次 root 的 UUID/PARTLABEL | 沿用上一份 boot blob 会因 root UUID 找不到根 → 上电直接回 fastboot（A162） |
+| 载荷内核 `vmlinuz`（`build-ufs-root.sh` 的 `VMLINUZ_SRC`） | 板上 boot 分区里那段 kernel：`install/board-backup.sh` 的 boot dump，或 `unpack_bootimg` 拆 `boot_<slot>` 的 kernel 段 | 直接 `dd`/解出 kernel 段存成文件，`VMLINUZ_SRC=` 指过去 | 根镜像里没有任何内核文件（ABL 从裸 boot 分区取内核，镜像里的 kernel 包不带 Image）→ `armada-ostree-adopt.sh` 报 `ostree cannot deploy this tree`，离线采纳第一步就死（A224） |
 | 内核模块树 + 打过补丁的 .ko | 你自己的内核构建（`MODS_SRC`、`KO_PATCHED_SRC`，见 `build-ufs-root.sh` 头部） | `build-ufs-root.sh` 会把它们放进 `/var/usrlocal/lib/y700-73mods/$(uname -r)` | 镜像里的内核版本 ≠ 板上跑的内核版本时，模块必须按 `uname -r` 对齐 |
 | 容器镜像 + LAN registry + chunkah chunked 目录 | `just build` → `podman push localhost/armada:<tag> 192.168.31.x:5000/armada:<tag>` | `stage-adopt-bundle.sh <tag>` 会拿 registry 的 `manifest.json/config.json` 并按 `layers[0].digest` 取 `base-layer.tar` | 采纳必须在 registry 里能解析到同一份 manifest；chunkah 的 `blobs/sha256/<digest>` 命中就免下载 |
 | `factory-etc.tar` / `factory-var.tar` | 镜像自己 | `pack-image-state.sh --image <本地镜像> --out <bundle>`（`build-ufs-root.sh` 已经自动调它） | 缺 `/var` → commit 里 /var 是空骨架 → Armada tools 的 Steam repair 报 `No such file or directory: /var/home/armada`（A221） |
@@ -78,6 +79,8 @@ podman push localhost/armada:<tag> 192.168.31.4:5000/armada:<tag>
 # 2) bundle（registry 元数据 + base-layer + 板端脚本 + factory-etc/var tar）
 devices/lenovo-tb320fc/rootfs/stage-adopt-bundle.sh <tag> --out /srv/y700/bundle
 # 3) 扁平 root 镜像（顺手产 factory-*.tar）
+# 载荷内核：build-ufs-root 把它放进 /usr/lib/modules/<kver>/vmlinuz，采纳要有它才写得出一致的 BLS
+VMLINUZ_SRC=/srv/y700/a207/boot/vmlinuz-7.3.0-rc6-from-boot_a \
 devices/lenovo-tb320fc/rootfs/build-ufs-root.sh localhost/armada:<tag> /srv/y700/out
 # 4) 离线采纳：让镜像本身第一次启动就落在 composed 根上
 devices/lenovo-tb320fc/rootfs/ostree-first-root.sh /srv/y700/out/root-armada!<tag>.img \
