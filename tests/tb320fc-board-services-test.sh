@@ -400,4 +400,12 @@ check "mac_nm=off skips the sync" grep -q 'skip mac_nm=off' <<<"$out"
 printf 'mac=auto\nmac_nm=on\n' > "$work/sync.conf"
 out="$(NM_DOWN=yes run_sync)"
 check "a NetworkManager that never answers is reported, not guessed" grep -q 'FAIL NetworkManager never answered' <<<"$out"
+# ---- the flat UFS builder bakes what the pinned base image cannot carry ----
+FLAT="$ROOT/devices/lenovo-tb320fc/rootfs/build-ufs-root.sh"
+[ -f "$FLAT" ] || fail "missing flat root builder $FLAT"
+check "the flat builder installs the misc boot-request hook" grep -q 'usr/libexec/tb320fc/misc-clear 0755' "$FLAT"
+check "the flat builder arms it for the shutdown transaction" grep -q 'want tb320fc-misc-clear shutdown.target' "$FLAT"
+check "the flat builder tells bootc the boot image is out of band" grep -q '/etc/armada/boot-method' "$FLAT"
+check "the flat builder fails loudly when a baked file is absent" grep -q 'under SYSFILES=' "$FLAT"
+
 printf 'ALL OK\n'

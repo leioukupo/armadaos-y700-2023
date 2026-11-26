@@ -210,6 +210,15 @@ usr/lib/systemd/system/tb320fc-misc-clear.service 0644
 etc/tb320fc/misc-clear.conf 0644
 BAKED
 want tb320fc-misc-clear shutdown.target
+# --- bootc must not try to rebuild a boot image when a deployment finalizes.
+# --- ABL loads kernel/DTB/initramfs from the raw boot_a partition and this board has
+# --- no ESP /KERNEL, so /etc/armada/boot-method has to say none: without the file
+# --- armada-bootimg-finalize defaults to abl, its update step fails, and the failure
+# --- branch runs `bootc rollback` - which silently undoes the staged deployment we
+# --- are about to create (PROGRESS A197 on the installed board, A207 here).
+mkdir -p "$MNT/etc/armada"
+printf 'none\n' > "$MNT/etc/armada/boot-method"
+chmod 0644 "$MNT/etc/armada/boot-method"
 # --- Firmware layout insurance: /usr/libexec/tb320fc/audio checks
 # --- /usr/lib/firmware/cirrus, the CS35L45 loader asks for cirrus/..., and the
 # --- 7.3.0-rc6 (asphalt) Novatek driver asks for novatek/lenovo-tb320fc.bin.
