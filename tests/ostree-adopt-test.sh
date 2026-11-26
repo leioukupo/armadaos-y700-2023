@@ -509,15 +509,24 @@ fi
 # "error: loading sysroot: fstatat(ostree/deploy)". That is what killed the first real
 # adoption run, after the dry run had passed.
 chattr -R -i "$MNT/ostree/deploy" 2>/dev/null || true
-rm -rf "$MNT/ostree/deploy"
+# Take the whole deployment side away, not only ostree/deploy. ostree keeps the boot
+# half in ostree/boot.N/<stateroot>/<checksum>/<serial>, and a boot.0 entry whose
+# checkout is gone is a sysroot libostree refuses to parse at all
+# ("Parsing deployment ...: opendir(ostree/boot.0/...): No such file or directory").
+# The state this section is about - and the one HA1WZJJ5 was in - has a repo and
+# nothing else, so the BLS entries go too.
+rm -rf "$MNT/ostree/deploy" "$MNT"/ostree/boot.0 "$MNT"/ostree/boot.1
+rm -f "$MNT"/boot/loader/entries/*.conf
 check "the sysroot was knocked back to repo-without-deploy" \
-    "[ -f $MNT/ostree/repo/config ] && [ ! -d $MNT/ostree/deploy ]"
+    "[ -f $MNT/ostree/repo/config ] && [ ! -d $MNT/ostree/deploy ] && [ ! -d $MNT/ostree/boot.0 ]"
 "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --root-karg=root=PARTLABEL=y700root-ufs \
     > /tmp/armada-adopt-skeleton.$$.txt 2>&1
 check "adopt rebuilds the sysroot over an existing repo" "[ $? -eq 0 ]"
 check "the stateroot came back" "[ -d $MNT/ostree/deploy/default/deploy ]"
 check "and a deployment exists again" \
     "ls $MNT/ostree/deploy/default/deploy/*.0 >/dev/null 2>&1"
+check "and it wrote a boot loader entry again" \
+    "ls $MNT/boot/loader/entries/*.conf >/dev/null 2>&1"
 check "the re-run still armed stage-1 in every root" \
     "[ -x $MNT/init ] && [ -x $MNT/usr/lib/armada/armada-ostree-stage1.sh ]"
 tail -22 /tmp/armada-adopt-skeleton.$$.txt | sed -n 's/^/  | skeleton /p'
