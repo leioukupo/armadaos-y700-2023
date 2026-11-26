@@ -65,11 +65,12 @@ LOOP=$(losetup -f 2>/dev/null) || true
 
 IMAGE=$(mktemp -u /tmp/armada-adopt-XXXXXX.img)
 MNT=$(mktemp -d /tmp/armada-adopt-XXXXXX)
+FACTORY=$(mktemp -d /tmp/armada-factory-XXXXXX)
 cleanup() {
     for d in dev proc sys; do umount "$MNT/$d" 2>/dev/null; done
     umount -R "$MNT" 2>/dev/null; umount "$MNT" 2>/dev/null
     rmdir /tmp/armada-hold-dev 2>/dev/null
-    losetup -d "$LOOP" 2>/dev/null; rm -rf "$MNT" "$IMAGE"
+    losetup -d "$LOOP" 2>/dev/null; rm -rf "$MNT" "$IMAGE" "$FACTORY"
 }
 trap cleanup EXIT
 truncate -s 4G "$IMAGE"
@@ -78,12 +79,20 @@ mkfs.ext4 -q -F -L y700root-ufs "$LOOP" >/dev/null
 mount -t ext4 "$LOOP" "$MNT"
 
 # ---- fixture ----------------------------------------------------------------
-mkdir -p "$MNT"/usr/{bin,etc/conf.d,lib/armada,lib/modules/"$KVER"/dtb/qcom} \
+mkdir -p "$MNT"/usr/{bin,lib/armada,lib/modules/"$KVER"/dtb/qcom} \
          "$MNT"/etc/systemd "$MNT"/var/{home/armada,roothome,srv,mnt,lib} \
          "$MNT"/opt "$MNT"/boot "$MNT"/sysroot "$MNT"/tmp "$MNT"/lost+found
 printf 'NAME=Armada\nID=armada\nPRETTY_NAME="Armada FLAT-TEST"\nBUILD_ID="FLAT-TEST"\n' > "$MNT"/usr/lib/os-release
 printf 'machine-state\n' > "$MNT"/etc/machine-state
-printf 'tree-config\n' > "$MNT"/usr/etc/conf.d/armada.conf
+# The flat root has no /usr/etc at all - HA1WZJJ5 is exactly this shape, because the
+# image it was installed from was flattened (/etc real, no /usr/etc). The tree still has
+# to carry one, and it has to come from the image rather than from the live /etc, so the
+# fixture keeps the factory config in its own directory outside the loop filesystem: the
+# hard-link staging then fails and the copy fallback is what runs, as it does on a board
+# where the factory config arrived in its own tar.
+mkdir -p "$FACTORY/conf.d"
+printf 'tree-config\n' > "$FACTORY/conf.d/armada.conf"
+export ARMADA_OSTREE_FACTORY_ETC="$FACTORY"
 printf 'KERNELPAYLOAD' > "$MNT"/usr/lib/modules/"$KVER"/vmlinuz
 printf 'INITRAMFSPAYLOAD' > "$MNT"/usr/lib/modules/"$KVER"/initramfs.img
 printf 'DTBPAYLOAD' > "$MNT"/usr/lib/modules/"$KVER"/dtb/qcom/sm8475-lenovo-tb320fc.dtb

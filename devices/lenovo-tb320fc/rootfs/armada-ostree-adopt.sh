@@ -18,6 +18,7 @@
 #                          [--from flat|deployment] [--version STAMP]
 #                          [--root-karg KARG] [--karg KARG]... [--force]
 #                          [--image-ref REF --image-meta DIR [--base-layer TAR]]
+#                          [--factory-etc DIR]
 #
 # --image-ref writes the deployment the way bootc writes its own, which is the
 # only way bootc manages it: the origin carries container-image-reference (and
@@ -44,6 +45,9 @@ FROM_MODE=flat
 IMAGE_REF=""
 IMAGE_META=""
 BASE_LAYER=""
+# The image's factory config tree (its /usr/etc). Also readable from the environment so
+# a caller that runs adopt several times does not repeat it.
+FACTORY_ETC="${ARMADA_OSTREE_FACTORY_ETC:-}"
 ORIGIN_FILE=""
 # Transports bootc writes plus the unverified forms libostree tolerates. A tag
 # is required: the digest is what an update resolves, never what a channel says.
@@ -86,6 +90,8 @@ while [[ $# -gt 0 ]]; do
         --image-meta=*) IMAGE_META="${1#*=}"; shift ;;
         --base-layer)   BASE_LAYER="${2:?}"; shift 2 ;;
         --base-layer=*) BASE_LAYER="${1#*=}"; shift ;;
+        --factory-etc)  FACTORY_ETC="${2:?}"; shift 2 ;;
+        --factory-etc=*) FACTORY_ETC="${1#*=}"; shift ;;
         -h|--help)      sed -n '2,29p' "$0"; exit 0 ;;
         *)              die "unknown argument: $1" ;;
     esac
@@ -311,6 +317,38 @@ run chmod 1777 "$STAGE/var/tmp"
 # at boot, not by the adopt script. boot is the boot partition on a normal ostree
 # host, so it stays a mount point here too: the payload ostree writes into /boot
 # must not become tree content, or every deploy would commit the previous one.
+# The commit tree has to carry /usr/etc. A flat install keeps its config at /etc and has
+# nothing at /usr/etc, and libostree only notices at the end of the second deployment:
+# "Deploying tree: Finalizing deployment: During /etc merge: While computing
+# configuration diff: Error when getting information for file /proc/self/fd/14/usr/etc:
+# No such file or directory" on HA1WZJJ5 - the first adopt, with no previous deployment
+# to diff against, had gone through. The live /etc must not be copied into the tree
+# (machine state stays out of the commit, A185), so the factory config is brought in
+# from the image it belongs to: --factory-etc DIR, where DIR is that image's /usr/etc.
+if [[ ! -d "$STAGE/usr/etc" ]]; then
+    if [[ -n "$FACTORY_ETC" ]]; then
+        [[ -d "$FACTORY_ETC" ]] || die "--factory-etc: no such directory $FACTORY_ETC"
+        run mkdir -p "$STAGE/usr/etc"
+        if ! run cp -alx "$FACTORY_ETC/." "$STAGE/usr/etc/"; then
+            # Not the same filesystem, or a bind mount in the way: a copy costs a few
+            # tens of MB and gives the same tree. (--dry-run never really runs the cp
+            # above, so there is nothing to repair in that case.)
+            if [[ $DRY_RUN -eq 0 ]]; then
+                echo "note: $FACTORY_ETC is not hard-linkable here, copying it"
+                run rm -rf "$STAGE/usr/etc"
+                run mkdir -p "$STAGE/usr/etc"
+                run cp -ax "$FACTORY_ETC/." "$STAGE/usr/etc/"
+            fi
+        fi
+        n_etc=$(find "$FACTORY_ETC" -maxdepth 1 ! -path "$FACTORY_ETC" 2>/dev/null | wc -l || true)
+        echo "factory /usr/etc staged from $FACTORY_ETC (top-level=$n_etc)"
+    else
+        run mkdir -p "$STAGE/usr/etc"
+        echo "note: the flat root has no /usr/etc and --factory-etc was not given."
+        echo "      the tree gets an empty /usr/etc so libostree can still merge /etc, but"
+        echo "      every config file will read as a local change on the next deployment."
+    fi
+fi
 for skeleton in sysroot run dev proc sys tmp boot; do
     run mkdir -p "$STAGE/$skeleton"
 done
