@@ -241,6 +241,21 @@ if [[ "$FROM_MODE" == deployment ]]; then
 fi
 echo "commit tree: $SRC_ROOT"
 
+# libostree refuses to create a deployment from a tree with no kernel in it:
+# `ostree admin deploy` ends with "Failed to find kernel in /usr/lib/modules,
+# /usr/lib/ostree-boot or /boot". That is not a corner case on this board - the payload
+# kernel is written out of band into the raw boot partition, and a kernel package built
+# from modules only leaves /usr/lib/modules/<kver> without a vmlinuz, so the whole
+# adoption (14 GB of staging and committing on HA1WZJJ5) finished before it failed.
+# Ask the same question first, and say what answers it.
+have_kernel=0
+for cand in "$SRC_ROOT"/usr/lib/modules/*/vmlinuz \
+            "$SRC_ROOT"/usr/lib/ostree-boot/vmlinuz* \
+            "$SRC_ROOT"/boot/vmlinuz-*; do
+    [[ -f "$cand" ]] && { have_kernel=1; break; }
+done
+[[ $have_kernel -eq 1 ]] || die "no kernel in $SRC_ROOT/usr/lib/modules/*/vmlinuz: ostree cannot deploy this tree. Put the payload Image there (packages/kernel/scripts/build-kernel.sh stages arch/arm64/boot/Image at lib/modules/<kver>/vmlinuz); for a board that is already running, the same bytes come out of the boot partition at the kernel section of its boot_<slot> image."
+
 # ---- 2b. stage the commit tree (never the live /etc or /var) ---------------
 # ostree refuses a tree holding both /etc and /usr/etc, and the live /etc is the
 # machine's own state, so only /usr/etc goes into the commit. /var belongs to

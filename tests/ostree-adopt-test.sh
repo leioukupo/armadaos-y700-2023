@@ -149,6 +149,18 @@ sed -n '1,6p;18,30p' /tmp/armada-adopt-fresh-dry.$$.txt | sed -n 's/^/  | fresh-
 rm -f /tmp/armada-adopt-fresh-dry.$$.txt
 
 # ---- adopt ------------------------------------------------------------------
+# ---- a tree with no kernel is refused before anything is staged --------------
+# This is the shape the local modules-only kernel artifact produces: /usr is fine,
+# /usr/lib/modules/<kver> has modules and an initramfs, and no vmlinuz. libostree
+# only notices when the deployment is created, i.e. after the whole commit.
+no_kernel=$(mktemp -d /tmp/armada-nokernel-XXXXXX)
+mkdir -p "$no_kernel/usr/lib/modules/9.9.9-fake" "$no_kernel/var"
+printf 'ID=armada\n' > "$no_kernel/usr/lib/os-release"
+out=$("$ADOPT" --sysroot="$no_kernel" --min-free-gib=0 --dry-run 2>&1)
+check "adopt refuses a tree without a kernel" "grep -q 'no kernel in' <<<\"$out\""
+check "and it stops before staging" "! grep -q 'staged:' <<<\"$out\""
+rm -rf "$no_kernel"
+
 "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --enable-stage1 \
     --root-karg=root=PARTLABEL=y700root-ufs
 check "adopt exits 0" "[ $? -eq 0 ]"

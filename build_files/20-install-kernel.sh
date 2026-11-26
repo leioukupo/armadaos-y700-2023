@@ -30,5 +30,16 @@ depmod -a "${KVER}" -b /
 mkdir -p /usr/lib/firmware
 cp -a /ctx/system_files/usr/lib/firmware/. /usr/lib/firmware/
 
+# The comment above is not decorative: ostree will not build a deployment from a tree
+# that carries no kernel ("Failed to find kernel in /usr/lib/modules,
+# /usr/lib/ostree-boot or /boot"), so a modules-only tarball produces an image that
+# cannot be deployed at all. Refuse it here instead of three steps later on the device.
+if [ ! -f "/usr/lib/modules/${KVER}/vmlinuz" ]; then
+    echo "ERROR: /usr/lib/modules/${KVER}/vmlinuz is missing after install; this image cannot be deployed by ostree/bootc" >&2
+    echo "       packages/kernel/scripts/build-kernel.sh stages arch/arm64/boot/Image there - this kernel artifact has modules only" >&2
+    ls -la "/usr/lib/modules/${KVER}/" | head -20 >&2
+    exit 1
+fi
+
 echo "armada kernel ${KVER} installed at /usr/lib/modules/${KVER}/"
 ls -la "/usr/lib/modules/${KVER}/" | head -10
