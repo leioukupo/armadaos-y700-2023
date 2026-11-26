@@ -624,7 +624,15 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     # next adopt/checkpoint rewrites it from the flat root anyway.
     roots="$SROOT"
     [[ -n "${newest:-}" && -d "$newest" ]] && roots="$SROOT $newest"
-    for root in $roots; do
+    for root in $roots; do        # libostree marks a deployment's top-level directory immutable (the same
+        # reason `ostree admin unlock` exists), so creating /init inside the tree
+        # this run just checked out fails with EPERM: install aborts, adopt exits
+        # non-zero and the marker never appears. Drop the flag for the duration of
+        # the install and put it back, which is how libostree leaves it.
+        imm=0
+        if [[ "$root" != "$SROOT" ]] && lsattr -d "$root" 2>/dev/null | awk '{print $1}' | grep -q i; then
+            run chattr -i "$root" && imm=1
+        fi
         for name in armada-ostree-stage1.sh armada-ostree-confirm.sh armada-ostree-bootlink.sh; do
             src="$here/$name"; dst="$root/usr/lib/armada/$name"
             [[ -f "$src" ]] || die "missing $name next to $0"
@@ -643,6 +651,7 @@ if [[ "$STAGE1_MODE" != skip ]]; then
             run install -m 0755 "$src" "$dst"
         fi
         run chmod 0755 "$dst"
+        [[ $imm -eq 1 ]] && run chattr +i "$root"
     done
     # The confirm ExecStart is a file in /usr/lib/armada, and the unit itself may
     # live in /etc/systemd/system (which is shared with the physical root). Install
