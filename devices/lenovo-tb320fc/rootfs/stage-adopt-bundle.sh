@@ -102,7 +102,8 @@ log "base-layer.tar $(du -h "$OUT/base-layer.tar" | cut -f1)"
 # --- drift apart (adopt-run-board.sh fetches exactly this list).
 BOARD_FILES=(armada-ostree-adopt.sh armada-ostree-stage1.sh armada-ostree-bootlink.sh
              armada-ostree-confirm.sh armada-ostree-confirm.service init-ostree
-             boot-forensics.sh ostree-arm-reboot.sh)
+             boot-forensics.sh ostree-arm-reboot.sh image-state-fetch.sh
+             adopt-run-board.sh)
 for f in "${BOARD_FILES[@]}"; do
     [[ -f "$ROOTFS_DIR/$f" ]] || die "the repo has no devices/lenovo-tb320fc/rootfs/$f"
     install -m 0755 "$ROOTFS_DIR/$f" "$OUT/$f"
@@ -140,7 +141,7 @@ fi
     done
     echo
     echo "run on the tablet:"
-    echo "  SRC=http://$(ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p;q') \\"
+    echo "  SRC=http://$(ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p;q'):${SERVE_PORT:-8791} \\"
     echo "  IMAGE_REF=ostree-unverified-image:docker://$REG/armada:$TAG bash adopt-run-board.sh --go"
 } >"$OUT/BUNDLE.txt"
 cat "$OUT/BUNDLE.txt"

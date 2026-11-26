@@ -44,7 +44,8 @@ cd "$D"
 # (--stage1 install dies on a missing one even during --dry-run), so fetch the whole
 # set rather than only the two that were needed before the runtime moved into the tree.
 for f in armada-ostree-adopt.sh armada-ostree-stage1.sh armada-ostree-confirm.sh \
-         armada-ostree-bootlink.sh armada-ostree-confirm.service init-ostree; do
+         armada-ostree-bootlink.sh armada-ostree-confirm.service init-ostree \
+         image-state-fetch.sh; do
     get "$f" "$f"
 done
 get imgmeta/manifest.json imgmeta/manifest.json
@@ -65,49 +66,34 @@ ls -l base-layer.tar imgmeta/manifest.json imgmeta/config.json
 # unpacked. They land under $V because /tmp on this board is tmpfs.
 V=${V:-/var/usrlocal/armada-adopt}
 mkdir -p "$V"
-sha_file=""
-if curl -fsS -u "$AUTH" -o "$V/factory-state.sha256" "$SRC/factory-state.sha256" 2>/dev/null; then
-    sha_file="$V/factory-state.sha256"
-fi
 
-state_tar() { # state_tar <tar name> <top-level dir it contains> <spare bytes wanted>
-    local name=$1 anchor=$2 headroom=$3 tar_bytes free_bytes need
-    curl -fsIL -u "$AUTH" "$SRC/$name" >/dev/null 2>&1 || return 1
-    tar_bytes=$(curl -fsIL -u "$AUTH" "$SRC/$name" |
-        awk 'BEGIN{IGNORECASE=1} /^content-length:/{v=$2} END{print v+0}')
-    free_bytes=$(df -B1 --output=avail "$V" | tail -1 | tr -dc '0-9')
-    need=$(( ${tar_bytes:-0} * 2 + headroom ))
-    if [ "${free_bytes:-0}" -lt "$need" ]; then
-        echo "not enough room under $V for $name: ${free_bytes} free, needs about ${need}"
-        exit 1
-    fi
-    get "$name" "$V/$name"
-    if [ -n "$sha_file" ] && grep -q " $name\$" "$sha_file"; then
-        if ! ( cd "$V" && grep " $name\$" "$sha_file" | sha256sum -c --quiet - ); then
-            echo "$name does not match factory-state.sha256: the download is damaged, re-fetch it"
-            exit 1
-        fi
-        echo "$name sha256 verified"
-    fi
-    rm -rf "$V/$anchor"
-    tar -xf "$V/$name" -C "$V" || { echo "cannot extract $V/$name"; exit 1; }
-    [ -d "$V/$anchor" ] || { echo "$name did not contain a $anchor/ directory"; exit 1; }
-    echo "factory /$anchor unpacked under $V ($name, $(find "$V/$anchor" -mindepth 1 -maxdepth 1 | wc -l) top-level entries)"
-    return 0
+# image-state-fetch.sh does the transfer, the factory-state.sha256 check and the unpack.
+# It exits 1 when the bundle serves no such tar (a warning the adoption can live with) and
+# 2 when the bytes or the free space are wrong (which the tablet cannot fix by itself).
+fetch_state() { # fetch_state <tar> <anchor directory> <spare bytes wanted>
+    "$D/image-state-fetch.sh" --src "$SRC" --auth "$AUTH" --out "$V" \
+        --tar "$1" --anchor "$2" --headroom "$3"
 }
 
-if state_tar factory-var.tar var 2147483648; then
-    IMAGE_VAR_DIR="$V/var"
+if dir=$(fetch_state factory-var.tar var 2147483648); then
+    IMAGE_VAR_DIR="$dir"
 else
-    echo "warning: $SRC serves no factory-var.tar."
-    echo "         the commit will carry an empty /var skeleton, and Armada tools' Steam"
-    echo "         repair will have no factory client to export."
+    case $? in
+        1) echo "warning: $SRC serves no factory-var.tar."
+           echo "         the commit will carry an empty /var skeleton, and Armada tools'"
+           echo "         Steam repair will have no factory client to export." ;;
+        *) exit 1 ;;
+    esac
 fi
-if state_tar factory-etc.tar etc 67108864; then
-    FACTORY_ETC_DIR="$V/etc"
+if dir=$(fetch_state factory-etc.tar etc 67108864); then
+    FACTORY_ETC_DIR="$dir"
 else
-    echo "note: $SRC serves no factory-etc.tar. The first deployment works without it;"
-    echo "      a second one fails in the /etc merge unless this root already has /usr/etc."
+    case $? in
+        1) echo "note: $SRC serves no factory-etc.tar. The first deployment works without"
+           echo "      it; a second one fails in the /etc merge unless this root already"
+           echo "      has /usr/etc." ;;
+        *) exit 1 ;;
+    esac
 fi
 
 # boot-method: the file decides whether bootc is allowed to touch the boot image.
