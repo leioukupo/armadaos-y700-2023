@@ -679,9 +679,14 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     # then counts as a dead composed boot. $newest is the deployment this run just
     # built; editing it after checkout is an overlay ostree never verifies, and the
     # next adopt/checkpoint rewrites it from the flat root anyway.
-    roots="$SROOT"
-    [[ -n "${newest:-}" && -d "$newest" ]] && roots="$SROOT $newest"
-    for root in $roots; do        # libostree marks a deployment's top-level directory immutable (the same
+    # A list, not a string: --sysroot / leaves SROOT empty on purpose (so paths never
+    # print as //), and a space-joined list loses that empty element to word splitting.
+    # On HA1WZJJ5 that meant the physical root was skipped entirely - no /init, no
+    # stage-1 runtime - while every per-root check still passed because they only ever
+    # saw the deployment.
+    roots=("$SROOT")
+    [[ -n "${newest:-}" && -d "$newest" ]] && roots+=("$newest")
+    for root in "${roots[@]}"; do        # libostree marks a deployment's top-level directory immutable (the same
         # reason `ostree admin unlock` exists), so creating /init inside the tree
         # this run just checked out fails with EPERM: install aborts, adopt exits
         # non-zero and the marker never appears. Drop the flag for the duration of
@@ -720,7 +725,7 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     # live in /etc/systemd/system (which is shared with the physical root). Install
     # the unit where the deployment cannot hide it, then prove every piece is
     # executable before anyone is told the composed root is available.
-    for root in $roots; do
+    for root in "${roots[@]}"; do
         unit="$root/usr/lib/systemd/system/armada-ostree-confirm.service"
         [[ -f "$here/armada-ostree-confirm.service" ]] || die "missing armada-ostree-confirm.service next to $0"
         # Not every root has a /usr/lib/systemd/system yet (a fresh adopt on a flat
@@ -728,7 +733,7 @@ if [[ "$STAGE1_MODE" != skip ]]; then
         run mkdir -p "$(dirname "$unit")"
         run install -m 0644 "$here/armada-ostree-confirm.service" "$unit"
     done
-    for root in $roots; do
+    for root in "${roots[@]}"; do
         files=("$root/usr/lib/armada/armada-ostree-stage1.sh" \
                "$root/usr/lib/armada/armada-ostree-confirm.sh" \
                "$root/usr/lib/armada/armada-ostree-bootlink.sh")
@@ -737,7 +742,20 @@ if [[ "$STAGE1_MODE" != skip ]]; then
             [[ -x "$f" ]] || die "stage-1 file is not executable: $f"
         done
     done
-    echo "stage-1 files installed and verified executable in:$roots"
+    shown=()
+    for root in "${roots[@]}"; do
+        [[ -n "$root" ]] && shown+=("$root") || shown+=("/")
+    done
+    echo "stage-1 files installed and verified executable in:${shown[*]}"
+    # And say the two things that actually gate the boot, by name, instead of trusting
+    # the list that produced them: the payload initramfs picks the root's init from
+    # /init, and /init is only a launcher if the stage-1 runtime is beside it.
+    if [[ $DRY_RUN -eq 0 ]]; then
+        [[ -x "${SROOT}/init" ]] || \
+            die "stage-1 installed but ${SROOT}/init is missing or not executable"
+        [[ -x "${SROOT}/usr/lib/armada/armada-ostree-stage1.sh" ]] || \
+            die "stage-1 installed but ${SROOT}/usr/lib/armada/armada-ostree-stage1.sh is missing or not executable"
+    fi
     marker="$SROOT/etc/armada/ostree-boot"
     if [[ -e "$marker" ]]; then
         echo "note: keeping existing $marker ($(cat "$marker" 2>/dev/null))"
