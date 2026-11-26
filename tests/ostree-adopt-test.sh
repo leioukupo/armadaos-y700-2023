@@ -38,6 +38,27 @@ check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 for tool in ostree losetup mkfs.ext4 findmnt unshare; do
     command -v "$tool" >/dev/null || { echo "SKIP: $tool is not installed"; exit 0; }
 done
+# ---------------------------------------------------------------------------
+# The reference has to be accepted before anything is written.  It must cover the
+# registry the image is actually published to, which carries a port:
+# 192.168.31.4:5000/armada:<tag>.  The first version of the pattern excluded ':'
+# from the host segment, so the adoption on the tablet died with "unsupported
+# image reference" before doing anything (PROGRESS A207).
+# ---------------------------------------------------------------------------
+IMAGE_REF_RE=$(sed -n "s/^IMAGE_REF_RE='''\(.*\)'''\$/\1/p" "$ADOPT")
+[ -n "$IMAGE_REF_RE" ] || fail "cannot read IMAGE_REF_RE out of $ADOPT"
+for ref in \
+    "ostree-unverified-image:docker://192.168.31.4:5000/armada:20261126.5f1e50c" \
+    "ostree-unverified-registry:192.168.31.4:5000/armada:stable" \
+    "ostree-image-signed:docker://ghcr.io/mydanyi/armadaos-freedom:stable"; do
+    if [[ $ref =~ $IMAGE_REF_RE ]]; then ok "image reference accepted: $ref"; else fail "image reference rejected: $ref"; fi
+done
+for ref in "ostree-unverified-image:docker://armada" \
+           "ostree-unverified-image:docker://192.168.31.4:5000/armada:bad tag" \
+           "http://192.168.31.4:5000/armada:stable" \
+           "ostree-unverified-image:docker://192.168.31.4:5000/"; do
+    if [[ $ref =~ $IMAGE_REF_RE ]]; then fail "bad image reference accepted: $ref"; else ok "bad image reference rejected: $ref"; fi
+done
 [[ $EUID -eq 0 ]] || { echo "SKIP: needs root to mount a loop image"; exit 0; }
 LOOP=$(losetup -f 2>/dev/null) || true
 [[ -n "${LOOP:-}" ]] || { echo "SKIP: no free loop device"; exit 0; }

@@ -47,7 +47,7 @@ BASE_LAYER=""
 ORIGIN_FILE=""
 # Transports bootc writes plus the unverified forms libostree tolerates. A tag
 # is required: the digest is what an update resolves, never what a channel says.
-IMAGE_REF_RE='''^(ostree-image-signed:docker://|ostree-unverified-image:docker://|ostree-unverified-registry:docker://|ostree-unverified-registry:|docker://)[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+:[A-Za-z0-9._-]+$'''
+IMAGE_REF_RE='''^(ostree-image-signed:docker://|ostree-unverified-image:docker://|ostree-unverified-registry:docker://|ostree-unverified-registry:|docker://)[A-Za-z0-9._-]+(:[0-9]{2,5})?(/[A-Za-z0-9._-]+)+:[A-Za-z0-9._-]+$'''
 declare -a EXTRA_KARGS=()
 
 die() { echo "armada-ostree-adopt: $*" >&2; exit 1; }
