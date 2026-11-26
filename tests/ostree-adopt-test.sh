@@ -503,6 +503,26 @@ else
     echo "note:   tar and sha256sum are missing; image-backed checks skipped"
 fi
 
+# ---- a repo with no deploy skeleton: the state HA1WZJJ5 was really in --------
+# The aborted first attempt on the tablet left /ostree/repo (config plus objects) and
+# no ostree/deploy, which is the one shape libostree 2026.4 refuses to work on:
+# "error: loading sysroot: fstatat(ostree/deploy)". That is what killed the first real
+# adoption run, after the dry run had passed.
+chattr -R -i "$MNT/ostree/deploy" 2>/dev/null || true
+rm -rf "$MNT/ostree/deploy"
+check "the sysroot was knocked back to repo-without-deploy" \
+    "[ -f $MNT/ostree/repo/config ] && [ ! -d $MNT/ostree/deploy ]"
+"$ADOPT" --sysroot="$MNT" --min-free-gib=1 --root-karg=root=PARTLABEL=y700root-ufs \
+    > /tmp/armada-adopt-skeleton.$$.txt 2>&1
+check "adopt rebuilds the sysroot over an existing repo" "[ $? -eq 0 ]"
+check "the stateroot came back" "[ -d $MNT/ostree/deploy/default/deploy ]"
+check "and a deployment exists again" \
+    "ls $MNT/ostree/deploy/default/deploy/*.0 >/dev/null 2>&1"
+check "the re-run still armed stage-1 in every root" \
+    "[ -x $MNT/init ] && [ -x $MNT/usr/lib/armada/armada-ostree-stage1.sh ]"
+sed -n '/^== ostree admin status/,$p' /tmp/armada-adopt-skeleton.$$.txt | sed -n 's/^/  | skeleton /p' | head -12
+rm -f /tmp/armada-adopt-skeleton.$$.txt
+
 # ---- a dry run must not change an existing sysroot --------------------------
 ostree admin --sysroot="$MNT" status > /tmp/armada-adopt-before.$$.txt 2>&1
 "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --root-karg=root=PARTLABEL=y700root-ufs --dry-run \

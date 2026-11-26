@@ -177,8 +177,21 @@ if [[ ! -f "$REPO/config" ]]; then
         run ostree init --repo="$REPO"
     fi
 fi
+# The deploy skeleton has to exist before libostree will look at the sysroot at all.
+# HA1WZJJ5 met exactly this: the aborted first attempt left /ostree/repo behind (config
+# plus 2.1 GB of objects) with no ostree/deploy, and libostree 2026.4 then answers
+# "error: loading sysroot: fstatat(ostree/deploy): No such file or directory" for
+# `ostree admin status` *and* for `ostree admin os-init`, so os-init cannot be the call
+# that creates the tree it insists on having. Make the skeleton, then let os-init add
+# the stateroot; if that still fails, build the stateroot the same way the fresh-repo
+# path above does.
+run mkdir -p "$SROOT/ostree/deploy"
 if [[ ! -d "$DEPLOY_DIR" ]]; then
-    run ostree admin --sysroot="$SYSROOT" os-init "$STATEROOT"
+    run ostree admin --sysroot="$SYSROOT" os-init "$STATEROOT" || \
+        echo "note: os-init did not finish; building the stateroot directly"
+    if [[ $DRY_RUN -eq 0 && ! -d "$DEPLOY_DIR" ]]; then
+        run mkdir -p "$DEPLOY_DIR/var" "$DEPLOY_DIR/deploy" "$DEPLOY_DIR/backing"
+    fi
 fi
 run mkdir -p "$DEPLOY_DIR/var" "$DEPLOY_DIR/deploy"
 [[ $DRY_RUN -eq 1 || -f "$REPO/config" ]] || die "no ostree repo at $REPO"
