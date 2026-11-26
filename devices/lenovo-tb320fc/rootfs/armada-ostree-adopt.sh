@@ -640,6 +640,15 @@ if [[ -n "$IMAGE_REF" && $DRY_RUN -eq 0 ]]; then
     # ostree-ext keeps a ref under ostree/container/image for every image a repo
     # holds. Writing it here is what keeps the layer refs alive under garbage
     # collection, and it is what lets "ostree container image list" see this one.
+    # The ref names the merge commit of this run, so a second adoption has to move it
+    # rather than stop: ostree refs --create refuses an existing name outright
+    # ("--create specified but ref ostree/container/image/... already exists"), which is
+    # where attempt 6 on HA1WZJJ5 died - after "Bootloader updated; bootversion: boot.1.1,
+    # deployment count change: 1" had already written the deployment it came for.
+    if ostree --repo="$REPO" rev-parse "$IMAGE_STORE_REF" >/dev/null 2>&1; then
+        echo "note: replacing the existing $IMAGE_STORE_REF ref"
+        run ostree --repo="$REPO" refs --delete "$IMAGE_STORE_REF"
+    fi
     run ostree --repo="$REPO" refs --create="$IMAGE_STORE_REF" "$commit"
 fi
 

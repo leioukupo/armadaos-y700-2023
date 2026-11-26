@@ -492,6 +492,18 @@ if command -v tar >/dev/null && command -v sha256sum >/dev/null; then
         "ostree --repo=$MNT/ostree/repo rev-parse ostree/container/blob/sha256_3A_$layer_digest >/dev/null"
     check "image ref recorded the way ostree-ext names it" \
         "ostree --repo=$MNT/ostree/repo rev-parse ostree/container/image/docker_3A__2F__2F_ghcr_2E_io/mydanyi/armadaos-freedom_3A_stable >/dev/null"
+    # A second adoption with the same reference has to work: the image ref already exists
+    # by then, and refusing it stops a run that has already written its deployment.
+    "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --stage1 skip --from deployment \
+        --root-karg=root=PARTLABEL=y700root-ufs \
+        --image-ref=ostree-unverified-image:docker://ghcr.io/mydanyi/armadaos-freedom:stable \
+        --image-meta="$meta_dir" --base-layer="$layer_tar" \
+        > /tmp/armada-adopt-image2.$$.txt 2>&1
+    check "the same image reference can be adopted twice" "[ $? -eq 0 ]"
+    check "and the ref points at the newest merge commit" \
+        "ostree --repo=$MNT/ostree/repo rev-parse ostree/container/image/docker_3A__2F__2F_ghcr_2E_io/mydanyi/armadaos-freedom_3A_stable >/dev/null"
+    rm -f /tmp/armada-adopt-image2.$$.txt
+
     if [[ $drift_written -eq 1 ]]; then
         check "the running deployment is the tree that was committed" \
             "[ -f $image_new/usr/drift-marker ] && [ ! -e $MNT/usr/drift-marker ]"
