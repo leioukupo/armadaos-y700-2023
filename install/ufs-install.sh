@@ -54,7 +54,12 @@ PY
 }
 
 log() { echo "[ufs-install $(date +%H:%M:%S)] $*"; }
-E() { timeout 3000 $EDL "$@"; }
+# A root write is tens of GiB over USB; the default 3000 s covers the small writes, and the
+# big one gets its own budget so a slow link cannot time out mid-filesystem.
+E_TIMEOUT=${E_TIMEOUT:-3000}
+W_TIMEOUT=${W_TIMEOUT:-14400}
+E() { timeout "$E_TIMEOUT" $EDL "$@"; }
+EW() { timeout "$W_TIMEOUT" $EDL "$@"; }
 # Read a window back off the device and compare it with the same window of the source file.
 # <base_lba> is where the file begins on the device, so the dd skip stays file-relative.
 verify_window() { # verify_window <device_lba> <sectors> <lun> <file> <base_lba>
@@ -141,7 +146,7 @@ if [ -n "$ROOT_IMG" ]; then
             log "  ignoring $(basename "$ROOT_IMG.e2") ($((e2_alloc / 2**20)) MiB allocated): metadata only, the image holds $((img_alloc / 2**20)) MiB"
         fi
     fi
-    E ws "$LR_LBA" "$src" --lun=0 2>&1 | tail -1 | sed 's/^/  /'
+    EW ws "$LR_LBA" "$src" --lun=0 2>&1 | tail -1 | sed 's/^/  /'
     verify_sample "$LR_LBA" "$LR_SECTORS" 0 "$src" || exit 1
     # The boot payload addresses this filesystem by UUID or PARTLABEL: print both so the
     # payload blob can be checked against them (a mismatch shows up as "boot straight back
