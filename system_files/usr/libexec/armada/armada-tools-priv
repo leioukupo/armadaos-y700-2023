@@ -7,6 +7,12 @@ import sys
 sys.path.insert(0, "/usr/lib/armada")
 import armada_os
 
+# The factory Steam client the image ships (build_files/30-install-steam-session.sh
+# unpacks it there). Steam repair exports it out of the booted deployment's commit, so it
+# is image content and the commit has to carry it: an adoption that staged only /usr
+# leaves an empty /var skeleton and this export has nothing to read.
+FACTORY_STEAM_SUBPATH = "/var/home/armada/.local/share/Steam"
+
 
 def export_steam():
     import gi
@@ -24,10 +30,25 @@ def export_steam():
     _, _, state = repo.load_commit(checksum)
     if state:
         raise RuntimeError("The booted deployment's commit is incomplete")
+    repo_path = os.path.realpath(repo.get_path().get_path())
+    # Ask before streaming. libostree's own message for a missing subtree is
+    # "No such file or directory: /var/home/armada", which reads like the user's home
+    # went missing, and ostree export still writes an empty archive before it exits 1 -
+    # the repair job then fails on a tar it cannot read instead of on the real cause.
+    probe = subprocess.run(
+        ["/usr/bin/ostree", "ls", f"--repo={repo_path}", checksum, FACTORY_STEAM_SUBPATH],
+        check=False, capture_output=True, text=True)
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout).strip() or "not present in the commit"
+        raise RuntimeError(
+            f"The booted image carries no factory Steam under {FACTORY_STEAM_SUBPATH}"
+            f" (commit {checksum[:12]}): {detail}. This deployment was adopted from a"
+            " flat root without the image's /var; re-run the adoption with --image-var"
+            " pointing at that tree.")
     print(f"Factory Steam source: {checksum}", file=sys.stderr, flush=True)
     subprocess.run([
-        "/usr/bin/ostree", "export", f"--repo={os.path.realpath(repo.get_path().get_path())}",
-        "--no-xattrs", "--subpath=/var/home/armada/.local/share/Steam", checksum,
+        "/usr/bin/ostree", "export", f"--repo={repo_path}",
+        "--no-xattrs", f"--subpath={FACTORY_STEAM_SUBPATH}", checksum,
     ], check=True)
 
 

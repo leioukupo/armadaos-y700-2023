@@ -144,27 +144,49 @@ class ToolsTests(unittest.TestCase):
         self.addCleanup(os.close, repo_fd)
         repo.get_path.return_value.get_path.return_value = f"/proc/self/fd/{repo_fd}"
         sysroot.lock.side_effect = OSError("Read-only file system")
-        for failure in (None, "missing", "incomplete", "export"):
+        export_call = [
+            "/usr/bin/ostree", "export", f"--repo={self.home.resolve()}",
+            "--no-xattrs", f"--subpath={bridge.FACTORY_STEAM_SUBPATH}", "b" * 64,
+        ]
+        for failure in (None, "missing", "incomplete", "probe", "export"):
+            calls = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd[1] == "ls":
+                    if failure == "probe":
+                        return subprocess.CompletedProcess(
+                            cmd, 1, stdout="", stderr="error: No such file or directory: /var/home/armada")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="d00755 0 0 0 Steam\n", stderr="")
+                if failure == "export":
+                    raise subprocess.CalledProcessError(1, cmd)
+                return subprocess.CompletedProcess(cmd, 0)
+
             with self.subTest(failure=failure), \
                     patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
-                    patch.object(bridge.subprocess, "run") as run, \
+                    patch.object(bridge.subprocess, "run", side_effect=fake_run), \
                     patch.object(sys, "stderr", io.StringIO()):
                 sysroot.reset_mock()
                 sysroot.get_booted_deployment.return_value = None if failure == "missing" else Mock(get_csum=Mock(return_value="b" * 64))
                 repo.load_commit.return_value = (True, None, 1 if failure == "incomplete" else 0)
-                if failure == "export":
-                    run.side_effect = subprocess.CalledProcessError(1, "ostree")
                 if failure:
-                    with self.assertRaises((RuntimeError, subprocess.CalledProcessError)):
+                    with self.assertRaises((RuntimeError, subprocess.CalledProcessError)) as caught:
                         bridge.export_steam()
+                    if failure == "probe":
+                        # libostree's own message reads as if the user's home is gone. The
+                        # cause is the image: an adopted system whose commit never carried
+                        # /var. Name the image and the flag that fixes it.
+                        message = str(caught.exception)
+                        self.assertIn("no factory Steam", message)
+                        self.assertIn(bridge.FACTORY_STEAM_SUBPATH, message)
+                        self.assertIn("--image-var", message)
                 else:
                     bridge.export_steam()
-                    run.assert_called_once_with([
-                        "/usr/bin/ostree", "export", f"--repo={self.home.resolve()}",
-                        "--no-xattrs", "--subpath=/var/home/armada/.local/share/Steam", "b" * 64,
-                    ], check=True)
+                    self.assertIn(export_call, calls)
                 if failure in {"missing", "incomplete"}:
-                    run.assert_not_called()
+                    self.assertEqual(calls, [])
+                elif failure == "probe":
+                    self.assertEqual([cmd[1] for cmd in calls], ["ls"])
                 sysroot.lock.assert_not_called()
                 sysroot.unlock.assert_not_called()
 

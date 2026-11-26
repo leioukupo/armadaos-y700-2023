@@ -39,6 +39,38 @@ get imgmeta/config.json imgmeta/config.json
 get base-layer.tar base-layer.tar
 ls -l base-layer.tar imgmeta/manifest.json imgmeta/config.json
 
+# The image's /var, in its own tar. It is not machine state: the image ships the factory
+# Steam client under /var/home/armada/.local/share/Steam (build_files
+# /30-install-steam-session.sh) and Armada tools' Steam repair exports exactly that path
+# out of the booted commit. Without it here, the adoption produces a commit whose /var is
+# an empty skeleton and repair fails with "No such file or directory: /var/home/armada".
+# Build it on the machine that holds the image:
+#   m=$(podman image mount localhost/armada:<tag>-rootfs)
+#   tar -C "$m" -cf factory-var.tar var/home var/roothome; podman image unmount ...
+# It is several GB, so it lands on disk under $V - /tmp is tmpfs on this board.
+V=${V:-/var/usrlocal/armada-adopt}
+if curl -fsIL -u "$AUTH" "$SRC/factory-var.tar" >/dev/null 2>&1; then
+    tar_bytes=$(curl -fsIL -u "$AUTH" "$SRC/factory-var.tar" |
+        awk 'BEGIN{IGNORECASE=1} /^content-length:/{v=$2} END{print v+0}')
+    mkdir -p "$V"
+    free_bytes=$(df -B1 --output=avail "$V" | tail -1 | tr -dc '0-9')
+    need=$(( ${tar_bytes:-0} * 2 + 2147483648 ))
+    if [ "$free_bytes" -lt "$need" ]; then
+        echo "not enough room under $V: ${free_bytes} free, needs about ${need}"
+        exit 1
+    fi
+    get factory-var.tar "$V/factory-var.tar"
+    rm -rf "$V/var"
+    tar -xf "$V/factory-var.tar" -C "$V"
+    [ -d "$V/var" ] || { echo "factory-var.tar did not contain a var/ directory"; exit 1; }
+    echo "factory /var unpacked under $V ($(find "$V/var" -mindepth 1 -maxdepth 1 | wc -l) top-level entries)"
+    IMAGE_VAR_DIR="$V/var"
+else
+    echo "warning: $SRC serves no factory-var.tar."
+    echo "         the commit will carry an empty /var skeleton, and Armada tools' Steam"
+    echo "         repair will have no factory client to export."
+fi
+
 # boot-method: the file decides whether bootc is allowed to touch the boot image.
 # none = kernel/DTB/initramfs are written out of band into the raw boot partition.
 mkdir -p /etc/armada
@@ -58,6 +90,9 @@ ARGS=(--sysroot / --from flat --stage1 install
       --image-ref "$IMAGE_REF"
       --image-meta "$D/imgmeta" --base-layer "$D/base-layer.tar"
       --root-karg root=PARTLABEL=linuxroot)
+if [ -n "${IMAGE_VAR_DIR:-}" ]; then
+    ARGS+=(--image-var "$IMAGE_VAR_DIR")
+fi
 
 echo "--- dry run"
 bash armada-ostree-adopt.sh "${ARGS[@]}" --dry-run 2>&1 | tail -40

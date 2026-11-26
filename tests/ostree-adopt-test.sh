@@ -66,11 +66,12 @@ LOOP=$(losetup -f 2>/dev/null) || true
 IMAGE=$(mktemp -u /tmp/armada-adopt-XXXXXX.img)
 MNT=$(mktemp -d /tmp/armada-adopt-XXXXXX)
 FACTORY=$(mktemp -d /tmp/armada-factory-XXXXXX)
+IMAGEVAR=$(mktemp -d /tmp/armada-imagevar-XXXXXX)
 cleanup() {
     for d in dev proc sys; do umount "$MNT/$d" 2>/dev/null; done
     umount -R "$MNT" 2>/dev/null; umount "$MNT" 2>/dev/null
     rmdir /tmp/armada-hold-dev 2>/dev/null
-    losetup -d "$LOOP" 2>/dev/null; rm -rf "$MNT" "$IMAGE" "$FACTORY"
+    losetup -d "$LOOP" 2>/dev/null; rm -rf "$MNT" "$IMAGE" "$FACTORY" "$IMAGEVAR"
 }
 trap cleanup EXIT
 truncate -s 4G "$IMAGE"
@@ -93,6 +94,16 @@ printf 'machine-state\n' > "$MNT"/etc/machine-state
 mkdir -p "$FACTORY/conf.d"
 printf 'tree-config\n' > "$FACTORY/conf.d/armada.conf"
 export ARMADA_OSTREE_FACTORY_ETC="$FACTORY"
+# The image's own /var, kept outside the loop filesystem like the factory config: on a
+# board it arrives as factory-var.tar and is unpacked into its own directory. Only the
+# factory Steam client path matters here, because that is exactly the subtree Armada
+# tools' Steam repair exports out of the booted commit.
+mkdir -p "$IMAGEVAR"/home/armada/.local/share/Steam/steamrtarm64 \
+         "$IMAGEVAR"/home/armada/.local/share/Steam/package
+printf 'FACTORY-STEAM\n' > "$IMAGEVAR"/home/armada/.local/share/Steam/steamrtarm64/steam
+chmod 0755 "$IMAGEVAR"/home/armada/.local/share/Steam/steamrtarm64/steam
+printf 'steam_client_deck_stable,1;2;3\n' > "$IMAGEVAR"/home/armada/.local/share/Steam/package/steam_client_deck_stable.installed
+export ARMADA_OSTREE_IMAGE_VAR="$IMAGEVAR"
 printf 'KERNELPAYLOAD' > "$MNT"/usr/lib/modules/"$KVER"/vmlinuz
 printf 'INITRAMFSPAYLOAD' > "$MNT"/usr/lib/modules/"$KVER"/initramfs.img
 printf 'DTBPAYLOAD' > "$MNT"/usr/lib/modules/"$KVER"/dtb/qcom/sm8475-lenovo-tb320fc.dtb
@@ -170,6 +181,15 @@ check "adopt refuses a tree without a kernel" "grep -q 'no kernel in' <<<\"$out\
 check "and it stops before staging" "! grep -q 'staged:' <<<\"$out\""
 rm -rf "$no_kernel"
 
+# ---- --image-var cannot be the running root's own /var ----------------------
+# Passing the live /var would freeze machine state (the user's real 3+ GB Steam install,
+# caches, logs) into a tree that ostree then has to diff forever. It is the one mistake
+# the flag invites, so it is refused before anything else happens.
+out=$("$ADOPT" --sysroot="$MNT" --min-free-gib=1 --dry-run --image-var="$MNT/var" 2>&1)
+check "adopt refuses --image-var pointing at the live /var" "grep -q 'own /var; machine state' <<<\"$out\""
+out=$("$ADOPT" --sysroot="$MNT" --min-free-gib=1 --dry-run --image-var="$MNT/var/nope" 2>&1)
+check "adopt refuses an --image-var that does not exist" "grep -q 'no such directory' <<<\"$out\""
+
 "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --enable-stage1 \
     --root-karg=root=PARTLABEL=y700root-ufs
 check "adopt exits 0" "[ $? -eq 0 ]"
@@ -189,6 +209,23 @@ check "the tree carries no stage-1 launcher" "[ ! -e $deploy/init ]"
 check "the tree carries no boot payload" "[ -d $deploy/boot ] && [ ! -e $deploy/boot/ostree ] && [ ! -e $deploy/boot/loader ]"
 check "stateroot /var seeded"       "[ -f $MNT/ostree/deploy/default/var/home/armada/hello.txt ]"
 check "stateroot /var shares inodes" "[ \$(stat -c %i $MNT/var/home/armada/hello.txt) = \$(stat -c %i $MNT/ostree/deploy/default/var/home/armada/hello.txt) ]"
+# The image's factory Steam has to ride into the tree: that path is what
+# armada-tools-priv exports for "repair Steam", and an empty /var skeleton is what made
+# the repair fail on HA1WZJJ5 with "No such file or directory: /var/home/armada".
+check "the image /var rode into the tree" \
+    "[ -f $deploy/var/home/armada/.local/share/Steam/steamrtarm64/steam ]"
+check "the image /var kept its mode" \
+    "[ -x $deploy/var/home/armada/.local/share/Steam/steamrtarm64/steam ]"
+check "the machine's own /var stayed out of the tree" \
+    "[ ! -e $deploy/var/home/armada/hello.txt ] && [ ! -e $deploy/var/roothome/secret.txt ]"
+# Deploying a tree that carries /var content must not rewrite the machine's files: the
+# stateroot /var was seeded with hard links to them, so an in-place overwrite would edit
+# the live data through the shared inode.
+check "the deploy did not rewrite the machine's own file" "grep -q user-file $MNT/var/home/armada/hello.txt"
+if command -v tar >/dev/null; then
+    check "the commit exports the factory client the way repair does" \
+        "ostree --repo=$MNT/ostree/repo export --no-xattrs --subpath=/var/home/armada/.local/share/Steam \$(basename $deploy .0) 2>/dev/null | tar tf - 2>/dev/null | grep -q steam"
+fi
 check "flat root still real"        "[ -d $MNT/usr/bin ] && [ ! -L $MNT/usr ] && [ -f $MNT/etc/machine-state ]"
 check "staging area removed"        "[ ! -e $MNT/.ostree-stage ]"
 ostree fsck --repo="$MNT/ostree/repo" >/dev/null 2>&1 && ok "ostree fsck clean" || fail "ostree fsck"

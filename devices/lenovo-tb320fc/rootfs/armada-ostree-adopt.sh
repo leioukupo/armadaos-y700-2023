@@ -18,7 +18,17 @@
 #                          [--from flat|deployment] [--version STAMP]
 #                          [--root-karg KARG] [--karg KARG]... [--force]
 #                          [--image-ref REF --image-meta DIR [--base-layer TAR]]
-#                          [--factory-etc DIR]
+#                          [--factory-etc DIR] [--image-var DIR]
+#
+# --image-var stages the image's own /var content into the commit tree. That content is
+# not runtime state: build_files/30-install-steam-session.sh unpacks the factory Steam
+# client into /var/home/armada/.local/share/Steam, and Armada tools' Steam repair reads
+# it back out of the booted commit with
+#   ostree export --subpath=/var/home/armada/.local/share/Steam <booted commit>
+# A commit without it makes that repair die on libostree's raw "No such file or
+# directory: /var/home/armada", which reads like the user's home went missing. A bootc
+# install from an image carries this content, so an adoption that skips it does not
+# produce the same system.
 #
 # --image-ref writes the deployment the way bootc writes its own, which is the
 # only way bootc manages it: the origin carries container-image-reference (and
@@ -48,6 +58,9 @@ BASE_LAYER=""
 # The image's factory config tree (its /usr/etc). Also readable from the environment so
 # a caller that runs adopt several times does not repeat it.
 FACTORY_ETC="${ARMADA_OSTREE_FACTORY_ETC:-}"
+# The image's /var content (the factory Steam bootstrap). Same reasoning as --factory-etc:
+# it belongs to the image, so it has to come from the image and never from the running root.
+IMAGE_VAR="${ARMADA_OSTREE_IMAGE_VAR:-}"
 ORIGIN_FILE=""
 # Transports bootc writes plus the unverified forms libostree tolerates. A tag
 # is required: the digest is what an update resolves, never what a channel says.
@@ -92,7 +105,10 @@ while [[ $# -gt 0 ]]; do
         --base-layer=*) BASE_LAYER="${1#*=}"; shift ;;
         --factory-etc)  FACTORY_ETC="${2:?}"; shift 2 ;;
         --factory-etc=*) FACTORY_ETC="${1#*=}"; shift ;;
-        -h|--help)      sed -n '2,29p' "$0"; exit 0 ;;
+        --image-var)    IMAGE_VAR="${2:?}"; shift 2 ;;
+        --image-var=*)  IMAGE_VAR="${1#*=}"; shift ;;
+        -h|--help)      # the header block, however long it has grown
+                        sed -n '2,/^set -euo pipefail/{/^set/!p}' "$0"; exit 0 ;;
         *)              die "unknown argument: $1" ;;
     esac
 done
@@ -110,6 +126,16 @@ fi
 SYSROOT="${SYSROOT%/}"
 [[ -n "$SYSROOT" ]] || SYSROOT=/
 SROOT="${SYSROOT%/}"   # "" for "/" so paths never print as "//"
+# Checked before anything is staged: the running root's own /var is the one thing
+# --image-var must never be pointed at, and a dry run should answer that cheap question
+# before it walks the whole sysroot.
+if [[ -n "$IMAGE_VAR" ]]; then
+    [[ -d "$IMAGE_VAR" ]] || die "--image-var: no such directory $IMAGE_VAR"
+    image_var_id=$(stat -c '%d:%i' "$IMAGE_VAR" 2>/dev/null || echo none)
+    live_var_id=$(stat -c '%d:%i' "$SROOT/var" 2>/dev/null || echo none)
+    [[ "$image_var_id" != "$live_var_id" ]] || \
+        die "--image-var: $IMAGE_VAR is this root's own /var; machine state must stay out of the commit"
+fi
 STAGE="$SROOT/.ostree-stage"
 cleanup_stage() {
     # A failed deploy must not leave the staging tree around; dry runs and
@@ -309,6 +335,35 @@ for skeleton in home roothome srv mnt opt tmp; do
     run mkdir -p "$STAGE/var/$skeleton"
 done
 run chmod 1777 "$STAGE/var/tmp"
+# The image's own /var belongs in the commit (see the header): it is what Steam repair
+# exports from the booted commit. The running root's /var must never be passed here -
+# that is machine state, and freezing it into a tree would both break the /etc-style
+# diff and put every runtime change in the OS's hands.
+if [[ -n "$IMAGE_VAR" ]]; then
+    image_var_id=$(stat -c '%d:%i' "$IMAGE_VAR" 2>/dev/null || echo none)
+    live_var_id=$(stat -c '%d:%i' "$SROOT/var" 2>/dev/null || echo none)
+    [[ "$image_var_id" != "$live_var_id" ]] || \
+        die "--image-var: $IMAGE_VAR is this root's own /var; machine state must stay out of the commit"
+    if ! run cp -alx "$IMAGE_VAR/." "$STAGE/var/"; then
+        # Different filesystem (the tar was unpacked somewhere else) or a bind mount in
+        # the way: a copy costs a few GB once and gives the same tree.
+        if [[ $DRY_RUN -eq 0 ]]; then
+            echo "note: $IMAGE_VAR is not hard-linkable here, copying it"
+            run cp -ax "$IMAGE_VAR/." "$STAGE/var/"
+        fi
+    fi
+    n_imgvar=$(find "$IMAGE_VAR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l || true)
+    if [[ $DRY_RUN -eq 0 ]]; then
+        n_stagevar=$(find "$STAGE/var" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l || true)
+        [[ "$n_stagevar" -ge "$n_imgvar" ]] || \
+            die "--image-var: only $n_stagevar of $n_imgvar top-level entries reached $STAGE/var"
+    fi
+    echo "image /var staged from $IMAGE_VAR (top-level=$n_imgvar)"
+else
+    echo "note: --image-var was not given, so the tree carries an empty /var skeleton."
+    echo "      Armada tools' Steam repair exports /var/home/armada/.local/share/Steam out"
+    echo "      of the booted commit, and with no such content there it has nothing to read."
+fi
 # The mount points that a root switch moves mounts onto, plus the standard
 # `ostree -> sysroot/ostree` link, have to ride in the commit. Measured on
 # libostree 2024.5 and on the board's 2026.x: `ostree admin deploy` creates
