@@ -34,12 +34,18 @@
 #                       the composed root kept off, for a first bring-up)
 #   --check-only        skip the adoption and run only the post-adoption gates, against an
 #                       image that already carries /ostree/repo (cheap re-verification)
+#   --no-shrink         keep the filesystem at the full partition size. Only do that when the
+#                       image will not go over firehose: the used blocks are scattered out to
+#                       the last block group, so flashing an unshrunk root means 322 GiB.
 #   --dry-run           ask adopt.sh to print what it would commit
 #   --mnt DIR           mount point (default /mnt/ufs-ostree-first)
 #
-# Run on the build machine, as root, against the image build-ufs-root.sh produced (before
-# it is pushed to the tablet). The .e2 dump and its sha256 are regenerated afterwards, so
-# what gets written to linuxroot is this adopted image.
+# The last step makes the image flashable: the filesystem is shrunk to what it holds
+# (+ SHRINK_MARGIN GiB) and the tablet grows it back to the partition on its first boot
+# (armada-growfs.service, armed by /etc/armada/need-growfs). Firehose streams bytes, not
+# extents, so without the shrink the install pushes hundreds of GiB of holes.
+#
+# Run on the build machine, as root, against the image build-ufs-root.sh produced.
 set -euo pipefail
 
 ROOTFS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +58,10 @@ FARM_GLOB_TPL='ostree/boot.@BOOTV@*/@STATEROOT@'
 
 IMG=""; BUNDLE=""; IMAGE_REF=""; IMAGE_META=""; BASE_LAYER=""; FACTORY_ETC=""; IMAGE_VAR=""
 STATEROOT=default; ROOT_KARG=root=PARTLABEL=linuxroot; MNT=/mnt/ufs-ostree-first
-DRY=0; DISARM=0; CHECK=0; LABEL=y700root-ufs
+DRY=0; DISARM=0; CHECK=0; NOSHRINK=0; LABEL=y700root-ufs
+# Free space left in the flashed image, in GiB: room for /var writes during the boot that
+# runs armada-growfs.sh, including the boot where that grow might fail.
+SHRINK_MARGIN=${SHRINK_MARGIN:-8}
 
 log() { echo "ostree-first-root: $*"; }
 die() { echo "ostree-first-root: $*" >&2; exit 1; }
@@ -78,7 +87,8 @@ while [[ $# -gt 0 ]]; do
         --disarm)      DISARM=1; shift ;;
         --dry-run)     DRY=1; shift ;;
         --check-only)  CHECK=1; shift ;;
-        -h|--help)     sed -n '3,46p' "$0"; exit 0 ;;
+        --no-shrink)   NOSHRINK=1; shift ;;
+        -h|--help)     sed -n '3,59p' "$0"; exit 0 ;;
         -*)            die "unknown option $1" ;;
         *)             [[ -z "$IMG" ]] || die "only one image at a time"; IMG="$1"; shift ;;
     esac
@@ -131,6 +141,21 @@ trap cleanup EXIT
 [[ -f "$MNT/etc/passwd" ]] || die "$IMG has no /etc/passwd - this is not a root filesystem"
 [[ -x "$MNT/usr/lib/armada/armada-ostree-stage1.sh" ]] ||
     die "$IMG was built without the stage-1 runtime in it; build it with build-ufs-root.sh"
+# The image is flashed shrunk (see the shrink at the end), so the tablet needs the way back
+# to the full partition baked in. Do it before the adoption commits /usr, so the physical
+# root and the deployment both carry the unit.
+GROW_SH="$ROOTFS_DIR/armada-growfs.sh"; GROW_UNIT="$ROOTFS_DIR/armada-growfs.service"
+if [[ "$CHECK" == 0 ]]; then
+    [[ -r "$GROW_SH" && -r "$GROW_UNIT" ]] || die "the repo is missing $GROW_SH or $GROW_UNIT"
+    install -d -m 0755 "$MNT/usr/lib/armada"
+    install -m 0755 "$GROW_SH" "$MNT/usr/lib/armada/armada-growfs.sh"
+    install -m 0644 "$GROW_UNIT" "$MNT/usr/lib/systemd/system/armada-growfs.service"
+    install -d -m 0755 "$MNT/usr/lib/systemd/system/sysinit.target.wants"
+    ln -sf ../armada-growfs.service "$MNT/usr/lib/systemd/system/sysinit.target.wants/armada-growfs.service"
+    install -d -m 0755 "$MNT/etc/armada"
+    : > "$MNT/etc/armada/need-growfs"
+    log "baked armada-growfs.service and armed it with /etc/armada/need-growfs"
+fi
 if [[ "$CHECK" == 1 ]]; then
     [[ -d "$MNT/ostree/repo" ]] || die "$IMG has no /ostree/repo - it was never adopted, --check-only needs an adopted image"
 elif [[ -d "$MNT/ostree/repo" ]]; then
@@ -185,6 +210,8 @@ note "the origin is the container reference" \
      "grep -q 'container-image-reference' \"$MNT\"/ostree/deploy/$STATEROOT/deploy/*.origin"
 note "/init is the stage-1 launcher" "[[ -x $MNT/init ]]"
 note "stage-1 runtime is on the physical root" "[[ -x $MNT/usr/lib/armada/armada-ostree-stage1.sh ]]"
+note "growfs unit is installed and wanted by sysinit.target" \
+     "[[ -x $MNT/usr/lib/armada/armada-growfs.sh ]] && [[ -L $MNT/usr/lib/systemd/system/sysinit.target.wants/armada-growfs.service ]]"
 note "confirm unit is wanted by basic.target" \
      "ls \"$MNT\"/ostree/deploy/$STATEROOT/deploy/*/etc/systemd/system/basic.target.wants/armada-ostree-confirm.service >/dev/null 2>&1"
 marker=$(tr -d ' \t\r\n' < "$MNT/etc/armada/ostree-boot" 2>/dev/null)
@@ -275,15 +302,35 @@ trap - EXIT
 e2fsck -f -y "$IMG_ABS" > /dev/null || die "e2fsck after the adoption failed"
 tune2fs -L "$LABEL" "$IMG_ABS" > /dev/null || log "warning: could not re-apply label $LABEL"
 
-# The install pushes the e2image restore file, not the 345 GB sparse image: metadata plus
-# allocated blocks only (PROGRESS A204, and build-ufs-root.sh's closing comment).
-if command -v e2image >/dev/null; then
-    rm -f "${IMG_ABS}.e2"
-    e2image -r "$IMG_ABS" "${IMG_ABS}.e2"
-    sha256sum "$IMG_ABS" "${IMG_ABS}.e2" | tee "${IMG_ABS}.sha256"
-    log "dump: $(du -h "${IMG_ABS}.e2" | cut -f1)"
-else
-    log "warning: no e2image - write $IMG_ABS to linuxroot yourself"
+# ---- make the image flashable ------------------------------------------------
+# edl.py streams os.stat(file).st_size bytes and knows nothing about holes, and ext4 keeps an
+# inode table at the start of every flex group, so a full-size root means streaming all
+# 322 GiB of it. An e2image -r dump is not an escape: it is sparse over the same span and
+# leaves the data blocks out, so a board flashed from it boots into a root of zeros. Shrink
+# the filesystem instead - the used bytes become contiguous - and let armada-growfs.sh grow
+# it back on the tablet's first boot.
+if (( fail == 0 )) && [[ "$CHECK" == 0 && "$NOSHRINK" == 0 ]]; then
+    command -v resize2fs >/dev/null || die "no resize2fs on this machine - pass --no-shrink and accept the slow install"
+    e2fsck -f -y "$IMG_ABS" >/dev/null || die "e2fsck before the shrink failed"
+    bsize=$(dumpe2fs -h "$IMG_ABS" 2>/dev/null | awk '/^Block size:/{print $3}')
+    cur=$(dumpe2fs -h "$IMG_ABS" 2>/dev/null | awk '/^Block count:/{print $3}')
+    min=$(resize2fs -P "$IMG_ABS" 2>/dev/null | awk '/Estimated minimum size of the filesystem/{print $NF}')
+    [[ "$bsize" =~ ^[0-9]+$ && "$cur" =~ ^[0-9]+$ && "$min" =~ ^[0-9]+$ ]] ||
+        die "cannot size $IMG_ABS: block size=$bsize count=$cur minimum=$min"
+    target=$(( min + SHRINK_MARGIN * 2**30 / bsize ))
+    if (( target < cur )); then
+        resize2fs "$IMG_ABS" "$target" | tail -1 | sed 's/^/  /'
+        e2fsck -f -y "$IMG_ABS" >/dev/null || die "e2fsck after the shrink failed"
+        tune2fs -L "$LABEL" "$IMG_ABS" >/dev/null || log "warning: could not re-apply label $LABEL"
+        log "shrunk $cur -> $(dumpe2fs -h "$IMG_ABS" | awk '/^Block count:/{print $3}') blocks;" \
+            "the install streams $(( $(stat -c %s "$IMG_ABS") / 2**30 )) GiB"
+        log "the tablet grows it back on first boot (marker /etc/armada/need-growfs)"
+        # A relocation that broke the deployment has to fail here, not on the tablet.
+        log "re-running the gates against the shrunk image"
+        "$0" "$IMG_ABS" --check-only --stateroot "$STATEROOT" --label "$LABEL" --mnt "$MNT-recheck"
+    else
+        log "note: nothing to shrink (the filesystem already holds $cur blocks)"
+    fi
 fi
 log "adopt log: ${IMG_ABS}.adopt.log"
 df -h "$IMG_ABS" 2>/dev/null | tail -1 | sed 's/^/  /' || true

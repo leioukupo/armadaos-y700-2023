@@ -19,6 +19,8 @@
 | **没有任何 ABL 日志通道**（logfs 空 FAT12、logdump 全零、qmcs 空、spunvm 全零、uefivarstore 里没有 boot-next） | 起不来只能靠屏幕 + 排除法，见 §6 |
 | GPT 属性位：Flags 的 **bit48-51=priority、bit52-55=retry、bit55=dont-boot-again** | 槽位状态是**磁盘上的 GPT 标志**，不是 misc |
 | firehose 会话空闲几分钟就掉，掉之后 `rs` 会**静默不产出文件** | 分段做，每段先确认 `Mode detected: firehose`，再查文件大小 |
+| `edl.py ws` 按 `os.stat(file).st_size` **逐字节流**，不认识 hole；而 ext4 每个 flex group 开头都有 inode table，322 GiB 的根只用 14 GiB 也一路写到最后一个 group | 直接刷稀疏镜像 = 几小时零字节。**先把文件系统缩到装得下（`ostree-first-root.sh` 末尾 resize2fs），上板第一次启动由 `armada-growfs.service` 在线长回整分区** |
+| `e2image -r` 的 dump 也是稀疏到整个分区，而且**不含数据块** | 它既不小（照样 322 GiB 的 st_size）也不能刷：文件内容读回来全是零。`ufs-install.sh` 会显式忽略它 |
 
 ## 1. 目录内容
 
@@ -29,7 +31,7 @@
 | `edl-restore.sh` | 构建机 | 全量回安卓：备份在机 GPT → `rom-flash.sh` → 清 DDR 训练缓存 → **用在机 GPT 重建 stock LUN0** → 校验 → **擦 userdata/metadata/misc** → reset |
 | `gpt-stock.py` | 构建机 | 把在机 dump 改成 stock 形状：删 `linuxroot`、`userdata` 顶到 last usable LBA，重算 entriesCRC / headerCRC |
 | `gpt-slice-pin.py` | 构建机 | 重装前的切分（userdata 缩到 128 GiB、腾出 `linuxroot`）+ 把 LUN4 所有 `_a/_b` 对的属性钉到目标槽（**不要用 firehose `setactiveslot`**，它把 dont-boot-again 写到另一侧） |
-| `ufs-install.sh` | 构建机 | 一次装完：dump GPT → 切分+钉槽 → 写 GPT → 写 root（只写用到的 LBA，别把 345 GB 稀疏零推过去）→ 写 boot 载荷 → **两处读回 sha256 校验** → 打印 root 的 LABEL/UUID 好和载荷 cmdline 对一遍 |
+| `ufs-install.sh` | 构建机 | 一次装完：dump GPT → 切分+钉槽 → 写 GPT → 写 root（只写到最后一个数据 extent）→ 写 boot 载荷 → 读回校验（boot 全量、root 头尾各 64 MiB）→ 打印 root 的 LABEL/UUID 好和载荷 cmdline 对一遍 |
 
 ## 2. 不通用的输入：怎么提取你自己的
 
@@ -82,7 +84,8 @@ devices/lenovo-tb320fc/rootfs/stage-adopt-bundle.sh <tag> --out /srv/y700/bundle
 # 载荷内核：build-ufs-root 把它放进 /usr/lib/modules/<kver>/vmlinuz，采纳要有它才写得出一致的 BLS
 VMLINUZ_SRC=/srv/y700/a207/boot/vmlinuz-7.3.0-rc6-from-boot_a \
 devices/lenovo-tb320fc/rootfs/build-ufs-root.sh localhost/armada:<tag> /srv/y700/out
-# 4) 离线采纳：让镜像本身第一次启动就落在 composed 根上
+# 4) 离线采纳 + 缩到可刷尺寸：让镜像本身第一次启动就落在 composed 根上
+#    默认 SHRINK_MARGIN=8：缩完留 8 GiB 空闲，够第一次启动写 /var（万一 grow 失败也不堵死）
 devices/lenovo-tb320fc/rootfs/ostree-first-root.sh /srv/y700/out/root-armada!<tag>.img \
     --image-ref ostree-unverified-image:docker://192.168.31.4:5000/armada:<tag> \
     --bundle /srv/y700/bundle
@@ -92,6 +95,8 @@ PIN=a install/ufs-install.sh
 ```
 
 第 4 步之后，**不要再在板上跑 `adopt-run-board.sh`**——那是给"扁平根先装、之后采纳"的旧路径留的。采纳离线做的东西（`/ostree/repo`、deployment、origin 的 `container-image-reference`、BLS `/boot/loader.N/entries/ostree-*.conf`、`/init`、`/etc/armada/ostree-boot=yes`）都在镜像里，第一枪就该是 `COMPOSED root=`。
+
+第 4 步的末尾会把镜像**缩小**（resize2fs）而不是做 sha256：稀疏的 322 GiB 镜像刷下去是几小时的零，缩完只剩二十几 GiB 且连续。缩完它自己会再跑一遍 `--check-only` 复验，绿了才打印 `OSTREE_FIRST_OK`。代价在板上：第一次启动 `armada-growfs.service`（`ConditionPathExists=/etc/armada/need-growfs`）在线 `resize2fs` 长回整个 `linuxroot` 分区，长成功就摘掉 marker，之后永远不再动；长失败也不影响启动，只是根还停在缩小的尺寸。验收时看 `findmnt -no SIZE /` 是不是 ~322 GiB。
 
 起来之后这样验收：
 

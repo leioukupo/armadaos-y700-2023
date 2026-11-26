@@ -5,8 +5,10 @@
 #
 #   ROOT_IMG=… BOOT_IMG=… install/ufs-install.sh            (firehose, board in 9008)
 #
-# Every write is followed by a read-back sha256 comparison, because this board gives no
-# other feedback: there is no ABL log channel and no fastboot fetch (PROGRESS A203/A204).
+# Writes are checked by reading them back, because this board gives no other feedback: there
+# is no ABL log channel and no fastboot fetch (PROGRESS A203/A204). boot is verified in full;
+# the root is verified at both ends of the written range, since reading 30+ GiB back over
+# firehose costs as much as writing it, and a truncated stream is the failure this catches.
 #
 # Inputs that come from THIS device, not from the repo - see README.md:
 #   EDL_ROM / LOADER        the EDL package and its xbl_s_devprg_ns.melf
@@ -33,15 +35,48 @@ PIN=${PIN:-}                        # a|b, empty = do not touch LUN4 flags
 UD_END=${UD_END:-36827047}
 LR_END=${LR_END:-121268218}
 
+# End offset (bytes) of the last non-hole region of a sparse file.
+last_data_extent() { # last_data_extent <file>
+    python3 - "$1" <<'PY'
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+end = off = 0
+while True:
+    try:
+        off = os.lseek(fd, off, os.SEEK_DATA)
+    except OSError:
+        break
+    nxt = os.lseek(fd, off, os.SEEK_HOLE)
+    end = max(end, nxt)
+    off = nxt
+print(end)
+PY
+}
+
 log() { echo "[ufs-install $(date +%H:%M:%S)] $*"; }
 E() { timeout 3000 $EDL "$@"; }
-verify_write() { # verify_write <lba> <sectors> <lun> <file>
-    local lba=$1 sect=$2 lun=$3 file=$4
+# Read a window back off the device and compare it with the same window of the source file.
+# <base_lba> is where the file begins on the device, so the dd skip stays file-relative.
+verify_window() { # verify_window <device_lba> <sectors> <lun> <file> <base_lba>
+    local lba=$1 sect=$2 lun=$3 file=$4 base=$5 a b avail
+    avail=$(( ($(stat -c %s "$file") / 4096) - (lba - base) ))
+    [ "$sect" -gt "$avail" ] && sect=$avail
     E rs "$lba" "$sect" "$WORK/readback.bin" --lun="$lun" > /dev/null 2>&1
-    local a b
     a=$(sha256sum "$WORK/readback.bin" | cut -c1-64)
-    b=$(head -c $((sect * 4096)) "$file" | sha256sum | cut -c1-64)
-    if [ "$a" = "$b" ]; then log "  read-back ok ($a)"; else log "  READ-BACK MISMATCH got=$a want=$b"; return 1; fi
+    b=$(dd if="$file" bs=4096 skip=$((lba - base)) count="$sect" status=none | sha256sum | cut -c1-64)
+    rm -f "$WORK/readback.bin"
+    if [ "$a" = "$b" ]; then log "  read-back ok: lba $lba, $sect sectors ($a)"
+    else log "  READ-BACK MISMATCH at lba $lba got=$a want=$b"; return 1; fi
+}
+# The head window covers the superblock, group 0 and the root inode; the tail window is what
+# a truncated stream would miss. Reading the whole root back costs as much as writing it.
+verify_sample() { # verify_sample <lba> <sectors> <lun> <file>
+    local lba=$1 sect=$2 lun=$3 file=$4 win=16384
+    [ "$sect" -lt "$win" ] && win=$sect
+    verify_window "$lba" "$win" "$lun" "$file" "$lba" || return 1
+    if [ "$sect" -gt "$win" ]; then
+        verify_window $((lba + sect - win)) "$win" "$lun" "$file" "$lba" || return 1
+    fi
 }
 
 mkdir -p "$WORK/gptbak"
@@ -80,19 +115,34 @@ fi
 
 if [ -n "$ROOT_IMG" ]; then
     [ -f "$ROOT_IMG" ] || { echo "no root image: $ROOT_IMG"; exit 1; }
+    src="$ROOT_IMG"
     if [ -z "$LR_SECTORS" ]; then
-        # Write only what the filesystem actually holds: an e2image dump, or the sparse
-        # image rounded up. 345 GB of sparse zeros over firehose is ~10 hours of nothing.
-        src="$ROOT_IMG"
-        [ -f "$ROOT_IMG.e2" ] && src="$ROOT_IMG.e2"
-        LR_SECTORS=$(( ($(stat -c %s "$src") + 4095) / 4096 ))
-        log "step 3: writing $(basename "$src") = $LR_SECTORS LBAs to linuxroot lba $LR_LBA"
+        # How much of the image actually holds bytes: the image is a 345 GB sparse file, so
+        # its size is meaningless, and writing all of it over firehose is hours of zeros. Walk
+        # the data extents and stop after the last one; past that everything reads as zero and
+        # no bitmap that got written points further out.
+        used_bytes=$(last_data_extent "$ROOT_IMG")
+        [ "${used_bytes:-0}" -gt 0 ] || { echo "cannot find any data in $ROOT_IMG"; exit 1; }
+        LR_SECTORS=$(( (used_bytes + 4095) / 4096 ))
+        log "step 3: $(du -h "$ROOT_IMG" | cut -f1) allocated, last byte at $((used_bytes / 2**30)) GiB -> writing $LR_SECTORS LBAs to linuxroot lba $LR_LBA"
     else
-        src="$ROOT_IMG"
-        log "step 3: writing $(basename "$src") to linuxroot lba $LR_LBA (LR_SECTORS)"
+        log "step 3: writing $(basename "$src") to linuxroot lba $LR_LBA (LR_SECTORS=$LR_SECTORS)"
+    fi
+    # An e2image dump is sparse over the whole filesystem, so its apparent size proves
+    # nothing: e2image -r leaves the data blocks as holes, and a board flashed from it boots
+    # into a root whose every file reads back as zeros. Compare what is allocated instead.
+    if [ -f "$ROOT_IMG.e2" ]; then
+        img_alloc=$(du -b "$ROOT_IMG" | cut -f1)
+        e2_alloc=$(du -b "$ROOT_IMG.e2" | cut -f1)
+        if [ "$e2_alloc" -ge "$img_alloc" ]; then
+            src="$ROOT_IMG.e2"
+            log "  using $(basename "$ROOT_IMG.e2"): it holds as much data as the image"
+        else
+            log "  ignoring $(basename "$ROOT_IMG.e2") ($((e2_alloc / 2**20)) MiB allocated): metadata only, the image holds $((img_alloc / 2**20)) MiB"
+        fi
     fi
     E ws "$LR_LBA" "$src" --lun=0 2>&1 | tail -1 | sed 's/^/  /'
-    verify_write "$LR_LBA" "$LR_SECTORS" 0 "$src" || exit 1
+    verify_sample "$LR_LBA" "$LR_SECTORS" 0 "$src" || exit 1
     # The boot payload addresses this filesystem by UUID or PARTLABEL: print both so the
     # payload blob can be checked against them (a mismatch shows up as "boot straight back
     # to fastboot", PROGRESS A162).
@@ -103,7 +153,7 @@ if [ -n "$BOOT_IMG" ]; then
     [ -f "$BOOT_IMG" ] || { echo "no boot image: $BOOT_IMG"; exit 1; }
     log "step 4: writing $(basename "$BOOT_IMG") to LUN4 lba $BOOT_LBA"
     E ws "$BOOT_LBA" "$BOOT_IMG" --lun=4 2>&1 | tail -1 | sed 's/^/  /'
-    verify_write "$BOOT_LBA" "$BOOT_SECTORS" 4 "$BOOT_IMG" || exit 1
+    verify_window "$BOOT_LBA" "$BOOT_SECTORS" 4 "$BOOT_IMG" "$BOOT_LBA" || exit 1
 fi
 
 log 'step 5: reset'

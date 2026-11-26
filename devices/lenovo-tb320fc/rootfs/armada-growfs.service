@@ -1,0 +1,15 @@
+[Unit]
+Description=Grow the flashed ArmadaOS root to the size of the linuxroot partition
+Documentation=https://github.com/leioukupo/armadaos-y700-2023/blob/main/install/README.md
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=sysinit.target
+ConditionPathExists=/etc/armada/need-growfs
+ConditionVirtualization=!container
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/armada/armada-growfs.sh
+
+[Install]
+WantedBy=sysinit.target

@@ -291,11 +291,13 @@ e2fsck -f -y "$OUT" >/dev/null
 tune2fs -L "$LABEL" "$OUT" >/dev/null
 log "image: $(du -h "$OUT" | cut -f1) allocated of $PART_BYTES bytes"
 
-# --- Restore file: metadata plus allocated blocks only, which is what gets
-# --- pushed over adb and written back with the aarch64 e2image on the board.
-e2image -r "$OUT" "$DUMP"
-log "dump: $(du -h "$DUMP" | cut -f1)"
-sha256sum "$OUT" "$DUMP" | tee "$OUT.sha256"
+# --- No e2image dump and no sha256 here. e2image -r is sparse over the whole filesystem
+# --- and leaves the data blocks out, so it is neither cheaper to stream nor bootable (it
+# --- reads back as a root of zeros), and hashing a 322 GiB image is 20 minutes of checksum
+# --- that nothing later compares. What makes this image flashable is the shrink at the end
+# --- of ostree-first-root.sh.
+DUMP="$OUT"
+log "next: ostree-first-root.sh <image> --image-ref ... - it shrinks the filesystem before flashing"
 
 # --- The adoption needs the image's own /etc and /var: /usr/etc is what the /etc merge of
 # --- a second deployment computes its configuration diff against (PROGRESS A220), and the

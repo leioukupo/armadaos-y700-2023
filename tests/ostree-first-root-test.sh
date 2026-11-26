@@ -205,6 +205,55 @@ else
     fail "--check-only is not accepted (rc=${rc}): ${out}"
 fi
 
+# ---- 5. the image has to be flashable, not just adopted ------------------------
+# Firehose streams st_size bytes and does not know about holes, and ext4 scatters an inode
+# table through every flex group: a full-size root is hours of zeros on the wire, and an
+# e2image -r dump is just as sparse while leaving the data blocks out. So the image has to
+# leave this script shrunk, with the tablet-side grow baked in, and no 20 minutes of sha256.
+BUILD_SH="${SRC_DIR}/build-ufs-root.sh"
+INSTALL_SH="${ROOT_DIR}/install/ufs-install.sh"
+GROW_SH="${SRC_DIR}/armada-growfs.sh"
+GROW_UNIT="${SRC_DIR}/armada-growfs.service"
+for f in "$GROW_SH" "$GROW_UNIT" "$INSTALL_SH"; do
+    [ -f "$f" ] || { echo "missing $f"; exit 1; }
+done
+if bash -n "$GROW_SH" && bash -n "$INSTALL_SH"; then ok "growfs and ufs-install parse"; else fail "growfs or ufs-install does not parse"; fi
+if grep -q "resize2fs" "$FIRST" && grep -q "Estimated minimum size" "$FIRST"; then
+    ok "the adoption ends by shrinking the filesystem to what it holds"
+else
+    fail "the adoption does not shrink the image; flashing it would stream the whole 322 GiB"
+fi
+if grep -q "need-growfs" "$FIRST" && grep -q "armada-growfs.service" "$FIRST"; then
+    ok "the grow unit and its marker are baked into the image"
+else
+    fail "nothing grows the shrunk root back on the tablet"
+fi
+if grep -q "ConditionPathExists=/etc/armada/need-growfs" "$GROW_UNIT" &&
+   grep -q "WantedBy=sysinit.target" "$GROW_UNIT"; then
+    ok "the grow unit runs once, early, and only for an image that shipped shrunk"
+else
+    fail "the grow unit is not gated/installed the way the marker expects"
+fi
+grep -q 'rm -f "\$MARKER"' "$GROW_SH" && ok "growfs disarms its own marker" || fail "growfs leaves the marker set, so it re-runs every boot"
+grep -q 'resize2fs "\$root"' "$GROW_SH" && ok "growfs grows the filesystem on the root device to its partition" || fail "growfs is not resizing the root device"
+for f in "$FIRST" "$BUILD_SH"; do
+    if grep -qE '^[[:space:]]*sha256sum ' "$f"; then
+        fail "${f##*/} hashes a whole multi-GiB image; nothing compares it and it costs 20 minutes"
+    else
+        ok "${f##*/} hashes no image"
+    fi
+    if grep -qE '^[[:space:]]*e2image ' "$f"; then
+        fail "${f##*/} still makes an e2image dump, which is sparse and holds no data blocks"
+    else
+        ok "${f##*/} produces no e2image dump"
+    fi
+done
+if grep -q "last_data_extent" "$INSTALL_SH" && grep -q "du -b" "$INSTALL_SH"; then
+    ok "ufs-install writes to the last data extent and refuses a metadata-only dump"
+else
+    fail "ufs-install no longer sizes the write from the image's data extents"
+fi
+
 echo
 if [ "${fails}" -eq 0 ]; then echo "OSTREE_FIRST_ROOT_TEST_OK"; else echo "OSTREE_FIRST_ROOT_FAILURES=${fails}"; fi
 exit "${fails}"
