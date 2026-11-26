@@ -82,6 +82,26 @@ else
     fail "the gate no longer looks at the initrd line"
 fi
 
+# Whether that limit can brick the board depends on the boot chain the image declares, so
+# the gate has to read it instead of guessing: TB320FC UFS says boot-method=none (ABL takes
+# the kernel from the raw boot partition, stage-1 chooses init), while the SD-card flow
+# builds a /KERNEL out of exactly this string.
+if grep -q "etc/armada/boot-method" "$FIRST" && grep -q "pay_fatal" "$FIRST"; then
+    ok "the cmdline gate keys its severity on the image's boot-method"
+else
+    fail "the cmdline gate no longer asks the image how it boots"
+fi
+if grep -q 'boot_method\|boot-method' "$SRC_DIR/build-ufs-root.sh"; then
+    ok "build-ufs-root.sh still declares boot-method none for this board"
+else
+    fail "build-ufs-root.sh stopped writing /etc/armada/boot-method; the gate would silently get stricter"
+fi
+if grep -q "usr/lib/modules/\$KVER/vmlinuz" "$SRC_DIR/build-ufs-root.sh"; then
+    ok "build-ufs-root.sh stages the payload kernel the adoption needs"
+else
+    fail "build-ufs-root.sh no longer stages a payload kernel; armada-ostree-adopt.sh will refuse the tree"
+fi
+
 # ---- 2. the deployment gate has to match what libostree prints ------------------
 status_re=$(sed -n "s/^STATUS_RE_TPL='\(.*\)'$/\1/p" "$FIRST")
 if [ -z "${status_re}" ]; then
