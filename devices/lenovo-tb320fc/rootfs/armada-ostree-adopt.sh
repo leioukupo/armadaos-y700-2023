@@ -660,6 +660,9 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     for root in $roots; do
         unit="$root/usr/lib/systemd/system/armada-ostree-confirm.service"
         [[ -f "$here/armada-ostree-confirm.service" ]] || die "missing armada-ostree-confirm.service next to $0"
+        # Not every root has a /usr/lib/systemd/system yet (a fresh adopt on a flat
+        # tree, or a unit-less fixture); install would fail on the missing parent.
+        run mkdir -p "$(dirname "$unit")"
         run install -m 0644 "$here/armada-ostree-confirm.service" "$unit"
     done
     for root in $roots; do
