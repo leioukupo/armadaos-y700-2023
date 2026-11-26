@@ -68,6 +68,7 @@ MNT=$(mktemp -d /tmp/armada-adopt-XXXXXX)
 cleanup() {
     for d in dev proc sys; do umount "$MNT/$d" 2>/dev/null; done
     umount -R "$MNT" 2>/dev/null; umount "$MNT" 2>/dev/null
+    rmdir /tmp/armada-hold-dev 2>/dev/null
     losetup -d "$LOOP" 2>/dev/null; rm -rf "$MNT" "$IMAGE"
 }
 trap cleanup EXIT
@@ -118,6 +119,20 @@ done
 # here, which is where the records stage-1 leaves on the physical root (boot.log,
 # the attempt counter, the ostree-boot marker) are read back.
 run_init() { unshare --mount chroot "$MNT" /init; }
+
+# A second runner whose mount namespace has no /dev mounted at all. That is the
+# only way to reach stage-1's fresh-mount branch: busybox ash resolves mount as an
+# applet, so no file in the fixture can shadow it, and the devtmpfs an unshared
+# namespace copies from the host simply moves. So the copy is parked somewhere
+# else first - in the child namespace, where the host /dev is not touched.
+run_init_no_dev() {
+    unshare --mount -- /bin/sh -c '
+        mkdir -p /tmp/armada-hold-dev
+        mount --make-rprivate /dev 2>/dev/null
+        mount --move /dev /tmp/armada-hold-dev 2>/dev/null
+        exec chroot "$1" /init
+    ' _ "$MNT"
+}
 
 # ---- adopt ------------------------------------------------------------------
 "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --enable-stage1 \
@@ -294,16 +309,20 @@ check "libostree inside the composed root marks it booted" \
 # runs here, and it has to leave the same on-root log behind.
 check "the composed run appends to that log" \
     "grep -qE 'COMPOSED root=|pivot_root failed, using chroot' $MNT/armada-ostree/boot.log"
+# The run above armed an attempt, and the real system answers it with
+# armada-ostree-confirm.service. Without that file the next /init run would read
+# this attempt as a dead composed boot and the kill switch would fall the fixture
+# back to the flat root, so every later composition check would be pointless.
+printf 'confirm\n' > "$MNT/armada-ostree/confirmed"
 
-# ---- MS_MOVE refused: the fresh-mount fallback ------------------------------
-# The board refuses MS_MOVE for the devtmpfs its boot initramfs created, so what
-# has to hold is that /dev, /proc and /sys are mounted inside the composed root
-# either way. The composition above cannot be what breaks the move any more - it
-# happens in its own namespace now - so the move is denied the way it is denied
-# on a mount that is not there: $MNT/dev is unmounted first, which leaves /dev a
-# plain directory and leaves the fresh devtmpfs as the only way stage-1 can give
-# the composed root a /dev. /proc stays mounted because stage-1 reads
-# /proc/self/mountinfo before it moves anything.
+# ---- a namespace with no /dev at all ---------------------------------------
+# The board refuses MS_MOVE for the devtmpfs its boot chain handed over, and the
+# note that says so only appears there: stage-1 mounts devtmpfs, proc and sys for
+# itself at startup, so a host namespace can never reach that branch - the mount
+# stage-1 created moves cleanly. What the fixture can prove is the contract the
+# fallback exists for: with no /dev mounted anywhere in the run namespace, the
+# composed root still ends up with a real devtmpfs /dev, with /dev/null and
+# /dev/console in it, and the handoff still reaches the deployment.
 umount "$MNT/dev" 2>/dev/null || true
 moved=$(ARMADA_OSTREE_STAGE1_EXEC='
     set -x
@@ -311,14 +330,14 @@ moved=$(ARMADA_OSTREE_STAGE1_EXEC='
     test -c /dev/null && test -e /dev/console && echo DEV_FRESH
     test -f /proc/uptime && echo PROC_OK
     test -d /sys/devices && echo SYS_OK
-    findmnt -n -o FSTYPE /dev
-' run_init 2>&1)
+    sed -n "s|.* /dev \(.*\)|DEVFS \1|p" /proc/self/mountinfo
+' run_init_no_dev 2>&1)
 echo "$moved" | sed -n 's/^/  | fallback /p'
-check "the fallback composed the same deployment"  "echo \"$moved\" | grep -q \"ROOT $dep_root\""
-check "the fallback mounted a fresh /dev"          "echo \"$moved\" | grep -q DEV_FRESH"
-check "the fallback mounted /proc and /sys"        "echo \"$moved\" | grep -q PROC_OK && echo \"$moved\" | grep -q SYS_OK"
-check "the fallback /dev is a devtmpfs"            "echo \"$moved\" | grep -q devtmpfs"
-check "the fallback says so in the on-root log"    "grep -q 'mounted fresh as devtmpfs' $MNT/armada-ostree/boot.log"
+check "the no-dev run composed the same deployment"  "echo \"$moved\" | grep -q \"ROOT $dep_root\""
+check "the no-dev run gave /dev/null and /dev/console"          "echo \"$moved\" | grep -q DEV_FRESH"
+check "the no-dev run mounted /proc and /sys"        "echo \"$moved\" | grep -q PROC_OK && echo \"$moved\" | grep -q SYS_OK"
+check "the no-dev run /dev is a devtmpfs"            "echo \"$moved\" | grep -q \"DEVFS .*devtmpfs\""
+check "the no-dev run is on the on-root log"      "grep -q 'COMPOSED root=' $MNT/armada-ostree/boot.log"
 
 # ---- a composed boot that never came up has to undo itself ------------------
 # Nothing outside this root can read the UFS partition on this board, so stage-1
@@ -334,15 +353,25 @@ rm -rf "$state_dir"; mkdir -p "$state_dir"
 printf 'stage1\n' > "$state_dir/attempt"
 once=$(run_init 2>&1)
 echo "$once" | sed -n 's/^/  | revert1 /p'
-check "one unconfirmed attempt is counted"     "echo \"\$once\" | grep -q 'never confirmed (failed=1)' && [ \$(cat $state_dir/failed) = 1 ]"
-check "one failure still goes on to compose"   "echo \"\$once\" | grep -q 'no deployment under /ostree/deploy'"
+check "one unconfirmed attempt is counted"      "echo \"\$once\" | grep -q 'never confirmed (failed=1)' && [ \$(cat $state_dir/failed) = 1 ]"
+check "the strike falls back on the spot"       "echo \"\$once\" | grep -q 'FALLBACK the composed boot was never confirmed'"
+check "the strike never reaches composition"    "! echo \"\$once\" | grep -q 'no deployment under /ostree/deploy'"
+check "the kill switch turns itself off"        "[ \$(cat $MNT/etc/armada/ostree-boot) = no ]"
+check "the attempt record is cleared on fallback" "[ ! -e $state_dir/attempt ]"
+# One strike is the contract: there is no serial console and nothing outside this
+# root can read the UFS, so a dead composed boot costs a forced power cut. The
+# marker stays off until it is re-armed by hand, and a re-armed attempt that goes
+# unconfirmed again still counts up instead of getting a free pass.
+printf 'yes\n' > "$MNT/etc/armada/ostree-boot"
 printf 'stage1\n' > "$state_dir/attempt"
-printf '1\n' > "$state_dir/failed"
 twice=$(run_init 2>&1)
 echo "$twice" | sed -n 's/^/  | revert2 /p'
-check "the second unconfirmed attempt falls back" "echo \"\$twice\" | grep -q 'never confirmed twice'"
-check "the kill switch turns itself off"          "[ \$(cat $MNT/etc/armada/ostree-boot) = no ]"
-check "the attempt record is cleared on fallback" "[ ! -e $state_dir/attempt ]"
+check "a re-armed strike counts up"              "echo \"\$twice\" | grep -q 'never confirmed (failed=2)'"
+check "the kill switch stays off after a strike" "[ \$(cat $MNT/etc/armada/ostree-boot) = no ]"
+marker_off=$(run_init 2>&1)
+echo "$marker_off" | sed -n 's/^/  | revert3 /p'
+check "a marker-off run boots flat and does not strike" \
+    "echo \"\$marker_off\" | grep -q 'FALLBACK marker' && [ \$(cat $state_dir/failed) = 2 ]"
 mv "$MNT/ostree/deploy/.default-hold" "$MNT/ostree/deploy/default"
 printf 'yes\n' > "$MNT/etc/armada/ostree-boot"
 
@@ -447,13 +476,14 @@ if command -v tar >/dev/null && command -v sha256sum >/dev/null; then
         "[ ! -e $MNT/ostree/deploy/.ostree-stage ]"
     # The stateroot now holds two serial 0 trees: the bare one this system
     # booted and the image-backed one just staged. stage-1 has to compose the
-    # tree libostree also treats as the default, which is the newest by mtime.
+    # tree libostree also treats as the default, picked by the boot loader spec.
     rm -f "$state_dir/attempt" "$state_dir/failed"
     ARMADA_OSTREE_STAGE1_EXEC='echo STAGE1_COMPOSED' run_init >/dev/null 2>&1
+    sed -n 's/^/  | stage1log /p' "$MNT/armada-ostree/boot.log"
     check "stage-1 composed the image-backed deployment" \
-        "grep -q 'deployment=/ostree/deploy/default/deploy/$image_commit.0 stateroot=' $MNT/armada-ostree/boot.log"
-    check "stage-1 ordered the deployments by mtime" \
-        "grep -qE 'deployment=/ostree/deploy/default/deploy/[0-9a-f]+\\.[0-9]+ stateroot=\\S+ serial=[0-9]+ mtime=[0-9]+' $MNT/armada-ostree/boot.log"
+        "grep -q 'deployment=/sysroot/ostree/deploy/default/deploy/$image_commit.0 stateroot=' $MNT/armada-ostree/boot.log"
+    check "stage-1 names the selected tree with serial and mtime" \
+        "grep -qE 'deployment=/sysroot/ostree/deploy/default/deploy/[0-9a-f]+\\.[0-9]+ stateroot=\\S+ serial=[0-9]+ mtime=-?[0-9]+' $MNT/armada-ostree/boot.log"
     rm -rf "$layer_dir" "$meta_dir" "$layer_tar" /tmp/armada-adopt-image.$$.txt
 else
     echo "note:   tar and sha256sum are missing; image-backed checks skipped"
