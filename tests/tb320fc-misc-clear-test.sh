@@ -37,7 +37,8 @@ sh -n "$TOOL" && ok 'helper parses as POSIX sh' || bad 'helper parses as POSIX s
 U=$(cat "$UNIT")
 grep_ok 'DefaultDependencies=no' "$U" 'unit keeps its own ordering at shutdown'
 grep_ok 'Before=shutdown\.target' "$U" 'unit is ordered before shutdown.target'
-grep_ok '^ExecStop=/usr/libexec/tb320fc/misc-clear' "$U" 'helper runs from ExecStop, not ExecStart'
+grep_ok '^ExecStart=/usr/libexec/tb320fc/misc-clear' "$U" 'helper runs from ExecStart of the shutdown transaction'
+if printf '%s' "$U" | grep -q '^ExecStop='; then bad 'unit leans on ExecStop again, which never runs for a shutdown.target wants unit'; else ok 'unit does not lean on ExecStop'; fi
 grep_ok 'WantedBy=shutdown\.target' "$U" 'unit is pulled in by shutdown.target'
 grep_ok 'systemctl enable tb320fc-misc-clear\.service' "$(cat "$BUILD")" 'image build enables the unit'
 grep_ok 'misc-clear' "$(cat "$PUSH")" 'push.sh ships the helper'

@@ -1,8 +1,17 @@
 # SPDX-License-Identifier: MIT
 # Drop the misc boot-request on the way out, so a reboot issued from ArmadaOS does not
-# leave the next power-on parked on the fastboot screen (PROGRESS.md A207).  This is a
-# shutdown hook: ExecStart is a no-op that only keeps the unit loaded, and ExecStop is
-# what actually runs - while UFS and udev are still up, before shutdown.target.
+# leave the next power-on parked on the fastboot screen (PROGRESS.md A207).
+#
+# A unit wanted by shutdown.target is STARTED by the shutdown transaction, so the work
+# belongs in ExecStart.  The first version of this unit put it in ExecStop behind an
+# ExecStart=/usr/bin/true; on HA1WZJJ5 the unit was never even started
+# (LoadState=loaded ActiveState=inactive SubState=dead, ExecMainStartTimestamp empty),
+# so ExecStop never ran and the request survived.  This is the same shape Debian uses
+# for save-hwclock.service: DefaultDependencies=no, Before=shutdown.target, and the
+# script in ExecStart.
+#
+# UFS and the by-partlabel links are still up at that point: the final detach happens
+# in systemd-shutdown, after shutdown.target has been reached.
 [Unit]
 Description=TB320FC clear the misc boot-request before shutdown
 Documentation=file:/usr/libexec/tb320fc/misc-clear
@@ -12,10 +21,8 @@ Before=shutdown.target
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
-TimeoutStopSec=60
-ExecStart=/usr/bin/true
-ExecStop=/usr/libexec/tb320fc/misc-clear
+TimeoutStartSec=60
+ExecStart=/usr/libexec/tb320fc/misc-clear
 StandardOutput=journal
 StandardError=journal
 
