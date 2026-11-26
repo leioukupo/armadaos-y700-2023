@@ -76,7 +76,7 @@ if (( ${#pay2} > ARMADA_CMDLINE_MAX )); then
 else
     fail "the init= shape now fits (${#pay2} B); the gate's no-initrd diagnosis is stale"
 fi
-if grep -q "^initrd " "$FIRST"; then
+if grep -qF "grep -q '^initrd '" "$FIRST"; then
     ok "the gate checks for the initrd line before blaming the kargs"
 else
     fail "the gate no longer looks at the initrd line"
