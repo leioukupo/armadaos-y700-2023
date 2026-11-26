@@ -408,4 +408,28 @@ check "the flat builder arms it for the shutdown transaction" grep -q 'want tb32
 check "the flat builder tells bootc the boot image is out of band" grep -q '/etc/armada/boot-method' "$FLAT"
 check "the flat builder fails loudly when a baked file is absent" grep -q 'under SYSFILES=' "$FLAT"
 
+# ---- the committed mode is what reaches the image ----
+# The build chmods /usr/libexec/armada and two tb323fu helpers; nothing else in
+# /usr/libexec, so for the tb320fc helpers the git mode is the image mode. misc-clear
+# was committed 0644, which put a non-executable file behind
+# ExecStart=/usr/libexec/tb320fc/misc-clear - and the board never showed it, because
+# push.sh installs 0755 by hand. Same class as the /usr/local replay in A185: the
+# machine looks healthy while the image is not.
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    nonexec=""
+    while read -r mode obj stage path; do
+        case "$mode" in
+            100755|120000) continue ;;
+        esac
+        nonexec="$nonexec $path=$mode"
+    done < <(git -C "$ROOT" ls-files -s "system_files/usr/libexec/tb320fc/*")
+    if [ -n "$nonexec" ]; then
+        fail "tb320fc helper committed without the exec bit:$nonexec"
+    fi
+    printf 'ok every tb320fc helper is committed executable\n'
+else
+    printf 'skip the committed-mode check (not a git work tree)\n'
+fi
+check "the build chmods the tb320fc helpers too" grep -q 'chmod 0755 /usr/libexec/tb320fc/\*' "$BUILD"
+
 printf 'ALL OK\n'

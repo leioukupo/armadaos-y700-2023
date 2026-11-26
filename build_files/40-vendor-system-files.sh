@@ -95,6 +95,7 @@ install -Dpm 0644 "${fw_bundle}/aw882xx_acf.bin" "${fw_audio}/aw882xx_acf.bin"
 install -Dpm 0644 "${fw_bundle}/SHA256SUMS" "${fw_audio}/SHA256SUMS"
 
 chmod 0755 /usr/libexec/armada/*
+chmod 0755 /usr/libexec/tb320fc/*
 chmod 0755 /usr/libexec/os-session-select
 chmod 0755 /usr/libexec/tb323fu/tb323fu-usb-port
 chmod 0755 /usr/libexec/tb323fu/tb323fu-audio-prepare
