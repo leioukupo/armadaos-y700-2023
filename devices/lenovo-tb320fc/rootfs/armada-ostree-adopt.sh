@@ -643,14 +643,20 @@ if [[ "$STAGE1_MODE" != skip ]]; then
             fi
             run chmod 0755 "$dst"
         done
-        src="$here/init-ostree"; dst="$root/init"
-        [[ -f "$src" ]] || die "missing init-ostree next to $0"
-        if [[ -e "$dst" ]] && cmp -s "$src" "$dst"; then
-            echo "note: $dst already current"
-        else
-            run install -m 0755 "$src" "$dst"
+        # /init belongs to the physical root only: the boot_a initramfs picks it from
+        # the mounted linuxroot before anything is composed, so a copy inside a
+        # deployment tree is never executed - it would only leave a launcher in a
+        # tree ostree verifies, and a later checkout would not carry it.
+        if [[ "$root" == "$SROOT" ]]; then
+            src="$here/init-ostree"; dst="$root/init"
+            [[ -f "$src" ]] || die "missing init-ostree next to $0"
+            if [[ -e "$dst" ]] && cmp -s "$src" "$dst"; then
+                echo "note: $dst already current"
+            else
+                run install -m 0755 "$src" "$dst"
+            fi
+            run chmod 0755 "$dst"
         fi
-        run chmod 0755 "$dst"
         [[ $imm -eq 1 ]] && run chattr +i "$root"
     done
     # The confirm ExecStart is a file in /usr/lib/armada, and the unit itself may
@@ -666,9 +672,11 @@ if [[ "$STAGE1_MODE" != skip ]]; then
         run install -m 0644 "$here/armada-ostree-confirm.service" "$unit"
     done
     for root in $roots; do
-        for f in "$root/init" "$root/usr/lib/armada/armada-ostree-stage1.sh" \
-                 "$root/usr/lib/armada/armada-ostree-confirm.sh" \
-                 "$root/usr/lib/armada/armada-ostree-bootlink.sh"; do
+        files=("$root/usr/lib/armada/armada-ostree-stage1.sh" \
+               "$root/usr/lib/armada/armada-ostree-confirm.sh" \
+               "$root/usr/lib/armada/armada-ostree-bootlink.sh")
+        [[ "$root" == "$SROOT" ]] && files=("$root/init" "${files[@]}")
+        for f in "${files[@]}"; do
             [[ -x "$f" ]] || die "stage-1 file is not executable: $f"
         done
     done
