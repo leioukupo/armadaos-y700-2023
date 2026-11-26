@@ -13,7 +13,7 @@
 # now produces. So run the same adoption offline, against the loop-mounted root image,
 # and ship an image that already contains
 #   /ostree/repo + a deployment of the image + its origin (container-image-reference)
-#   /boot/loader/entries/*.conf that stage-1 reads, plus the /ostree/boot.0 symlinks
+#   /boot/loader.N/entries/*.conf that stage-1 reads, plus the matching /ostree/boot.N links
 #   /init + /usr/lib/armada/armada-ostree-{stage1,confirm,bootlink}.sh
 #   /etc/armada/ostree-boot = yes (the marker that lets stage-1 compose instead of falling back)
 # The first boot then lands on the composed root, with Version/history in Armada tools and
@@ -32,6 +32,8 @@
 #   --root-karg KARG    kernel argument that pins the root (default root=PARTLABEL=linuxroot)
 #   --disarm            write the marker as "no" instead of "yes" (stage-1 installed but
 #                       the composed root kept off, for a first bring-up)
+#   --check-only        skip the adoption and run only the post-adoption gates, against an
+#                       image that already carries /ostree/repo (cheap re-verification)
 #   --dry-run           ask adopt.sh to print what it would commit
 #   --mnt DIR           mount point (default /mnt/ufs-ostree-first)
 #
@@ -45,7 +47,7 @@ ADOPT="$ROOTFS_DIR/armada-ostree-adopt.sh"
 
 IMG=""; BUNDLE=""; IMAGE_REF=""; IMAGE_META=""; BASE_LAYER=""; FACTORY_ETC=""; IMAGE_VAR=""
 STATEROOT=default; ROOT_KARG=root=PARTLABEL=linuxroot; MNT=/mnt/ufs-ostree-first
-DRY=0; DISARM=0; LABEL=y700root-ufs
+DRY=0; DISARM=0; CHECK=0; LABEL=y700root-ufs
 
 log() { echo "ostree-first-root: $*"; }
 die() { echo "ostree-first-root: $*" >&2; exit 1; }
@@ -70,7 +72,8 @@ while [[ $# -gt 0 ]]; do
         --label)       LABEL="${2:?}"; shift 2 ;;
         --disarm)      DISARM=1; shift ;;
         --dry-run)     DRY=1; shift ;;
-        -h|--help)     sed -n '3,44p' "$0"; exit 0 ;;
+        --check-only)  CHECK=1; shift ;;
+        -h|--help)     sed -n '3,46p' "$0"; exit 0 ;;
         -*)            die "unknown option $1" ;;
         *)             [[ -z "$IMG" ]] || die "only one image at a time"; IMG="$1"; shift ;;
     esac
@@ -94,10 +97,12 @@ if [[ -n "$BUNDLE" ]]; then
         IMAGE_VAR="$BUNDLE/state/var"
     fi
 fi
-[[ -f "$IMAGE_META/manifest.json" && -f "$IMAGE_META/config.json" ]] ||
-    die "no $IMAGE_META/{manifest,config}.json - stage the bundle first (stage-adopt-bundle.sh)"
-[[ -f "$BASE_LAYER" ]] || die "no base layer: $BASE_LAYER"
-[[ -x "$ADOPT" ]] || die "no executable adopt script at $ADOPT"
+if [[ "$CHECK" == 0 ]]; then
+    [[ -f "$IMAGE_META/manifest.json" && -f "$IMAGE_META/config.json" ]] ||
+        die "no $IMAGE_META/{manifest,config}.json - stage the bundle first (stage-adopt-bundle.sh)"
+    [[ -f "$BASE_LAYER" ]] || die "no base layer: $BASE_LAYER"
+    [[ -x "$ADOPT" ]] || die "no executable adopt script at $ADOPT"
+fi
 
 for tool in ostree mount umount blkid; do
     command -v "$tool" >/dev/null || die "$tool is not installed"
@@ -121,14 +126,16 @@ trap cleanup EXIT
 [[ -f "$MNT/etc/passwd" ]] || die "$IMG has no /etc/passwd - this is not a root filesystem"
 [[ -x "$MNT/usr/lib/armada/armada-ostree-stage1.sh" ]] ||
     die "$IMG was built without the stage-1 runtime in it; build it with build-ufs-root.sh"
-if [[ -d "$MNT/ostree/repo" ]]; then
+if [[ "$CHECK" == 1 ]]; then
+    [[ -d "$MNT/ostree/repo" ]] || die "$IMG has no /ostree/repo - it was never adopted, --check-only needs an adopted image"
+elif [[ -d "$MNT/ostree/repo" ]]; then
     die "$IMG already has /ostree/repo - adopting twice is not supported, rebuild the flat root"
 fi
 # libostree insists that <sysroot>/boot/loader is a symlink (it writes loader.0/loader.1
 # and points loader at the newest, which is why stage-1 reads /boot/loader.N/entries).
 # A real directory there makes "ostree admin deploy" fail with "Not a symbolic link:
 # boot/loader", so move it aside and say so instead of failing inside ostree.
-if [[ -e "$MNT/boot/loader" && ! -L "$MNT/boot/loader" ]]; then
+if [[ "$CHECK" == 0 && -e "$MNT/boot/loader" && ! -L "$MNT/boot/loader" ]]; then
     entries=$(find "$MNT/boot/loader/entries" -name '*.conf' 2>/dev/null | wc -l)
     if [[ "$entries" != 0 ]]; then
         die "$MNT/boot/loader holds $entries BLS entries as a real directory - stage-1 would"
@@ -149,11 +156,13 @@ ARGS=(--sysroot "$MNT" --from flat --stage1 install --stateroot "$STATEROOT"
 [[ "$DISARM" == 0 ]] && ARGS+=(--enable-stage1)
 [[ "$DRY" == 1 ]] && ARGS+=(--dry-run)
 
-log "adopting offline"
-"$ADOPT" "${ARGS[@]}" 2>&1 | tee "${IMG_ABS}.adopt.log"
-if [[ "$DRY" == 1 ]]; then
-    log "dry run only - nothing changed"
-    exit 0
+if [[ "$CHECK" == 0 ]]; then
+    log "adopting offline"
+    "$ADOPT" "${ARGS[@]}" 2>&1 | tee "${IMG_ABS}.adopt.log"
+    if [[ "$DRY" == 1 ]]; then
+        log "dry run only - nothing changed"
+        exit 0
+    fi
 fi
 
 # ---- what has to be true before this image goes to the tablet -----------------
@@ -161,7 +170,8 @@ fail=0
 note() { if eval "$2"; then log "ok:   $1"; else log "FAIL: $1"; fail=$((fail + 1)); fi; }
 
 status=$(ostree admin --sysroot="$MNT" status 2>&1)
-note "ostree admin status lists a deployment" "grep -q 'Deployment' <<<\"\$status\""
+note "ostree admin status lists a $STATEROOT deployment" \
+     "grep -qE '^[[:space:]]+$STATEROOT [0-9a-f]+\\.0' <(\"\$status\")"
 note "the origin is the container reference" \
      "grep -q 'container-image-reference' \"$MNT\"/ostree/deploy/$STATEROOT/deploy/*.origin"
 note "/init is the stage-1 launcher" "[[ -x $MNT/init ]]"
@@ -172,17 +182,53 @@ marker=$(tr -d ' \t\r\n' < "$MNT/etc/armada/ostree-boot" 2>/dev/null)
 want=yes; [[ "$DISARM" == 1 ]] && want=no
 note "marker /etc/armada/ostree-boot is [$want]" "[[ \$marker == $want ]]"
 
+# What has to fit is not the options line but the cmdline the payload packer assembles
+# from it (bootimg-args puts ostree= first, drops console=ttyS0, merges rootflags=), and
+# that lands in the 512 B cmdline field of the header-v0 ABL reads. Gate on the same
+# function so a green image and the packer can never disagree about what fits.
+BOOTIMG_LIB="$ROOTFS_DIR/../../../system_files/usr/lib/armada/bootimg-args"
+if [[ -r "$BOOTIMG_LIB" ]]; then
+    # shellcheck disable=SC1090
+    source "$BOOTIMG_LIB"
+else
+    log "note: cannot read $BOOTIMG_LIB - measuring the raw options line instead"
+    ARMADA_CMDLINE_MAX=512
+    armada_bootimg_cmdline() { printf '%s' "$1"; }
+fi
 bls=( "$MNT"/boot/loader*/entries/ostree-*.conf )
 [[ -e "${bls[0]}" ]] || die "no BLS entries under $MNT/boot/loader*/entries - stage-1 has nothing to boot"
 [[ -L "$MNT/boot/loader" ]] || log "note: $MNT/boot/loader is not a symlink; stage-1 globs boot/loader.N"
 for f in "${bls[@]}"; do
     opts=$(sed -n 's/^options //p' "$f" | head -1)
-    log "BLS $(basename "$f"): options ${#opts} B"
-    (( ${#opts} <= 512 )) || { log "FAIL: ABL takes at most 512 B of cmdline"; fail=$((fail + 1)); }
+    if ! pay=$(armada_bootimg_cmdline "$opts"); then
+        log "FAIL: $(basename "$f") has no ostree= karg - the packer refuses to build /KERNEL from it"
+        fail=$((fail + 1))
+        continue
+    fi
+    log "BLS $(basename "$f"): options ${#opts} B, /KERNEL cmdline ${#pay} B (limit $ARMADA_CMDLINE_MAX)"
+    (( ${#pay} <= ARMADA_CMDLINE_MAX )) || {
+        log "FAIL: /KERNEL cmdline would be ${#pay} B, over the ${ARMADA_CMDLINE_MAX} B header-v0 field"
+        grep -q '^initrd ' "$f" ||
+            log "       and there is no initrd line: without an initramfs libostree writes its
+       init=<deployment>/usr/lib/ostree/ostree-prepare-root shape, which alone costs 129 B"
+        fail=$((fail + 1))
+    }
     [[ "$opts" == *"$ROOT_KARG"* ]] || { log "FAIL: $ROOT_KARG missing from $(basename "$f")"; fail=$((fail + 1)); }
 done
-note "stage-1 can resolve the boot links" \
-     "find \"$MNT/ostree/boot.0/$STATEROOT\" -maxdepth 1 -type l | grep -q ."
+# stage-1 and armada-ostree-bootlink pick the boot farm from the /boot/loader symlink, so
+# verify the links for the bootversion this sysroot really uses (BLS adoption => boot.1).
+bootv=0
+[[ -L "$MNT/boot/loader" && "$(readlink "$MNT/boot/loader")" == *loader.1 ]] && bootv=1
+note "stage-1 can resolve the boot links (boot.$bootv)" \
+     "find \"$MNT\"/ostree/boot.$bootv*/$STATEROOT -maxdepth 1 -type l | grep -q ."
+
+if [[ "$CHECK" == 1 ]]; then
+    umount "$MNT"
+    trap - EXIT
+    (( fail )) && die "$fail post-adoption checks failed on $IMG_ABS - this is not a bootable ostree image"
+    echo "OSTREE_FIRST_CHECKS_OK $IMG_ABS"
+    exit 0
+fi
 
 umount "$MNT"
 trap - EXIT
