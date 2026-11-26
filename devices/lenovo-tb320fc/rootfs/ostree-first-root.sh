@@ -124,6 +124,18 @@ trap cleanup EXIT
 if [[ -d "$MNT/ostree/repo" ]]; then
     die "$IMG already has /ostree/repo - adopting twice is not supported, rebuild the flat root"
 fi
+# libostree insists that <sysroot>/boot/loader is a symlink (it writes loader.0/loader.1
+# and points loader at the newest, which is why stage-1 reads /boot/loader.N/entries).
+# A real directory there makes "ostree admin deploy" fail with "Not a symbolic link:
+# boot/loader", so move it aside and say so instead of failing inside ostree.
+if [[ -e "$MNT/boot/loader" && ! -L "$MNT/boot/loader" ]]; then
+    entries=$(find "$MNT/boot/loader/entries" -name '*.conf' 2>/dev/null | wc -l)
+    if [[ "$entries" != 0 ]]; then
+        die "$MNT/boot/loader holds $entries BLS entries as a real directory - stage-1 would"
+    fi
+    mv "$MNT/boot/loader" "$MNT/boot/loader.pre-adopt"
+    log "moved the empty $MNT/boot/loader aside; libostree needs boot/loader to be a symlink"
+fi
 log "flat root: $(blkid -o value -s LABEL "$IMG_ABS" 2>/dev/null) $(blkid -o value -s UUID "$IMG_ABS" 2>/dev/null)"
 [[ -n "$IMAGE_VAR" ]] && log "image /var: $IMAGE_VAR ($(find "$IMAGE_VAR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l) top-level)"
 [[ -n "$FACTORY_ETC" ]] && log "image /etc: $FACTORY_ETC ($(find "$FACTORY_ETC" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l) top-level)"
@@ -160,8 +172,9 @@ marker=$(tr -d ' \t\r\n' < "$MNT/etc/armada/ostree-boot" 2>/dev/null)
 want=yes; [[ "$DISARM" == 1 ]] && want=no
 note "marker /etc/armada/ostree-boot is [$want]" "[[ \$marker == $want ]]"
 
-bls=( "$MNT"/boot/loader/entries/*.conf )
-[[ -e "${bls[0]}" ]] || die "no BLS entries in $MNT/boot/loader/entries - stage-1 has nothing to boot"
+bls=( "$MNT"/boot/loader*/entries/ostree-*.conf )
+[[ -e "${bls[0]}" ]] || die "no BLS entries under $MNT/boot/loader*/entries - stage-1 has nothing to boot"
+[[ -L "$MNT/boot/loader" ]] || log "note: $MNT/boot/loader is not a symlink; stage-1 globs boot/loader.N"
 for f in "${bls[@]}"; do
     opts=$(sed -n 's/^options //p' "$f" | head -1)
     log "BLS $(basename "$f"): options ${#opts} B"
