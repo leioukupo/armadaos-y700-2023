@@ -17,6 +17,14 @@ fi
 
 # scx_cosmos/scx_lavd for the Armada Control scheduler setting; without the
 # binaries armada-powerd reports the scheduler choice as unavailable.
+#
+# This line installs from a local rpm but resolves scx-tools out of the terra repo, and our
+# scx-scheds package depends on the exact NEVRA it was built against. On 2026-11-26
+# repos.fyralabs.com/terra44 dropped scx-tools-0:1.1.3-2.fc44 (repodata still lists it, the
+# file is 404), so the dnf layer died with "Cannot download ... All mirrors were tried".
+# Anything that invalidates an earlier layer (a new kernel artifact, for instance) replays
+# this layer and hits it again. The durable fix is to vendor the matching scx-tools rpm into
+# packages/scx-scheds, or rebuild that package against the terra release that exists now.
 dnf5 -y install --setopt=install_weak_deps=False /packages/scx-scheds/scx-scheds-[0-9]*.rpm
 
 dnf5 -y install --setopt=install_weak_deps=False \
