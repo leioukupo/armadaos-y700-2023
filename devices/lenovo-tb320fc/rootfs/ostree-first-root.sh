@@ -207,6 +207,17 @@ fi
 bls=( "$MNT"/boot/loader*/entries/ostree-*.conf )
 [[ -e "${bls[0]}" ]] || die "no BLS entries under $MNT/boot/loader*/entries - stage-1 has nothing to boot"
 [[ -L "$MNT/boot/loader" ]] || log "note: $MNT/boot/loader is not a symlink; stage-1 globs boot/loader.N"
+# Whether the header field can make this image unbootable depends on the board, and the
+# image says so: /etc/armada/boot-method is "none" on TB320FC UFS (ABL takes kernel+DTB from
+# the raw boot_ partition, stage-1 chooses init itself, and armada-bootimg-finalize is turned
+# off exactly so it cannot run bootc rollback - PROGRESS A197/A207). Only the SD-card/ABL
+# flow turns an options line into a /KERNEL, so only there is the length fatal.
+bootmethod=$(tr -d ' \t\r\n' < "$MNT/etc/armada/boot-method" 2>/dev/null)
+pay_fatal=1
+if [[ "$bootmethod" == none ]]; then
+    pay_fatal=0
+    log "note: /etc/armada/boot-method is none here - no /KERNEL is built from these entries on this board"
+fi
 for f in "${bls[@]}"; do
     opts=$(sed -n 's/^options //p' "$f" | head -1)
     if ! pay=$(armada_bootimg_cmdline "$opts"); then
@@ -215,13 +226,17 @@ for f in "${bls[@]}"; do
         continue
     fi
     log "BLS $(basename "$f"): options ${#opts} B, /KERNEL cmdline ${#pay} B (limit $ARMADA_CMDLINE_MAX)"
-    (( ${#pay} <= ARMADA_CMDLINE_MAX )) || {
-        log "FAIL: /KERNEL cmdline would be ${#pay} B, over the ${ARMADA_CMDLINE_MAX} B header-v0 field"
+    if (( ${#pay} > ARMADA_CMDLINE_MAX )); then
         grep -q '^initrd ' "$f" ||
-            log "       and there is no initrd line: without an initramfs libostree writes its
-       init=<deployment>/usr/lib/ostree/ostree-prepare-root shape, which alone costs 129 B"
-        fail=$((fail + 1))
-    }
+            log "       and there is no initrd line: when libostree finds no initramfs it writes
+       its init=<deployment>/usr/lib/ostree/ostree-prepare-root shape, which costs 129 B alone"
+        if (( pay_fatal )); then
+            log "FAIL: /KERNEL cmdline would be ${#pay} B, over the ${ARMADA_CMDLINE_MAX} B header-v0 field"
+            fail=$((fail + 1))
+        else
+            log "note: /KERNEL cmdline would be ${#pay} B, over ${ARMADA_CMDLINE_MAX} B; harmless while boot-method is none, fatal if that changes"
+        fi
+    fi
     [[ "$opts" == *"$ROOT_KARG"* ]] || { log "FAIL: $ROOT_KARG missing from $(basename "$f")"; fail=$((fail + 1)); }
 done
 # stage-1 and armada-ostree-bootlink pick the boot farm from the /boot/loader symlink, so

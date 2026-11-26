@@ -32,6 +32,9 @@ LABEL=y700root-ufs
 # shadowed kernel/ copies; STAGE_DIRS is what that helper scans).
 MODS_SRC="${MODS_SRC:-/srv/y700/stage-73mods/lib/modules/$KVER}"
 KO_PATCHED_SRC="${KO_PATCHED_SRC:-/srv/y700/g4/a211/initramfs/y700-ko}"
+# The payload kernel itself, for the deployment bookkeeping below. Take it off the board:
+# the kernel section of a live boot_<slot> image (install/board-backup.sh dumps it).
+VMLINUZ_SRC="${VMLINUZ_SRC:-/srv/y700/a207/boot/vmlinuz-$KVER-from-boot_a}"
 
 OUT="$OUTDIR/root-$(printf '%s' "$IMAGE" | sed 's#.*/##; s#: #-#').img"
 DUMP="$OUT.e2"
@@ -112,10 +115,38 @@ printf '%s\n' "$MID" > "$MNT/var/lib/dbus/machine-id" 2>/dev/null || true
 # --- /usr/lib/modules/$(uname -r).  /var is the stateroot var that every
 # --- deployment shares, so the tree survives an update; the patched copies go
 # --- to /usr/lib/y700 because that is a STAGE_DIRS entry of the same helper.
-mkdir -p "$MNT/var/usrlocal/lib/y700-73mods/$KVER"
-cp -a "$MODS_SRC"/. "$MNT/var/usrlocal/lib/y700-73mods/$KVER"/
+VARMODS="$MNT/var/usrlocal/lib/y700-73mods/$KVER"
+mkdir -p "$VARMODS"
+cp -a "$MODS_SRC"/. "$VARMODS"/
 mkdir -p "$MNT/usr/lib/y700"
 cp -a "$KO_PATCHED_SRC"/. "$MNT/usr/lib/y700"/
+
+# --- The payload kernel binary, next to the module tree that belongs to it.
+#
+# ABL takes kernel+DTB from the raw boot_a partition and the image's kernel package ships
+# no Image at all (the open item in PROGRESS A219), so a flat TB320FC root has no kernel
+# file anywhere. That stays invisible until something wants a deployment: armada-ostree-adopt.sh
+# looks for usr/lib/modules/<kver>/vmlinuz, usr/lib/ostree-boot/vmlinuz* or boot/vmlinuz-*
+# and refuses the tree with "ostree cannot deploy this tree", and libostree builds the BLS
+# entry (linux/initrd lines, or its aboot fallback with a 129 B init= karg) out of whatever
+# it finds. So put the very bytes the board already boots - the kernel section of its own
+# boot_<slot> image - next to the modules, hardlinked so the commit pays for one copy.
+# /var is the shared stateroot var, and it is also what tb320fc-modules-tree binds over
+# /usr/lib/modules/<kver>, so a later on-device deployment sees a kernel too instead of
+# dying at the same gate.
+if [ ! -e "$VARMODS/vmlinuz" ]; then
+    [ -f "$VMLINUZ_SRC" ] || {
+        echo "no payload kernel for $KVER: point VMLINUZ_SRC at the kernel section of a live boot_<slot> image (looked at $VMLINUZ_SRC)" >&2
+        exit 1
+    }
+    install -m 0644 "$VMLINUZ_SRC" "$VARMODS/vmlinuz"
+    log "payload kernel: $(du -h "$VARMODS/vmlinuz" | cut -f1) from $VMLINUZ_SRC"
+fi
+mkdir -p "$MNT/usr/lib/modules/$KVER"
+if [ ! -e "$MNT/usr/lib/modules/$KVER/vmlinuz" ]; then
+    ln "$VARMODS/vmlinuz" "$MNT/usr/lib/modules/$KVER/vmlinuz" 2>/dev/null ||
+        cp -a "$VARMODS/vmlinuz" "$MNT/usr/lib/modules/$KVER/vmlinuz"
+fi
 
 # --- Units that assume another device's boot chain (ESP /KERNEL, bootupd,
 # --- ostree-native /boot, gamepad/deck hardware this board does not have).
