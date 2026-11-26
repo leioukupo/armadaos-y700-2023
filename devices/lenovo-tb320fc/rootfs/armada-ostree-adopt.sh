@@ -134,7 +134,7 @@ free_kb=$(df -Pk "$SYSROOT" | awk 'NR==2 {print $4}')
 # shows today.
 if [[ -z "$VERSION" ]]; then
     VERSION=$(sed -n 's/^BUILD_ID=//p' "$SROOT/usr/lib/os-release" 2>/dev/null |
-        tr -d '"' | head -1)
+        tr -d '"' | head -1 || true)
 fi
 [[ -n "$VERSION" ]] || VERSION="$(date -u +%Y%m%d)-flat-adopt"
 
@@ -298,8 +298,11 @@ if [[ "$VAR_MODE" != skip ]]; then
     fi
     # A tree that stopped halfway through seeding still reads as non-empty
     # above, so report the counts instead of trusting non-emptiness.
-    n_src=$(find "$SROOT/var" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
-    n_dst=$(find "$VAR_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+    # || true: with --dry-run the seeding above never ran, so $VAR_DIR does not
+    # exist yet, and a counting find must not end the run under pipefail. The
+    # first ever dry run on a fresh board died exactly here, with no message.
+    n_src=$(find "$SROOT/var" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l || true)
+    n_dst=$(find "$VAR_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l || true)
     if [[ $seeded -eq 0 && $n_dst -lt $n_src ]]; then
         echo "warning: $VAR_DIR holds $n_dst of $n_src top-level entries of $SROOT/var; half-seeded - delete it and re-run to seed again"
     fi
@@ -716,7 +719,7 @@ if [[ -n "$IMAGE_REF" ]]; then
     fi
 fi
 
-entry=$(ls -1t "$SYSROOT"/boot/loader*/entries/*.conf 2>/dev/null | head -1)
+entry=$(ls -1t "$SYSROOT"/boot/loader*/entries/*.conf 2>/dev/null | head -1 || true)
 if [[ -n "$entry" ]]; then
     options=$(sed -n 's/^options //p' "$entry" | head -1)
     ostree_karg=$(printf '%s\n' "$options" | tr ' ' '\n' | grep '^ostree=' || true)

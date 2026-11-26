@@ -134,6 +134,20 @@ run_init_no_dev() {
     ' _ "$MNT"
 }
 
+# ---- a dry run on a fresh sysroot, the way the board meets it first -----------
+# The first command anyone types on a tablet is --dry-run, so it has to survive a
+# sysroot with no repo, no stateroot and no seeded /var. A counting find under
+# pipefail ended the very first board dry run there, with no message at all
+# (PROGRESS A208).
+"$ADOPT" --sysroot="$MNT" --min-free-gib=1 --dry-run --root-karg=root=PARTLABEL=y700root-ufs > /tmp/armada-adopt-fresh-dry.$$.txt 2>&1
+check "dry run on a fresh sysroot exits 0" "[ $? -eq 0 ]"
+check "dry run on a fresh sysroot wrote no repo" "[ ! -e $MNT/ostree/repo/config ]"
+check "dry run on a fresh sysroot left no stage" "[ ! -e $MNT/.ostree-stage ]"
+check "fresh dry run says nothing was written" "grep -q 'dry run: nothing was written' /tmp/armada-adopt-fresh-dry.$$.txt"
+check "fresh dry run prints the commit it would make" "grep -q '+ ostree --repo=.*commit -b armadaos' /tmp/armada-adopt-fresh-dry.$$.txt"
+sed -n '1,6p;18,30p' /tmp/armada-adopt-fresh-dry.$$.txt | sed -n 's/^/  | fresh-dry /p'
+rm -f /tmp/armada-adopt-fresh-dry.$$.txt
+
 # ---- adopt ------------------------------------------------------------------
 "$ADOPT" --sysroot="$MNT" --min-free-gib=1 --enable-stage1 \
     --root-karg=root=PARTLABEL=y700root-ufs
