@@ -14,6 +14,7 @@
 #
 #   adopt-run-board.sh                 # fetch, boot-method, dry-run, stop
 #   adopt-run-board.sh --go            # same, then the real adoption
+#   adopt-run-board.sh --clean-state   # drop the staged image state again
 set -euo pipefail
 
 SRC=${SRC:-http://192.168.31.4:8791}
@@ -21,7 +22,19 @@ AUTH=${AUTH:-armada:armada}
 IMAGE_REF=${IMAGE_REF:?IMAGE_REF=ostree-unverified-image:docker://192.168.31.4:5000/armada:<tag>}
 D=${D:-/tmp/a207}
 GO=0
-for a in "$@"; do [ "$a" = --go ] && GO=1; done
+CLEAN=0
+for a in "$@"; do
+    [ "$a" = --go ] && GO=1
+    [ "$a" = --clean-state ] && CLEAN=1
+done
+if [ "$CLEAN" = 1 ]; then
+    # The staged image state is several GB on a board that needs it exactly once; this is
+    # how it gets reclaimed after an adoption instead of being found again months later.
+    V=${V:-/var/usrlocal/armada-adopt}
+    rm -rf "$V/var" "$V/etc" "$V/factory-var.tar" "$V/factory-etc.tar" "$V/factory-state.sha256"
+    echo "cleaned the staged image state under $V ($(du -sh "$V" 2>/dev/null | cut -f1) left)"
+    exit 0
+fi
 
 get() { curl -fsS -u "$AUTH" -o "$2" "$SRC/$1"; }
 
@@ -39,36 +52,62 @@ get imgmeta/config.json imgmeta/config.json
 get base-layer.tar base-layer.tar
 ls -l base-layer.tar imgmeta/manifest.json imgmeta/config.json
 
-# The image's /var, in its own tar. It is not machine state: the image ships the factory
-# Steam client under /var/home/armada/.local/share/Steam (build_files
-# /30-install-steam-session.sh) and Armada tools' Steam repair exports exactly that path
-# out of the booted commit. Without it here, the adoption produces a commit whose /var is
-# an empty skeleton and repair fails with "No such file or directory: /var/home/armada".
-# Build it on the machine that holds the image:
-#   m=$(podman image mount localhost/armada:<tag>-rootfs)
-#   tar -C "$m" -cf factory-var.tar var/home var/roothome; podman image unmount ...
-# It is several GB, so it lands on disk under $V - /tmp is tmpfs on this board.
+# The image's own /var and /etc, each in its own tar. Neither one is machine state:
+# the image ships the factory Steam client under /var/home/armada/.local/share/Steam
+# (build_files/30-install-steam-session.sh) and Armada tools' Steam repair exports
+# exactly that path out of the booted commit - without it the commit carries an empty
+# /var skeleton and repair fails with "No such file or directory: /var/home/armada"
+# (PROGRESS A221). A flat root has no /usr/etc either, which is what the /etc merge of
+# the *second* deployment dies on (PROGRESS A220).
+#
+# pack-image-state.sh / stage-adopt-bundle.sh produce both tars next to base-layer.tar,
+# plus factory-state.sha256 so a 3.5 GB download over Wi-Fi is verified before it is
+# unpacked. They land under $V because /tmp on this board is tmpfs.
 V=${V:-/var/usrlocal/armada-adopt}
-if curl -fsIL -u "$AUTH" "$SRC/factory-var.tar" >/dev/null 2>&1; then
-    tar_bytes=$(curl -fsIL -u "$AUTH" "$SRC/factory-var.tar" |
+mkdir -p "$V"
+sha_file=""
+if curl -fsS -u "$AUTH" -o "$V/factory-state.sha256" "$SRC/factory-state.sha256" 2>/dev/null; then
+    sha_file="$V/factory-state.sha256"
+fi
+
+state_tar() { # state_tar <tar name> <top-level dir it contains> <spare bytes wanted>
+    local name=$1 anchor=$2 headroom=$3 tar_bytes free_bytes need
+    curl -fsIL -u "$AUTH" "$SRC/$name" >/dev/null 2>&1 || return 1
+    tar_bytes=$(curl -fsIL -u "$AUTH" "$SRC/$name" |
         awk 'BEGIN{IGNORECASE=1} /^content-length:/{v=$2} END{print v+0}')
-    mkdir -p "$V"
     free_bytes=$(df -B1 --output=avail "$V" | tail -1 | tr -dc '0-9')
-    need=$(( ${tar_bytes:-0} * 2 + 2147483648 ))
-    if [ "$free_bytes" -lt "$need" ]; then
-        echo "not enough room under $V: ${free_bytes} free, needs about ${need}"
+    need=$(( ${tar_bytes:-0} * 2 + headroom ))
+    if [ "${free_bytes:-0}" -lt "$need" ]; then
+        echo "not enough room under $V for $name: ${free_bytes} free, needs about ${need}"
         exit 1
     fi
-    get factory-var.tar "$V/factory-var.tar"
-    rm -rf "$V/var"
-    tar -xf "$V/factory-var.tar" -C "$V"
-    [ -d "$V/var" ] || { echo "factory-var.tar did not contain a var/ directory"; exit 1; }
-    echo "factory /var unpacked under $V ($(find "$V/var" -mindepth 1 -maxdepth 1 | wc -l) top-level entries)"
+    get "$name" "$V/$name"
+    if [ -n "$sha_file" ] && grep -q " $name\$" "$sha_file"; then
+        if ! ( cd "$V" && grep " $name\$" "$sha_file" | sha256sum -c --quiet - ); then
+            echo "$name does not match factory-state.sha256: the download is damaged, re-fetch it"
+            exit 1
+        fi
+        echo "$name sha256 verified"
+    fi
+    rm -rf "$V/$anchor"
+    tar -xf "$V/$name" -C "$V" || { echo "cannot extract $V/$name"; exit 1; }
+    [ -d "$V/$anchor" ] || { echo "$name did not contain a $anchor/ directory"; exit 1; }
+    echo "factory /$anchor unpacked under $V ($name, $(find "$V/$anchor" -mindepth 1 -maxdepth 1 | wc -l) top-level entries)"
+    return 0
+}
+
+if state_tar factory-var.tar var 2147483648; then
     IMAGE_VAR_DIR="$V/var"
 else
     echo "warning: $SRC serves no factory-var.tar."
     echo "         the commit will carry an empty /var skeleton, and Armada tools' Steam"
     echo "         repair will have no factory client to export."
+fi
+if state_tar factory-etc.tar etc 67108864; then
+    FACTORY_ETC_DIR="$V/etc"
+else
+    echo "note: $SRC serves no factory-etc.tar. The first deployment works without it;"
+    echo "      a second one fails in the /etc merge unless this root already has /usr/etc."
 fi
 
 # boot-method: the file decides whether bootc is allowed to touch the boot image.
@@ -92,6 +131,9 @@ ARGS=(--sysroot / --from flat --stage1 install
       --root-karg root=PARTLABEL=linuxroot)
 if [ -n "${IMAGE_VAR_DIR:-}" ]; then
     ARGS+=(--image-var "$IMAGE_VAR_DIR")
+fi
+if [ -n "${FACTORY_ETC_DIR:-}" ]; then
+    ARGS+=(--factory-etc "$FACTORY_ETC_DIR")
 fi
 
 echo "--- dry run"

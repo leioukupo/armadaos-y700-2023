@@ -265,4 +265,15 @@ log "image: $(du -h "$OUT" | cut -f1) allocated of $PART_BYTES bytes"
 e2image -r "$OUT" "$DUMP"
 log "dump: $(du -h "$DUMP" | cut -f1)"
 sha256sum "$OUT" "$DUMP" | tee "$OUT.sha256"
+
+# --- The adoption needs the image's own /etc and /var: /usr/etc is what the /etc merge of
+# --- a second deployment computes its configuration diff against (PROGRESS A220), and the
+# --- factory Steam client under /var/home/armada is what Armada tools' repair exports out
+# --- of the booted commit (PROGRESS A221). $SRC is still mounted here, so the two tars are
+# --- packed by this build instead of by a hand-typed command afterwards. PACK_STATE=0
+# --- skips them when only the root image is wanted.
+if [ "${PACK_STATE:-1}" = 1 ]; then
+    "$(cd "$(dirname "$0")" && pwd)/pack-image-state.sh" --tree "$SRC" --out "$OUTDIR"
+fi
+
 echo "ROOT-BUILD-DONE $DUMP"
