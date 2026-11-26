@@ -4,7 +4,12 @@ Documentation=https://github.com/leioukupo/armadaos-y700-2023/blob/main/install/
 DefaultDependencies=no
 After=systemd-remount-fs.service
 Before=sysinit.target
+# Either marker arms the unit. Conditions of the same type are OR'd by systemd, and the /var
+# copy exists because a composed ostree boot gets its /etc from the commit, not from the
+# flat root's /etc - the stateroot var is seeded from the flat root's /var, so that one
+# survives both boot modes.
 ConditionPathExists=/etc/armada/need-growfs
+ConditionPathExists=/var/lib/armada/need-growfs
 ConditionVirtualization=!container
 
 [Service]

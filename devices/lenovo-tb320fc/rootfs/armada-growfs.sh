@@ -13,7 +13,9 @@
 # ships; once the grow succeeds the marker is removed and the unit stays inert forever.
 set -uo pipefail
 
-MARKER=/etc/armada/need-growfs
+# Armed by either marker: /etc in the flat-root boot, /var in the composed one (a deployment
+# builds its /etc from the commit's /usr/etc, so an /etc-only marker would be invisible there).
+MARKERS=(/etc/armada/need-growfs /var/lib/armada/need-growfs)
 root=$(findmnt -n -o SOURCE / 2>/dev/null)
 if [[ -z "$root" || ! -b "$root" ]]; then
     echo "armada-growfs: cannot resolve the root block device (got '$root')" >&2
@@ -28,5 +30,5 @@ if ! resize2fs "$root" >&2; then
     exit 1
 fi
 after=$(findmnt -n -o SIZE / 2>/dev/null)
-rm -f "$MARKER"
+rm -f "${MARKERS[@]}"
 echo "armada-growfs: $root device is $before bytes, filesystem is now $after"

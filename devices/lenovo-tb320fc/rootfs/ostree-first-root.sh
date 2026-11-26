@@ -154,7 +154,11 @@ if [[ "$CHECK" == 0 ]]; then
     ln -sf ../armada-growfs.service "$MNT/usr/lib/systemd/system/sysinit.target.wants/armada-growfs.service"
     install -d -m 0755 "$MNT/etc/armada"
     : > "$MNT/etc/armada/need-growfs"
-    log "baked armada-growfs.service and armed it with /etc/armada/need-growfs"
+    # /etc/armada is not what a composed boot reads, so arm a second marker under /var: the
+    # stateroot var is seeded from the flat root's /var, so it follows the deployment.
+    install -d -m 0755 "$MNT/var/lib/armada"
+    : > "$MNT/var/lib/armada/need-growfs"
+    log "baked armada-growfs.service, armed with /etc/armada/need-growfs and /var/lib/armada/need-growfs"
 fi
 if [[ "$CHECK" == 1 ]]; then
     [[ -d "$MNT/ostree/repo" ]] || die "$IMG has no /ostree/repo - it was never adopted, --check-only needs an adopted image"

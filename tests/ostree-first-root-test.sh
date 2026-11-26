@@ -229,12 +229,16 @@ else
     fail "nothing grows the shrunk root back on the tablet"
 fi
 if grep -q "ConditionPathExists=/etc/armada/need-growfs" "$GROW_UNIT" &&
+   grep -q "ConditionPathExists=/var/lib/armada/need-growfs" "$GROW_UNIT" &&
    grep -q "WantedBy=sysinit.target" "$GROW_UNIT"; then
-    ok "the grow unit runs once, early, and only for an image that shipped shrunk"
+    ok "the grow unit runs early, only for an image that shipped shrunk, in either boot mode"
 else
-    fail "the grow unit is not gated/installed the way the marker expects"
+    fail "the grow unit is not gated/installed the way the markers expect"
 fi
-grep -q 'rm -f "\$MARKER"' "$GROW_SH" && ok "growfs disarms its own marker" || fail "growfs leaves the marker set, so it re-runs every boot"
+grep -q 'rm -f "${MARKERS\[@\]}"' "$GROW_SH" && ok "growfs disarms both markers" || fail "growfs leaves a marker set, so it re-runs every boot"
+grep -q ': > "$MNT/var/lib/armada/need-growfs"' "$FIRST" &&
+    ok "the bake arms the /var marker too (a deployment does not inherit the flat root /etc)" ||
+    fail "the /var marker is not armed, so a composed boot would never grow the root"
 grep -q 'resize2fs "\$root"' "$GROW_SH" && ok "growfs grows the filesystem on the root device to its partition" || fail "growfs is not resizing the root device"
 for f in "$FIRST" "$BUILD_SH"; do
     if grep -qE '^[[:space:]]*sha256sum ' "$f"; then

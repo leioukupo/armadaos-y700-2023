@@ -96,7 +96,7 @@ PIN=a install/ufs-install.sh
 
 第 4 步之后，**不要再在板上跑 `adopt-run-board.sh`**——那是给"扁平根先装、之后采纳"的旧路径留的。采纳离线做的东西（`/ostree/repo`、deployment、origin 的 `container-image-reference`、BLS `/boot/loader.N/entries/ostree-*.conf`、`/init`、`/etc/armada/ostree-boot=yes`）都在镜像里，第一枪就该是 `COMPOSED root=`。
 
-第 4 步的末尾会把镜像**缩小**（resize2fs）而不是做 sha256：稀疏的 322 GiB 镜像刷下去是几小时的零，缩完只剩二十几 GiB 且连续。缩完它自己会再跑一遍 `--check-only` 复验，绿了才打印 `OSTREE_FIRST_OK`。代价在板上：第一次启动 `armada-growfs.service`（`ConditionPathExists=/etc/armada/need-growfs`）在线 `resize2fs` 长回整个 `linuxroot` 分区，长成功就摘掉 marker，之后永远不再动；长失败也不影响启动，只是根还停在缩小的尺寸。验收时看 `findmnt -no SIZE /` 是不是 ~322 GiB。
+第 4 步的末尾会把镜像**缩小**（resize2fs）而不是做 sha256：稀疏的 322 GiB 镜像刷下去是几小时的零，缩完只剩二十几 GiB 且连续。缩完它自己会再跑一遍 `--check-only` 复验，绿了才打印 `OSTREE_FIRST_OK`。代价在板上：第一次启动 `armada-growfs.service` 在线 `resize2fs` 长回整个 `linuxroot` 分区，长成功就把 marker（`/etc/armada/need-growfs` 与 `/var/lib/armada/need-growfs`，合成根只看得见后者）摘掉，之后永远不再动；长失败也不影响启动，只是根还停在缩小的尺寸。验收时看 `findmnt -no SIZE /` 是不是 ~322 GiB。
 
 起来之后这样验收：
 
