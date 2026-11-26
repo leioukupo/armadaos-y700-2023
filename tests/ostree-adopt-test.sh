@@ -517,6 +517,11 @@ if command -v tar >/dev/null && command -v sha256sum >/dev/null; then
     check "the same image reference can be adopted twice" "[ $? -eq 0 ]"
     check "and the ref points at the newest merge commit" \
         "ostree --repo=$MNT/ostree/repo rev-parse ostree/container/image/docker_3A__2F__2F_ghcr_2E_io/mydanyi/armadaos-freedom_3A_stable >/dev/null"
+    # The repeat left a newer merge commit as the default, and stage-1 composes the
+    # newest BLS entry - follow the pointer, or the compose check below keeps asserting
+    # against a deployment that is no longer the default.
+    image_commit2=$(sed -n 's/^commit: \([0-9a-f]\{64\}\)$/\1/p' /tmp/armada-adopt-image2.$$.txt | tail -1)
+    [[ -n "$image_commit2" ]] && image_commit="$image_commit2"
     rm -f /tmp/armada-adopt-image2.$$.txt
 
     if [[ $drift_written -eq 1 ]]; then
