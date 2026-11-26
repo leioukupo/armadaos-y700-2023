@@ -488,7 +488,7 @@ if pivot_root "$new" "$new/sysroot/.stage1-oldroot" 2>/dev/null; then
     # Field 5 of mountinfo is the mount point; field 2 is the parent id, which is
     # what this line used to print, so the log never showed what was really mounted
     # where. major:minor plus the fstype is what tells a bind from a tmpfs.
-    log "composed mounts: $(awk '{print $4" "$5" "$6}' /proc/self/mountinfo | tr '\n' ';')"
+    log "composed mounts: $(awk '{ft="?"; for(i=7;i<=NF;i++) if($i=="-"){ft=$(i+1); break} print $3" "ft" "$5" "$6}' /proc/self/mountinfo | tr '\n' ';')"
     log "composed /etc=$(stat -c 'dev=%d ino=%i' /etc 2>/dev/null) /var=$(stat -c 'dev=%d ino=%i' /var 2>/dev/null) machine=$(cat /etc/machine-id 2>/dev/null)"
     # A forced power cut is the only way out of a board that never answers, and a
     # page-cache-only boot.log loses exactly the lines that explain the dead boot.
