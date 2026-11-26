@@ -1,0 +1,104 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# TB320FC: zero the boot-request region of the `misc` partition.
+#
+# Why this runs on the way out (PROGRESS.md A207).  A reboot issued from ArmadaOS
+# leaves `misc` holding `-bootloader` at offset 8, and the next power-on then sits on
+# the fastboot screen instead of loading the boot image the slot flags point at.
+# Measured on HA1WZJJ5: after one desktop session and a reboot, misc held the same
+# 16-byte record that `adb reboot bootloader` leaves behind, while the slot attributes
+# on the same LU still named the ArmadaOS boot image as the only bootable one (prio 10
+# after XBL had taken its boot-failure step down from 15).  Nothing inside a payload
+# Linux ever cleared that record again: only `fastboot erase misc` or a full EDL
+# restore did, which is why a plain reboot used to park the board on fastboot.
+#
+# Clearing the request before the SoC restarts keeps the flows that legitimately want
+# a bootloader separate from this one: entering fastboot from a host (fastboot,
+# `adb reboot bootloader`, EDL) never runs this code path, so those keep working, and
+# a reboot issued by ArmadaOS no longer latches the next boot into fastboot.
+#
+# Only the request region is touched; the vendor record at 0x8000 is left alone.
+#
+# Kill switch: clear=off in /etc/tb320fc/misc-clear.conf
+TB320FC_TAG=TB320FC-MISC-CLEAR-v1
+CONF=${TB320FC_MISC_CLEAR_CONF:-/etc/tb320fc/misc-clear.conf}
+clear=on
+region_kib=16
+if [ -f "${CONF}" ] ; then
+	TMPC=$(mktemp 2>/dev/null || echo /tmp/tb320fc-misc-clear.conf.$$)
+	tr -d '\r' < "${CONF}" > "${TMPC}" 2>/dev/null && . "${TMPC}" 2>/dev/null
+	rm -f "${TMPC}"
+fi
+
+if [ "${clear}" != on ] ; then
+	echo "${TB320FC_TAG} skip clear=${clear}"
+	exit 0
+fi
+case ${region_kib} in
+	''|*[!0-9]*) region_kib=16 ;;
+esac
+if [ "${region_kib}" -lt 1 ] || [ "${region_kib}" -gt 1024 ] ; then
+	region_kib=16
+fi
+sh "$(dirname "$0")/board-check" || { echo "${TB320FC_TAG} skip board-mismatch" ; exit 0 ; }
+
+# TB320FC_MISC_DEV overrides the partition hunt and is what lets the test suite drive
+# this script against a plain file.  An override that is missing is a hard error:
+# "nothing to do" is the most damaging answer a cleanup helper can give.
+dev=${TB320FC_MISC_DEV:-}
+if [ -z "${dev}" ] ; then
+	i=0
+	while [ "${i}" -lt 10 ] ; do
+		for cand in /dev/disk/by-partlabel/misc /dev/block/by-name/misc ; do
+			if [ -e "${cand}" ] ; then
+				dev=${cand}
+				break
+			fi
+		done
+		if [ -n "${dev}" ] ; then break ; fi
+		i=$((i + 1))
+		if [ "${i}" -lt 10 ] ; then sleep 1 ; fi
+	done
+fi
+if [ -z "${dev}" ] ; then
+	echo "${TB320FC_TAG} skip no-misc-partlabel-after-10s"
+	exit 0
+fi
+if [ ! -b "${dev}" ] && [ ! -f "${dev}" ] ; then
+	echo "${TB320FC_TAG} FAIL target-not-block-or-regular dev=${dev}" >&2
+	exit 1
+fi
+
+bytes=$((region_kib * 1024))
+have=$(blockdev --getsize64 "${dev}" 2>/dev/null)
+case ${have} in ''|*[!0-9]*) have=$(wc -c < "${dev}" 2>/dev/null | tr -d ' ') ;; esac
+if [ -z "${have}" ] || [ "${have}" -lt "${bytes}" ] ; then
+	echo "${TB320FC_TAG} FAIL region-larger-than-target dev=${dev} have=${have:-unknown} want=${bytes}" >&2
+	exit 1
+fi
+
+# Idempotent: an already empty request needs no write, so a no-op reboot does not
+# wear at the UFS.
+dirty=$(dd if="${dev}" bs=1024 count="${region_kib}" 2>/dev/null |
+	od -An -v -tx1 | tr -d ' \t\n' | tr -d '0')
+if [ -z "${dirty}" ] ; then
+	echo "${TB320FC_TAG} done already_clear=1 written=0 dev=${dev} region_kib=${region_kib}"
+	exit 0
+fi
+
+dd if=/dev/zero of="${dev}" bs=1024 count="${region_kib}" conv=notrunc 2>/dev/null
+rc=$?
+if [ "${rc}" -ne 0 ] ; then
+	echo "${TB320FC_TAG} FAIL write-rc=${rc} dev=${dev}" >&2
+	exit 1
+fi
+left=$(dd if="${dev}" bs=1024 count="${region_kib}" 2>/dev/null |
+	od -An -v -tx1 | tr -d ' \t\n' | tr -d '0')
+if [ -n "${left}" ] ; then
+	echo "${TB320FC_TAG} FAIL readback-not-zero dev=${dev}" >&2
+	exit 1
+fi
+sync 2>/dev/null
+blockdev --flushbufs "${dev}" 2>/dev/null
+echo "${TB320FC_TAG} done already_clear=0 written=${region_kib} dev=${dev} region_kib=${region_kib}"
+exit 0

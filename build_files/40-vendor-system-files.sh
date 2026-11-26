@@ -182,6 +182,7 @@ systemctl enable tb320fc-input.service
 # which is every payload Linux boot on this board, so re-write the vendor resting
 # state each time the payload reaches multi-user.target (PROGRESS.md A194).
 systemctl enable tb320fc-slot-pin.service
+systemctl enable tb320fc-misc-clear.service
 
 # logind's "reboot implies set-wall-message" annotation lets Steam re-enable
 # the reboot wall past the deny rule; the pre-check fails loud on a reformat.

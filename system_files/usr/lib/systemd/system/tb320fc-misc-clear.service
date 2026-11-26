@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# Drop the misc boot-request on the way out, so a reboot issued from ArmadaOS does not
+# leave the next power-on parked on the fastboot screen (PROGRESS.md A207).  This is a
+# shutdown hook: ExecStart is a no-op that only keeps the unit loaded, and ExecStop is
+# what actually runs - while UFS and udev are still up, before shutdown.target.
+[Unit]
+Description=TB320FC clear the misc boot-request before shutdown
+Documentation=file:/usr/libexec/tb320fc/misc-clear
+Documentation=file:/etc/tb320fc/misc-clear.conf
+DefaultDependencies=no
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStopSec=60
+ExecStart=/usr/bin/true
+ExecStop=/usr/libexec/tb320fc/misc-clear
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=shutdown.target
