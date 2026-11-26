@@ -169,6 +169,27 @@ if [[ -L "$SROOT/ostree" ]]; then
 elif [[ ! -e "$SROOT/ostree" ]]; then
     run mkdir -p "$SROOT/ostree"
 fi
+# A sysroot repo on a real ostree host is mode=bare. This board had a repo left
+# behind by an aborted attempt that used the container-store default, and libostree
+# refuses root writes in it: the base-layer commit died with
+# "error: ostree-tar: Failed to handle file: ostree-tar: Failed to import file:
+# Writing content object: Not allowed due to repo mode" after all the staging work.
+# Nothing referenced those objects (no refs, no deployments), so the repo is set aside
+# under a fixed name and a bare one is built in its place.
+MOVED_REPO=""
+if [[ -f "$REPO/config" ]]; then
+    repo_mode=$(ostree --repo="$REPO" config get core.mode 2>/dev/null || echo unknown)
+    if [[ "$repo_mode" != bare ]]; then
+        echo "note: $REPO is core.mode=$repo_mode; an ostree host sysroot needs bare"
+        if [[ $DRY_RUN -eq 0 ]]; then
+            [[ ! -e "$REPO.pre-adopt" ]] || die "$REPO.pre-adopt already exists: clear it or adopt --force is not enough here"
+            run mv "$REPO" "$REPO.pre-adopt"
+            [[ $DRY_RUN -eq 1 ]] || MOVED_REPO="$REPO.pre-adopt"
+            run ostree init --repo="$REPO" --mode=bare
+            echo "note: rebuilt $REPO as mode=bare; the old one is kept at $REPO.pre-adopt"
+        fi
+    fi
+fi
 if [[ ! -f "$REPO/config" ]]; then
     run ostree admin init-fs "$SYSROOT" || \
         echo "note: init-fs did not finish; building the skeleton directly"
@@ -760,6 +781,8 @@ echo "that mounts this root and runs ostree-prepare-root with the ostree= karg a
 [[ $KEEP_STAGE -eq 1 ]] || run rm -rf "$STAGE"
 echo
 echo "undo:  rm -rf $SROOT/ostree $SROOT/boot/loader* $SROOT/boot/ostree $STAGE"
+[[ -n "$MOVED_REPO" ]] && echo "       the repo this run replaced is still at $MOVED_REPO"
+
 echo "       stage-1 can be turned off with: printf 'no\n' > $SYSROOT/etc/armada/ostree-boot"
 if [[ -n "$IMAGE_REF" ]]; then
     echo "       image refs: $IMAGE_BLOB_REF  $IMAGE_STORE_REF"

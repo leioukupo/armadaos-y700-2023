@@ -520,7 +520,7 @@ check "and a deployment exists again" \
     "ls $MNT/ostree/deploy/default/deploy/*.0 >/dev/null 2>&1"
 check "the re-run still armed stage-1 in every root" \
     "[ -x $MNT/init ] && [ -x $MNT/usr/lib/armada/armada-ostree-stage1.sh ]"
-sed -n '/^== ostree admin status/,$p' /tmp/armada-adopt-skeleton.$$.txt | sed -n 's/^/  | skeleton /p' | head -12
+tail -22 /tmp/armada-adopt-skeleton.$$.txt | sed -n 's/^/  | skeleton /p'
 rm -f /tmp/armada-adopt-skeleton.$$.txt
 
 # ---- a dry run must not change an existing sysroot --------------------------
