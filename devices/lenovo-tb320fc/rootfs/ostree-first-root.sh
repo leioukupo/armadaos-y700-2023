@@ -45,6 +45,11 @@ set -euo pipefail
 ROOTFS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ADOPT="$ROOTFS_DIR/armada-ostree-adopt.sh"
 
+# Named patterns for the post-adoption gates, so tests/ostree-first-root-test.sh can run
+# the same matching against captured real output instead of a copy that can drift.
+STATUS_RE_TPL='^[[:space:]]+@STATEROOT@ [0-9a-f]+\.0'
+FARM_GLOB_TPL='ostree/boot.@BOOTV@*/@STATEROOT@'
+
 IMG=""; BUNDLE=""; IMAGE_REF=""; IMAGE_META=""; BASE_LAYER=""; FACTORY_ETC=""; IMAGE_VAR=""
 STATEROOT=default; ROOT_KARG=root=PARTLABEL=linuxroot; MNT=/mnt/ufs-ostree-first
 DRY=0; DISARM=0; CHECK=0; LABEL=y700root-ufs
@@ -170,8 +175,12 @@ fail=0
 note() { if eval "$2"; then log "ok:   $1"; else log "FAIL: $1"; fail=$((fail + 1)); fi; }
 
 status=$(ostree admin --sysroot="$MNT" status 2>&1)
+# libostree lists each deployment as "  <stateroot> <deploy-id>.0" - the word
+# "Deployment" is not in that output, which is what made this gate fail on a sysroot
+# that was actually fine.
+status_re=${STATUS_RE_TPL/@STATEROOT@/$STATEROOT}
 note "ostree admin status lists a $STATEROOT deployment" \
-     "grep -qE '^[[:space:]]+$STATEROOT [0-9a-f]+\\.0' <(\"\$status\")"
+     "grep -qE \"\$status_re\" <<<\"\$status\""
 note "the origin is the container reference" \
      "grep -q 'container-image-reference' \"$MNT\"/ostree/deploy/$STATEROOT/deploy/*.origin"
 note "/init is the stage-1 launcher" "[[ -x $MNT/init ]]"
@@ -219,8 +228,10 @@ done
 # verify the links for the bootversion this sysroot really uses (BLS adoption => boot.1).
 bootv=0
 [[ -L "$MNT/boot/loader" && "$(readlink "$MNT/boot/loader")" == *loader.1 ]] && bootv=1
+farm=${FARM_GLOB_TPL/@BOOTV@/$bootv}
+farm=${farm/@STATEROOT@/$STATEROOT}
 note "stage-1 can resolve the boot links (boot.$bootv)" \
-     "find \"$MNT\"/ostree/boot.$bootv*/$STATEROOT -maxdepth 1 -type l | grep -q ."
+     "find \"$MNT\"/$farm -maxdepth 1 -type l | grep -q ."
 
 if [[ "$CHECK" == 1 ]]; then
     umount "$MNT"
