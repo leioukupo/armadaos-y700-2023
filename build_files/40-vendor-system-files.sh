@@ -111,6 +111,8 @@ systemctl enable sddm.service
 systemctl enable tb323fu-btaddr.service
 systemctl enable tb323fu-usb-port.service
 systemctl enable tb323fu-audio.service
+# Conditions keep this off a flat root: it only ever runs in a composed one.
+systemctl enable armada-ostree-confirm.service
 systemctl enable tb323fu-audio-prepare.service
 systemctl enable tb323fu-bluetooth-firmware.service
 # The user unit is enabled on every device; the helper itself exits 0 unless

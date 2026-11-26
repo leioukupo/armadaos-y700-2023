@@ -210,6 +210,20 @@ usr/lib/systemd/system/tb320fc-misc-clear.service 0644
 etc/tb320fc/misc-clear.conf 0644
 BAKED
 want tb320fc-misc-clear shutdown.target
+# --- the OSTree stage-1 runtime. Same reasoning as the Containerfile: the flat
+# --- root is what the adoption commits, so the helpers and the confirm unit have
+# --- to be in this tree or they end up as an overlay the next upgrade erases.
+# --- /init itself stays out of the tree: the boot payload reads it from the
+# --- physical root, and adopt installs it there only.
+ROOTFS="$(cd "$(dirname "$0")" && pwd)"
+for f in armada-ostree-stage1.sh armada-ostree-confirm.sh armada-ostree-bootlink.sh; do
+    install -Dm0755 "$ROOTFS/$f" "$MNT/usr/lib/armada/$f"
+    log "baked usr/lib/armada/$f"
+done
+install -Dm0644 "$ROOTFS/armada-ostree-confirm.service" \
+    "$MNT/usr/lib/systemd/system/armada-ostree-confirm.service"
+log "baked usr/lib/systemd/system/armada-ostree-confirm.service"
+want armada-ostree-confirm basic.target
 # --- bootc must not try to rebuild a boot image when a deployment finalizes.
 # --- ABL loads kernel/DTB/initramfs from the raw boot_a partition and this board has
 # --- no ESP /KERNEL, so /etc/armada/boot-method has to say none: without the file

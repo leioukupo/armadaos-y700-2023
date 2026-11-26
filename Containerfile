@@ -96,6 +96,17 @@ COPY build_files /build_files/
 COPY decky /decky/
 COPY system_files /system_files/
 COPY --chmod=0755 system_files/usr/bin/armada-reboot-edl /system_files/usr/bin/armada-reboot-edl
+# TB320FC composes its OSTree deployment from /init in the physical root. That
+# launcher only starts /usr/lib/armada/armada-ostree-stage1.sh, and the confirm
+# unit runs inside the composed root, so its ExecStart file has to come from the
+# tree the commit builds. Ship them in the image: an adoption that installs them
+# afterwards leaves them in a tree ostree never verifies, and the first
+# bootc upgrade drops them - after which every composed boot looks unconfirmed
+# and the kill switch turns the composed root off by itself (PROGRESS A207).
+COPY --chmod=0755 devices/lenovo-tb320fc/rootfs/armada-ostree-stage1.sh /system_files/usr/lib/armada/armada-ostree-stage1.sh
+COPY --chmod=0755 devices/lenovo-tb320fc/rootfs/armada-ostree-confirm.sh /system_files/usr/lib/armada/armada-ostree-confirm.sh
+COPY --chmod=0755 devices/lenovo-tb320fc/rootfs/armada-ostree-bootlink.sh /system_files/usr/lib/armada/armada-ostree-bootlink.sh
+COPY devices/lenovo-tb320fc/rootfs/armada-ostree-confirm.service /system_files/usr/lib/systemd/system/armada-ostree-confirm.service
 # TB323FU's two connectors share one controller. Reuse its tested routing
 # components in the common image; the helper checks the board compatible.
 COPY devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-usb-port /system_files/usr/libexec/tb323fu/tb323fu-usb-port
