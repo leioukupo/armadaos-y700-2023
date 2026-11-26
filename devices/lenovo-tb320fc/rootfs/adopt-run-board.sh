@@ -27,8 +27,13 @@ get() { curl -fsS -u "$AUTH" -o "$2" "$SRC/$1"; }
 
 mkdir -p "$D/imgmeta"
 cd "$D"
-get armada-ostree-adopt.sh armada-ostree-adopt.sh
-get armada-ostree-stage1.sh armada-ostree-stage1.sh
+# adopt.sh installs the stage-1 runtime from files that have to sit next to it
+# (--stage1 install dies on a missing one even during --dry-run), so fetch the whole
+# set rather than only the two that were needed before the runtime moved into the tree.
+for f in armada-ostree-adopt.sh armada-ostree-stage1.sh armada-ostree-confirm.sh \
+         armada-ostree-bootlink.sh armada-ostree-confirm.service init-ostree; do
+    get "$f" "$f"
+done
 get imgmeta/manifest.json imgmeta/manifest.json
 get imgmeta/config.json imgmeta/config.json
 get base-layer.tar base-layer.tar

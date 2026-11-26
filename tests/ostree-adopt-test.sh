@@ -514,6 +514,20 @@ check "dry run left stage-1 marker alone" "[ \$(cat $MNT/etc/armada/ostree-boot)
 rm -f /tmp/armada-adopt-before.$$.txt /tmp/armada-adopt-after.$$.txt \
     /tmp/armada-adopt-dry.$$.txt /tmp/armada-booted-probe.$$.sh /tmp/armada-booted-ref.$$.bin
 
+# ---- the board wrapper has to fetch what adopt.sh reads from its own directory ----
+# adopt.sh installs the stage-1 runtime from files beside it ($here/...), and it checks
+# for them before anything is written, so a wrapper that fetches a subset dies on the
+# tablet at the first --dry-run instead of at the commit. The names are collected from
+# the script itself so a new runtime file cannot be added without the wrapper noticing.
+wrap="$SRC_DIR/adopt-run-board.sh"
+[ -f "$wrap" ] || fail "missing board wrapper $wrap"
+here_needs=$(grep -oE '\$here/[A-Za-z0-9._-]+' "$ADOPT" | sed 's|^\$here/||' |
+    grep -v '^\$' | sort -u)
+for f in $here_needs armada-ostree-stage1.sh armada-ostree-confirm.sh armada-ostree-bootlink.sh; do
+    [ -f "$SRC_DIR/$f" ] || fail "adopt.sh wants $f but the tree does not carry it"
+    check "the board wrapper fetches $f" "grep -q '$f' '$wrap'"
+done
+
 echo
 [[ $fails -eq 0 ]] && echo "OSTREE_ADOPT_TEST_OK" || echo "OSTREE_ADOPT_FAILURES=$fails"
 exit $fails
