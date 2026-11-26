@@ -685,26 +685,28 @@ fi
 # /etc from /usr/etc only. A first boot of that deployment would come up with no
 # machine-id, no passwd and no fstab, so seed it from the live /etc; the tree's
 # own /usr/etc files already landed there and win the no-clobber race.
-# Highest deploy serial, the way armada-ostree-stage1.sh picks it. Note the -d:
-# without it ls lists the contents of the deployment directory.
-newest=
-newest_serial=-1
+# Every deployment checkout under the stateroot, not one picked by suffix. The suffix is
+# the boot serial, and a re-adopt leaves a rollback deployment with the same serial 0 next
+# to the new default; the old "highest serial, last wins" tie-break then chose the
+# rollback by name order, so the stage-1 runtime went into a tree no BLS entry points at
+# while the deployment stage-1 will actually compose stayed unarmed. These are the only
+# trees a boot can compose, and installing into all of them is idempotent.
+deps=()
 for d in "$DEPLOY_DIR"/deploy/*; do
     [[ -d "$d" ]] || continue
-    s=${d##*.}
-    [[ $s =~ ^[0-9]+$ ]] || continue
-    if (( s >= newest_serial )); then
-        newest_serial=$s
-        newest=$d
-    fi
+    [[ "${d##*.}" =~ ^[0-9]+$ ]] || continue
+    deps+=("$d")
 done
 if [[ "$FROM_MODE" == deployment ]]; then
     # The new deployment merges /etc from the running one, and $SROOT/etc is
     # that running /etc right now; seeding it again would only churn links.
     echo "deployment /etc: merged from the running deployment"
-elif [[ -n "$newest" && -d "$newest/etc" ]]; then
-    run cp -alxn "$SROOT/etc/." "$newest/etc/"
-    echo "seeded deployment /etc from $SROOT/etc into $newest/etc"
+elif [[ ${#deps[@]} -gt 0 ]]; then
+    for d in "${deps[@]}"; do
+        [[ -d "$d/etc" ]] || continue
+        run cp -alxn "$SROOT/etc/." "$d/etc/"
+    done
+    echo "deployment /etc: seeded from $SROOT/etc into ${#deps[@]} deployment(s)"
 else
     echo "note: no deployment /etc to seed under $DEPLOY_DIR"
 fi
@@ -723,8 +725,8 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     # Both trees need them, not only the physical root: a composed boot runs the
     # stage-1 files out of the *deployment* (/usr comes from the commit), and an
     # 0644 copy in there makes confirm die on "Permission denied" - which stage-1
-    # then counts as a dead composed boot. $newest is the deployment this run just
-    # built; editing it after checkout is an overlay ostree never verifies, and the
+    # then counts as a dead composed boot. Every deployment gets them (deps above);
+    # editing a checkout after the fact is an overlay ostree never verifies, and the
     # next adopt/checkpoint rewrites it from the flat root anyway.
     # A list, not a string: --sysroot / leaves SROOT empty on purpose (so paths never
     # print as //), and a space-joined list loses that empty element to word splitting.
@@ -732,7 +734,7 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     # stage-1 runtime - while every per-root check still passed because they only ever
     # saw the deployment.
     roots=("$SROOT")
-    [[ -n "${newest:-}" && -d "$newest" ]] && roots+=("$newest")
+    for d in ${deps[@]+"${deps[@]}"}; do roots+=("$d"); done
     for root in "${roots[@]}"; do        # libostree marks a deployment's top-level directory immutable (the same
         # reason `ostree admin unlock` exists), so creating /init inside the tree
         # this run just checked out fails with EPERM: install aborts, adopt exits

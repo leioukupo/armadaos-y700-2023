@@ -423,6 +423,21 @@ rerun_new=$(ls -1d "$MNT"/ostree/deploy/default/deploy/"$rerun_commit".[0-9] 2>/
 check "re-adopt left one usable deployment" \
     "[ -n \"$rerun_new\" ] && [ \$(ls -1d $MNT/ostree/deploy/default/deploy/*.0 | wc -l) -le 2 ]"
 check "re-adopt kept the kill switch" "[ \$(cat $MNT/etc/armada/ostree-boot) = yes ]"
+# Every deployment left behind - default and the rollback a re-adopt creates - has to
+# carry the stage-1 runtime. On the tablet the "highest serial, last wins" pick armed the
+# rollback while the BLS entry stage-1 boots pointed at the default, so the composed boot
+# would have had no stage-1 files in /usr at all.
+armed=0; unarmed=""
+for d in "$MNT"/ostree/deploy/default/deploy/*.0; do
+    [[ -d "$d" ]] || continue
+    armed=$((armed + 1))
+    [[ -x "$d/usr/lib/armada/armada-ostree-stage1.sh" ]] &&
+        [[ -x "$d/usr/lib/armada/armada-ostree-confirm.sh" ]] && continue
+    unarmed="$unarmed $d"
+done
+check "all $armed deployments carry the stage-1 runtime" "[ -z \"$unarmed\" ]"
+check "and only the physical root carries /init" \
+    "[ -x $MNT/init ] && ! ls $MNT/ostree/deploy/default/deploy/*.0/init >/dev/null 2>&1"
 check "re-adopt kept the stateroot var" "grep -q 'stateroot var: kept' /tmp/armada-adopt-rerun.$$.txt"
 check "the refreshed tree has no stage-1 launcher" "[ ! -e $rerun_new/init ]"
 check "the refreshed tree has no stage-1 runtime state" "[ ! -e $rerun_new/armada-ostree ]"
