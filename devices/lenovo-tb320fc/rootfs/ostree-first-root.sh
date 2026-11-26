@@ -86,7 +86,7 @@ done
 
 [[ -n "$IMG" ]] || die "usage: $(basename "$0") IMG --image-ref REF --bundle DIR"
 [[ -f "$IMG" ]] || die "no such image: $IMG"
-[[ -n "$IMAGE_REF" ]] || die "--image-ref is required (it is what makes the origin bootc-managed)"
+[[ "$CHECK" == 1 || -n "$IMAGE_REF" ]] || die "--image-ref is required (it is what makes the origin bootc-managed)"
 
 if [[ -n "$BUNDLE" ]]; then
     IMAGE_META=${IMAGE_META:-$BUNDLE/imgmeta}
@@ -230,8 +230,22 @@ bootv=0
 [[ -L "$MNT/boot/loader" && "$(readlink "$MNT/boot/loader")" == *loader.1 ]] && bootv=1
 farm=${FARM_GLOB_TPL/@BOOTV@/$bootv}
 farm=${farm/@STATEROOT@/$STATEROOT}
-note "stage-1 can resolve the boot links (boot.$bootv)" \
-     "find \"$MNT\"/$farm -maxdepth 1 -type l | grep -q ."
+# The stateroot lives under /ostree/boot.N (the symlink libostree maintains) or, if that
+# link is gone, under /ostree/boot.N.M. Globbing both into one [ -d ] would hand test two
+# words, so collect the candidates and check one at a time.
+farm_dir=""
+for cand in "$MNT"/ostree/$farm "$MNT"/ostree/boot."$bootv"/"$STATEROOT"; do
+    [[ -d "$cand" ]] && { farm_dir="$cand"; break; }
+done
+note "the /ostree/boot.$bootv farm holds the $STATEROOT stateroot" "[[ -n \"$farm_dir\" ]]"
+# What stage-1 resolves at boot is the path in the entry's own ostree= karg: the farm is
+# boot.1.1/default/<bootcsum>/ (a real directory) and the <treebootserial> inside it is the
+# symlink, so "-type l" one level down never matches. Following the entry cannot drift.
+for f in "${bls[@]}"; do
+    link=$(sed -n 's/.*ostree=\([^ ]*\).*/\1/p' "$f" | head -1)
+    note "$(basename "$f") ostree= link resolves to a deployment" \
+         "[[ -n \"$link\" && -d \"$MNT$link\" ]]"
+done
 
 if [[ "$CHECK" == 1 ]]; then
     umount "$MNT"

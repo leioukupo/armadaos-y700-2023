@@ -115,23 +115,54 @@ if [ -z "${farm_tpl}" ]; then
     fail "cannot read FARM_GLOB_TPL out of $(basename "$FIRST")"
     farm_tpl='ostree/boot.@BOOTV@*/@STATEROOT@'
 fi
+# The farm shape an adopted sysroot really has (captured from the offline adoption):
+#   /ostree/boot.1 -> boot.1.1
+#   /ostree/boot.1.1/default/<bootcsum>/0 -> ../../../deploy/default/deploy/<id>.0
+# The <bootcsum> entry is a directory and only the <treebootserial> inside it is a symlink,
+# which is why a check for symlinks one level under the stateroot failed a good sysroot.
 T=$(mktemp -d /tmp/armada-farm-XXXXXX)
-mkdir -p "${T}/ostree/boot.1.1/default"
+CSUM=73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac
+DEPLOY=18d545a443f8c86334db77213bc76ce42a2a8c3bb3a83f78fcdf56e3c7269f33.0
+mkdir -p "${T}/ostree/boot.1.1/default/${CSUM}" "${T}/ostree/deploy/default/deploy/${DEPLOY}"
 ln -s "boot.1.1" "${T}/ostree/boot.1"
-ln -s /dev/null "${T}/ostree/boot.1.1/default/73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+ln -s "../../../deploy/default/deploy/${DEPLOY}" "${T}/ostree/boot.1.1/default/${CSUM}/0"
 farm=${farm_tpl/@BOOTV@/1}; farm=${farm/@STATEROOT@/default}
 farm0=${farm_tpl/@BOOTV@/0}; farm0=${farm0/@STATEROOT@/default}
-if out=$(find "${T}/${farm}" -maxdepth 1 -type l 2>/dev/null) && [ -n "${out}" ]; then
-    ok "the derived glob finds the boot.1 farm that stage-1 reads"
+found=""
+for cand in "${T}"/${farm}; do
+    [ -d "${cand}" ] && found="${cand}"
+done
+if [ -n "${found}" ]; then
+    ok "the derived boot.1 glob finds the stateroot the adoption wrote"
 else
-    fail "the derived glob does not find the boot.1 farm"
+    fail "the derived boot.1 glob does not find the stateroot"
 fi
-if [ -n "$(find "${T}/${farm0}" -maxdepth 1 -type l 2>/dev/null)" ]; then
-    fail "fixture problem: boot.0 matches too, so the old hardcoded path cannot be shown to be wrong"
+if [ -n "$(find "${T}"/${farm0} -maxdepth 1 2>/dev/null)" ]; then
+    fail "fixture problem: boot.0 matches too, so the old hardcoded version cannot be shown to be wrong"
 else
-    ok "the hardcoded boot.0 path would have found nothing on this sysroot"
+    ok "the hardcoded boot.0 farm would have found nothing on this sysroot"
+fi
+if [ -n "$(find "${T}/ostree/boot.1/default" -mindepth 2 -maxdepth 2 -type l 2>/dev/null)" ]; then
+    ok "the deployment link sits at <bootcsum>/<serial> under the stateroot"
+else
+    fail "fixture problem: the treebootserial link is not where libostree puts it"
+fi
+if [ -n "$(find "${T}/ostree/boot.1/default" -maxdepth 1 -type l 2>/dev/null)" ]; then
+    fail "fixture problem: a link directly under default/ hides the maxdepth mistake"
+else
+    ok "symlinks one level under the stateroot really are absent (the old gate's error)"
 fi
 rm -rf "${T}"
+# the gate has to read the ostree= path the same way the runtime does, or it can bless a
+# link nothing will resolve
+prog='s/.*ostree=\([^ ]*\).*/\1/p'
+for f in armada-ostree-stage1.sh armada-ostree-bootlink.sh ostree-first-root.sh; do
+    if grep -qF "${prog}" "${SRC_DIR}/${f}"; then
+        ok "${f} extracts the farm path with the same sed program"
+    else
+        fail "${f} no longer extracts ostree= with 's/.*ostree=\\([^ ]*\\).*/\\1/p'"
+    fi
+done
 for f in armada-ostree-stage1.sh armada-ostree-bootlink.sh ostree-first-root.sh; do
     if grep -q "loader\.1" "${SRC_DIR}/${f}"; then
         ok "${f} picks the bootversion from the /boot/loader symlink"
