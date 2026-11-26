@@ -175,9 +175,9 @@ check "stage-1 installed" \
 # The revert mechanism needs a systemd unit that runs inside the composed root,
 # and it has to be machine state so both roots carry it.
 check "confirm unit installed and enabled" \
-    "[ -f $MNT/etc/systemd/system/armada-ostree-confirm.service ] && [ -L $MNT/etc/systemd/system/multi-user.target.wants/armada-ostree-confirm.service ]"
+    "[ -f $MNT/etc/systemd/system/armada-ostree-confirm.service ] && [ -L $MNT/etc/systemd/system/basic.target.wants/armada-ostree-confirm.service ]"
 check "confirm unit carried into the deployment /etc" \
-    "[ -f $deploy/etc/systemd/system/armada-ostree-confirm.service ] && [ -L $deploy/etc/systemd/system/multi-user.target.wants/armada-ostree-confirm.service ]"
+    "[ -f $deploy/etc/systemd/system/armada-ostree-confirm.service ] && [ -L $deploy/etc/systemd/system/basic.target.wants/armada-ostree-confirm.service ]"
 
 # ---- the kill switch: marker "no" has to leave the flat root alone ----------
 # Right after armada-ostree-adopt, and after any later rollback of the composed
@@ -392,7 +392,7 @@ check "re-adopt kept the stateroot var" "grep -q 'stateroot var: kept' /tmp/arma
 check "the refreshed tree has no stage-1 launcher" "[ ! -e $rerun_new/init ]"
 check "the refreshed tree has no stage-1 runtime state" "[ ! -e $rerun_new/armada-ostree ]"
 check "the refreshed /etc carries the confirm unit" \
-    "[ -f $rerun_new/etc/systemd/system/armada-ostree-confirm.service ] && [ -L $rerun_new/etc/systemd/system/multi-user.target.wants/armada-ostree-confirm.service ]"
+    "[ -f $rerun_new/etc/systemd/system/armada-ostree-confirm.service ] && [ -L $rerun_new/etc/systemd/system/basic.target.wants/armada-ostree-confirm.service ]"
 check "the refreshed deployment targets the same ref" "grep -q '^refspec=armadaos$' $rerun_new.origin"
 
 # ---- an image-backed deployment: the shape bootc manages -------------------

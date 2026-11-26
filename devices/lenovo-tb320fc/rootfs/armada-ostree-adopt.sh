@@ -571,8 +571,13 @@ if [[ "$STAGE1_MODE" != skip ]]; then
     [[ -f "$here/$unit" ]] || die "missing $unit next to $0"
     run mkdir -p "$SROOT/etc/systemd/system"
     run install -m 0644 "$here/$unit" "$SROOT/etc/systemd/system/$unit"
-    run mkdir -p "$SROOT/etc/systemd/system/multi-user.target.wants"
-    run ln -sf "../$unit" "$SROOT/etc/systemd/system/multi-user.target.wants/$unit"
+    # WantedBy=basic.target, and that is the point: the unit is After=basic.target
+    # so a composed boot that stalls on some later unit still confirms itself. A
+    # wants link under multi-user.target would only be pulled in once multi-user
+    # was reached - the exact shape that made the first version report a healthy
+    # desktop as a dead boot (PROGRESS A196).
+    run mkdir -p "$SROOT/etc/systemd/system/basic.target.wants"
+    run ln -sf "../$unit" "$SROOT/etc/systemd/system/basic.target.wants/$unit"
     echo "confirm unit: $SROOT/etc/systemd/system/$unit enabled"
 fi
 
