@@ -163,33 +163,30 @@ ls /var/home/armada/.local/share/Steam/steam.sh   # factory Steam 在 commit 里
 **接手顺序**：§2 提取输入 → 需要时 §3 回安卓（先按 §3.0 判断崩在哪层）→ §4 装 ArmadaOS，**只用 `PIN=a`** → §5 核对回滚点 → 起不来按 §6 排。
 
 **A226 的三条硬教训**（已进 §0 事实表）：① 槽只能钉到**真有固件**的一侧，rom 只写 `_a`；② 写表前先读回验模式——crashdump 里 `--memory` 会静默转储 DDR 还显示 100%；③ `prim*.bin` 含 protective MBR，必须 `ws 0`，`ws 1` 直接把 GPT header 盖掉。
-## 9. 暂停时的现场清单（2026-11-27，comfyui = 192.168.31.3）
+## 9. 暂停时的现场清单（2026-11-27 收尾，comfyui = 192.168.31.3）
 
-**进程**：所有后台 job（`rescue_gpt.sh` / `krash_cycle.py` / 各看守与 http 服务）都已停止；Windows 侧 8123 服务已关。板子保持长按 Power 关机状态。
+**进程**：所有后台 job（`rescue_gpt.sh` / `krash_cycle.py` / 看守 / http 服务）都已停止；Windows 侧 8123 服务已关。板子保持长按 Power 关机。
 
-**已经删掉的**（都是本次调查的一次性产物）：
+**已回收**：`/` 从 55 G 空闲 → **258 G 空闲**（约 203 G）。删掉的全是可重建的中间产物与一次性垃圾：
 
-* `/srv/y700/edltool/memory/` —— 2.4 GB crashdump DDR 转储。
-* `/srv/y700/edltool/logs/log.txt` —— 3.8 GB 的 `Timed out` 刷屏日志。
-* `/srv/y700/edltool/fix_gpt_watch.sh` —— **内含错误的 `ws 1 prim4.bin`**（会把 protective MBR 盖到 GPT header 上），留着迟早出事，已删；正确版本是 `rescue_gpt.sh`（`ws 0` + 先读回验模式）。
-* `/srv/y700/edltool/reset_cycles.sh` —— `$py` 变量写错、实际什么都没跑，已删。
+* `a224` 43 G（本次上板的 root 镜像 + bundle）、`a206` 15 G（上一轮 root）、`gen2root` 13 G（11-14 的旧扁平 root）、`a222` 3.7 G（装机时用的 repo 工作副本）、`regdata` 24 G（LAN registry blobs）。
+* crashdump 产物：`edltool/memory/` 2.4 G DDR 转储、`edltool/logs/log.txt` 3.8 G `Timed out` 刷屏。
+* podman：`container prune` + `image prune -a` + `builder prune` + `rmi --all`，`/var/lib/containers` 从 103 G → 4.8 M（包括本地 `armada` 镜像与全部基础镜像，下次 `just build` 重新拉/重建）。
+* 连"小文件备份 tar"也按**comfyui 上不保留**的指示删了。**持久副本只有仓库里的 `install/rescue/`**（4 份原表 + 脚本 + SHA256SUMS），别再只留构建机一份。
 
-**保留的救援物**：`/srv/y700/rescue-kit/`（4 份原表 + `undo-pin.sh` + `watch-edl-mode.sh` + `krash-cycle.py` + `SHA256SUMS`），与仓库 `install/rescue/` 哈希一致。`/srv/y700/edltool/` 里留 `edlclient`、`rescue_gpt.sh`、`krash_cycle.py`、`krash_reboot.py`、`krash_fsm_try.py`、`gpt_in_ddr.py`（A226 用来证明 crashdump 只读的那次探测）。
+**危险脚本已清除**：`edltool/fix_gpt_watch.sh`（内含错误的 `ws 1 prim4.bin`，会把 protective MBR 盖到 GPT header 上 = 二次变砖）与 `reset_cycles.sh`（`$py` 变量 bug，实际什么都没跑）。正确写法只有 `edltool/rescue_gpt.sh` 和 `install/rescue/watch-edl-mode.sh`：先读回验模式，再 `ws 0` / `ws 1572859`，逐字节 `cmp`，最后 reset。
 
-**磁盘实测**（`/` 共 937 G，已用 831 G，**空闲 59 G**，94%）：
+**保留（`/srv/y700` = 105 G，每条都有理由）**：
 
-| 位置 | 占用 | 是什么 | 能不能删 |
-|---|---|---|---|
-| `/opt` | 366 G | 与本项目无关（comfyui 模型等） | 不在本项目的账上 |
-| `/srv` | 206 G | 全部是 `/srv/y700` | 见下面逐条 |
-| `/var/lib/containers` | 103 G | podman 镜像存储（`just build` 的 OCI） | `podman image prune` 可回收，代价是下次重建镜像 |
-| `/root/.local` | 91 G | 不是 y700 的（`/root/y700-artifacts` 只有 3.2 G，里面是 kShimC 各轮 runtime） | 别乱动 |
-| `/srv/y700/a224` | 43 G | 本次上板的 root 镜像（`root-armada:20261126.8231abd`，表观 64.3 G / 数据 27.85 G）+ bundle | **可删**：新平板要重新构建，留着也只对这台机有用 |
-| `/srv/y700/g4` | 31 G | 更早期轮次；其中 `a186/lu-live.img` 与 `.orig` 各 6 G 是**板上 LUN0 根分区的历史 dump** | 那两个 dump **别删**，是唯一的内容备份 |
-| `/srv/y700/regdata` | 24 G | LAN registry 的 blobs | 采纳要靠它；删了要从镜像重推 |
-| `/srv/y700/a206` | 15 G | 上一轮 root（`20261126.12b30e5`） | **可删**，已被 a224 取代 |
-| `/srv/y700/gen2root` | 15 G | `armada-root-20261114.img`，11-14 的旧扁平 root | **可删**，无引用 |
-| `/srv/y700/kbuild6/7/9` + `kshim-gen2` | 24 G | 7.3.0-rc6 内核构建树 + kShimC 源码树（模块树是镜像内容来源） | 建议留，重编内核很贵 |
-| `/srv/y700/edlrom` | 8.8 G | 唯一的全量还原 rom（含 `super_4.img` 5.7 G） | **别删** |
+| 位置 | 占用 | 为什么留 |
+|---|---|---|
+| `g4` | 31 G | 早期轮次；其中 `a186/lu-live.img` 与 `.orig` 各 6 G 是**这台机 LUN0 根分区的历史 dump**，唯一的内容备份 |
+| `kbuild6/7/9` + `kbuild` + `kshim-gen2` + `modtree` | ~26 G | 7.3.0-rc6 内核构建树与模块树、kShimC 源码树（镜像里的 `.ko` 与 vmlinuz 来源），重编代价大 |
+| `g7` | 14 G | 手柄 / 音频那几轮的现场 |
+| `a207` | 9.7 G | 含 `boot/boot_b-c61g.img`：PROGRESS 里最后一次可用的 kShimC boot 载荷 |
+| `edlrom` | 8.8 G | **唯一的全量还原源**（同型号平板通用，`super_4.img` 5.7 G）|
+| `output` | 6.8 G | `armada-20261116.2fc282e.img.gz` 成品镜像 |
+| `preserive-20261125` | 小 | 原机 6 个 LUN 的主备 GPT + xbl，§2 里 `--ref-gpt` 的来源 |
+| `firehose` / `edlvenv` / `edltool` / `rescue-kit` | 小 | firehose programmer、edl venv、救援脚本与 kit |
 
-一次性能腾出的最大一块：`a224` 43 G + `a206` 15 G + `gen2root` 15 G ≈ **73 G**，全都是可重建的中间产物；前提是确认这台机的板子不再需要它们（已经进过 UFS 且校验过，救援只需要 11 个扇区，不需要 root 镜像本身）。
+还能再腾约 **61 G**（`g4` + `g7` + `a207` + `output`），代价是丢掉这台机的历史 dump 与最后几份产物。等确认彻底放弃这台机、或新平板到手不再需要它们时再删。
