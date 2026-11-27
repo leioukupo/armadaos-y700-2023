@@ -8,6 +8,19 @@
 # side of the pair (PROGRESS A187/A204), so the pin here is done by editing the backup
 # GPT fields (bit48-51 priority, bit52-55 retry, bit55 dont-boot-again; A204 measured it).
 #
+# Pinning to the side that has no firmware bricks the board, so --pin b is gated.
+# A Lenovo EDL rom writes real images only into the *_a copies, since rawprogram4.xml
+# carries filename="" for uefi_b/tz_b/abl_b/boot_b/devcfg_b, leaving them zeroed.
+# Marking *_a dont-boot-again right after a rom restore forces XBL to load zeroed _b
+# firmware and XBL itself crashes, landing the board in PBL crashdump (USB 05c6:900e).
+# Crashdump Sahara is read-only (loader upload -> 0x93011004, command mode -> NAK), and
+# with no ABL there is no fastboot and no recovery: volume keys are not an EDL trigger
+# on this model, so the only way back is a hardware EDL short. See PROGRESS A226.
+#
+# undo-pin.sh is written next to the new tables so the pre-pin dumps go back verbatim.
+# The primary dump starts at LBA0 and holds the protective MBR, so it must be written
+# with ws 0 -- ws 1 would overwrite the GPT header with MBR bytes.
+#
 #   gpt-slice-pin.py --dir WORK [--ref-gpt F] [--userdata-end N] [--lr-start N]
 #                    [--lr-end N] [--pin a|b] [--prim4 F] [--back4 F]
 #
@@ -21,6 +34,7 @@
 # partition by PARTLABEL/ filesystem UUID, so the unique GUID is not load-bearing.
 import argparse
 import binascii
+import os
 import struct
 import uuid
 
@@ -36,7 +50,7 @@ def load(path):
         raise SystemExit('%s: no EFI PART' % path)
     my, alt, fu, lu = struct.unpack_from('<4Q', buf, off + 24)
     entba, cnt, esz, _tc = struct.unpack_from('<QIII', buf, off + 72)
-    return buf, off, dict(entba=entba, cnt=cnt, esz=esz, lu=lu, first=my - off // SEC)
+    return buf, off, dict(entba=entba, cnt=cnt, esz=esz, lu=lu, alt=alt, first=my - off // SEC)
 
 
 def recrc(buf, off, cnt, esz, entba, first):
@@ -90,6 +104,38 @@ def reslice(work, ref, ud_end, lr_start, lr_end):
               % ('primary' if 'prim' in src else 'backup', placed, lr_start, lr_end, ud_end, crc, out))
 
 
+def undo(work):
+    # Write the firehose commands that put the pre-pin LUN4 GPT back byte for byte.
+    _, _, H = load("%s/gptbak/prim4.bin" % work)
+    back = H["alt"] - 4
+    lines = [
+        "#!/bin/sh",
+        "# Restore the LUN4 GPT exactly as captured before gpt-slice-pin.py ran.",
+        "# prim4.bin starts at LBA0 and holds the protective MBR, hence ws 0 is required.",
+        "# Read the table first: a GPT header in the read-back proves we are in firehose/UFS mode,",
+        "# not in the read-only crashdump path, where --memory silently dumps DDR instead.",
+        "set -e",
+        ": ${LOADER:?set LOADER to xbl_s_devprg_ns.melf}",
+        "GPT=${GPTDIR:-gptbak}",
+        "EDL=${EDL:-edl.py --loader=$LOADER --memory=ufshcd}",
+        "$EDL rs 0 6 /tmp/check_prim4.bin --lun=4",
+        "dd if=/tmp/check_prim4.bin bs=4096 skip=1 count=1 2>/dev/null | grep -q EFI || exit 1",
+        "$EDL ws 0 $GPT/prim4.bin --lun=4",
+        "$EDL ws %d $GPT/back4.bin --lun=4",
+        "$EDL rs 0 6 /tmp/ok_prim4.bin --lun=4",
+        "cmp /tmp/ok_prim4.bin $GPT/prim4.bin",
+        "$EDL rs %d 5 /tmp/ok_back4.bin --lun=4",
+        "cmp /tmp/ok_back4.bin $GPT/back4.bin",
+        "edl.py --loader=$LOADER reset",
+        "echo GPT_RESTORED_AND_VERIFIED",
+    ]
+    path = "%s/undo-pin.sh" % work
+    with open(path, "w", newline="\n") as fh:
+        fh.write(("\n".join(lines) % (back, back)) + "\n")
+    os.chmod(path, 0o755)
+    print("undo-pin.sh written, LUN4 backup entries start at LBA%d" % back)
+
+
 def pin(work, target, prim4, back4):
     act, peer = (0x7f, 0xfb) if target == 'a' else (0xfb, 0x7f)
     boot = {0: 0x3f, 1: 0x3a} if target == 'a' else {0: 0x3a, 1: 0x3f}
@@ -120,6 +166,8 @@ ap.add_argument('--userdata-end', type=int, default=36827047)
 ap.add_argument('--lr-start', type=int, default=36827048)
 ap.add_argument('--lr-end', type=int, default=121268218)
 ap.add_argument('--pin', choices=['a', 'b'], default=None)
+ap.add_argument('--i-verified-b-firmware', action='store_true',
+                help='required for --pin b: assert the *_b firmware partitions exist')
 a = ap.parse_args()
 
 reslice(a.dir, a.ref_gpt, a.userdata_end, a.lr_start, a.lr_end)
@@ -128,4 +176,11 @@ if a.pin:
     b4 = '%s/gptbak/back4.bin' % a.dir
     if not (open(p4, 'rb').read() and open(b4, 'rb').read()):
         raise SystemExit('no LUN4 dumps under %s/gptbak' % a.dir)
+    if a.pin == "b" and not a.i_verified_b_firmware:
+        raise SystemExit(
+            "--pin b needs --i-verified-b-firmware: after a Lenovo EDL rom restore the *_b "
+            "firmware (uefi_b/tz_b/abl_b/devcfg_b) is zeroed, so marking *_a dont-boot-again "
+            "makes XBL crash into a read-only PBL crashdump that only a hardware EDL short "
+            "can reach (PROGRESS A226).")
     pin(a.dir, a.pin, p4, b4)
+    undo(a.dir)

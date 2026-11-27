@@ -32,6 +32,9 @@ LR_SECTORS=${LR_SECTORS:-}          # empty = derive from the e2image dump size
 BOOT_LBA=${BOOT_LBA:-108422}        # boot_a on LUN4; boot_b is 374511
 BOOT_SECTORS=${BOOT_SECTORS:-24576} # 96 MiB boot partition in 4 KiB LBAs
 PIN=${PIN:-}                        # a|b, empty = do not touch LUN4 flags
+# PIN=b is dangerous right after a rom restore: the rom leaves uefi_b/tz_b/abl_b/devcfg_b
+# zeroed (rawprogram4.xml filename=""), so XBL would load zeros and crash into a read-only
+# PBL crashdump. gpt-slice-pin.py gates it behind --i-verified-b-firmware. PROGRESS A226.
 UD_END=${UD_END:-36827047}
 LR_END=${LR_END:-121268218}
 

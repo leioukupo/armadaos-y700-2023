@@ -18,6 +18,11 @@
 | 进 EDL：`fastboot oem reboot-edl`（`reboot edl` / `oem edl` 都是 unknown） | — |
 | **没有任何 ABL 日志通道**（logfs 空 FAT12、logdump 全零、qmcs 空、spunvm 全零、uefivarstore 里没有 boot-next） | 起不来只能靠屏幕 + 排除法，见 §6 |
 | GPT 属性位：Flags 的 **bit48-51=priority、bit52-55=retry、bit55=dont-boot-again** | 槽位状态是**磁盘上的 GPT 标志**，不是 misc |
+| rom 的 `rawprogram4.xml` 里 `uefi_b/tz_b/abl_b/boot_b/devcfg_b` 全是 `filename=""` | **只做 rom 还原之后 `_b` 固件是零**。把 `_a` 标成 dont-boot-again（= 钉到 b）等于让 XBL 读零 → XBL 自己崩，直接进 PBL crashdump |
+| crashdump（`05c6:900e`）的 Sahara 是**只读**：上传 loader → `0x93011004`，command mode → `END_TRANSFER`，`SAHARA_RESET_STATE_MACHINE(0x13)` → 也只是 `END_TRANSFER`；只有 `SAHARA_RESET_REQ(0x7)` 有效 | 能无限次软件重启（崩后几秒内 HELLO 窗口才 live），但**拿不到任何写权限**；XBL 崩了就没有 ABL，于是 fastboot / recovery / 那个五选项菜单全都不存在 |
+| **音量键不是 EDL 触发**：冷上电（先长按 Power 20 s 真断电，再插线）分别按住 VolDown / VolUp / 双键 30 s，四种都是 20 s 后枚举 `05c6:900e` | 进 EDL 只有两条路：`fastboot oem reboot-edl`（需要 ABL 活着）或**拆后盖短接 EDL 测试点**。热复位不重采样按键，所以"按住键 + Sahara RESET"也无效 |
+| 在 crashdump 会话里 `edl.py --memory=ufshcd rs/ws ...` 会**静默退化成 DDR 内存转储**，`rs/ws` 的参数被忽略 | 任何写之前先 `rs 0 6 /tmp/chk.bin --lun=4`，再确认偏移 4096 处有 `EFI PART`，否则就是在往空气里写 |
+| `rs 0 6 primN.bin` 从 **LBA0** 开始，含 protective MBR | 写回必须 `ws 0`。`ws 1` 会把 MBR 那 4 KiB 盖到 GPT header 上 = 表直接损坏，二次变砖 |
 | firehose 会话空闲几分钟就掉，掉之后 `rs` 会**静默不产出文件** | 分段做，每段先确认 `Mode detected: firehose`，再查文件大小 |
 | `edl.py ws` 按 `os.stat(file).st_size` **逐字节流**，不认识 hole；而 ext4 每个 flex group 开头都有 inode table，322 GiB 的根只用 14 GiB 也一路写到最后一个 group | 直接刷稀疏镜像 = 几小时零字节。**先把文件系统缩到装得下（`ostree-first-root.sh` 末尾 resize2fs），上板第一次启动由 `armada-growfs.service` 在线长回整分区** |
 | `e2image -r` 的 dump 也是稀疏到整个分区，而且**不含数据块** | 它既不小（照样 322 GiB 的 st_size）也不能刷：文件内容读回来全是零。`ufs-install.sh` 会显式忽略它 |
@@ -30,7 +35,7 @@
 | `rom-flash.sh` | 构建机（板子在 9008） | 按 rom 自己的 rawprogram 逐条写（可续写，进度在 `done.txt`）。刻意跳过 rom 的 `gpt_*`，并把 `zeros_5sectors.bin` 单独处理 |
 | `edl-restore.sh` | 构建机 | 全量回安卓：备份在机 GPT → `rom-flash.sh` → 清 DDR 训练缓存 → **用在机 GPT 重建 stock LUN0** → 校验 → **擦 userdata/metadata/misc** → reset |
 | `gpt-stock.py` | 构建机 | 把在机 dump 改成 stock 形状：删 `linuxroot`、`userdata` 顶到 last usable LBA，重算 entriesCRC / headerCRC |
-| `gpt-slice-pin.py` | 构建机 | 重装前的切分（userdata 缩到 128 GiB、腾出 `linuxroot`）+ 把 LUN4 所有 `_a/_b` 对的属性钉到目标槽（**不要用 firehose `setactiveslot`**，它把 dont-boot-again 写到另一侧） |
+| `gpt-slice-pin.py` | 构建机 | 重装前的切分（userdata 缩到 128 GiB、腾出 `linuxroot`）+ 把 LUN4 所有 `_a/_b` 对的属性钉到目标槽（**不要用 firehose `setactiveslot`**，它把 dont-boot-again 写到另一侧）。**`--pin b` 现在必须带 `--i-verified-b-firmware`**，钉槽成功后顺手在 work 目录写 `undo-pin.sh`（先读回验明 firehose，再 `ws 0` 原样复原 + 比对 + reset） |
 | `ufs-install.sh` | 构建机 | 一次装完：dump GPT → 切分+钉槽 → 写 GPT → 写 root（只写到最后一个数据 extent）→ 写 boot 载荷 → 读回校验（boot 全量、root 头尾各 64 MiB）→ 打印 root 的 LABEL/UUID 好和载荷 cmdline 对一遍 |
 
 ## 2. 不通用的输入：怎么提取你自己的
@@ -64,6 +69,18 @@ EDL_ROM=/path/rom LOADER=/path/xbl_s_devprg_ns.melf install/edl-restore.sh
 ```
 
 关键：**擦 `userdata` + `metadata` + `misc` 不是可选项**。rom 自带的 `userdata_*.img`/`metadata.img` 是老几何 + 旧 FBE keyblob，写上去之后每个槽都会回落 fastboot（A204：这就是 Lenovo 那句"恢复出厂设置才能开机"的意思）。
+
+### 3.0 先分清是哪一层崩了（决定 §3 能不能用）
+
+- 屏幕上还有 Lenovo logo / 菜单，USB 上能看到 `18d1:d00d` → ABL 活着，走下面的正常流程。
+- USB 只有 `05c6:900e`（crashdump）而且按键全部无效 → **XBL 崩，ABL 根本没跑**。`oem reboot-edl` 不存在，fastboot / recovery / 五选项菜单都不存在，§3 无法开始，只能硬件 EDL（拆后盖短接测试点）。
+- 到这一步别再硬按按键耗电池，先长按 Power 关机，等拿到短接条件再动。
+
+拿到 9008 之后，一次钉槽只要 11 个扇区就能复原，备份表起始 LBA 由 `gpt-slice-pin.py` 写进 `undo-pin.sh`：
+
+```sh
+LOADER=/path/xbl_s_devprg_ns.melf GPTDIR=$WORK/gptbak sh $WORK/undo-pin.sh
+```
 
 另外 rom 的 rawprogram 里 `boot.img/vendor_boot.img/dtbo.img/vbmeta.img` 只落在**一个槽**（本机是 boot_a）。要让另一槽也自洽，得自己补齐：
 
