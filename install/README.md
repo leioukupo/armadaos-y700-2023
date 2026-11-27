@@ -130,11 +130,13 @@ ls /var/home/armada/.local/share/Steam/steam.sh   # factory Steam 在 commit 里
 * 板上 `/root/kshim-rollback/` 是 **tmpfs**，重启就没 → 当场 `scp` 回构建机永久目录。
 * 构建机上永久保留：当天 dump 的 `boot_*-live.img`、`gptbak/prim*.bin back*.bin`、`alt*`、原机 `preserive-*`（6 个 LUN 的主备 GPT + xbl）。
 * `sha256sum` 清单和 `BUNDLE.txt` 一起存，别只存文件。
+* **LUN4/LUN0 钉槽前的原表已经进仓库**：`install/rescue/gptbak/`（4 份 dump + `SHA256SUMS` + `undo-pin.sh` + `watch-edl-mode.sh`），流程见 `install/rescue/README.md`。comfyui 上的原件在 `/srv/y700/rescue-kit`。这块板子唯一的回滚点就是这 11 个扇区，别再只留一份。
 
 ## 6. 起不来时的排查顺序（无日志，只能排除）
 
+0. 先分清崩在哪一层（见 §3.0）：USB 只有 `05c6:900e` 就是 XBL 崩，下面 1-3 条全都要先拿到 9008 才能做。
 1. `misc`：读回看有没有 `ffbm-00` / legacy boot command（LUN0 lba 89480，256 扇区）；有就清（`erase misc` 或写零）。
-2. GPT 属性位：`printgpt --lun=4` 看 `boot_a/boot_b` 的 priority/retry/dont-boot-again；`gpt-slice-pin.py --pin` 修。
+2. GPT 属性位：`printgpt --lun=4` 看 `boot_a/boot_b` 的 priority/retry/dont-boot-again；`gpt-slice-pin.py --pin` 修。 但**只能往真有固件的那一侧钉**：把两侧都标成不可启动、或钉到 rom 留空的 `_b`（`filename=""`），XBL 会直接崩进只读的 crashdump（A226），那时连 fastboot 都没有，只能硬件 EDL。
 3. 内容是否真在目标分区：`rs <lba> <sect>` 读回 sha 比对（这台机器没有任何其它反馈渠道）。
 4. 供电：低电量下 ABL 能停在 fastboot 但拒绝拉起系统，形状与"每个槽都失败"完全一样（A203）。先只走充电口充 ≥40 min。
 5. **ARB / rollback index**：做过系统更新的机器 RPMB 里的最小回滚索引会抬高，旧 rom 的 `vbmeta` 可能被拒。2026-11-26 这次「rom 全量 + DDR 清零 + stock GPT + 擦 data + 两槽 boot 链成套」之后仍然回 fastboot，剩下的头号嫌疑就是它——验证办法是**只用机内 OTA 那一代的 boot 链**（从在机备份 `board-backup.sh` 的产物刷回）而不是 rom 的，看能不能起。
