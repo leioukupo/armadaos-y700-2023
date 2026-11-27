@@ -1,5 +1,6 @@
 # A226 救援包：把 LUN4 的 11 个扇区写回去
 
+> **只对这台机有效**：`gptbak/` 里是这台 TB320FC 的分区几何（LUN4 `alt4=1572863`、`boot_a`@108422、`boot_b`@374511）。换一台平板就完全是另一套数，写到别的机上就是写坏表。新机的表用 `install/README.md` §2 的办法现场 dump。
 板子（TB320FC / fastboot 序列号 `HA1WZJJ5`）现在的状态：停在 PBL crashdump，USB 上只有 `05c6:900e`。
 崩的是 **XBL**，所以 ABL 从来没跑起来 —— 没有 fastboot、没有 recovery、没有 boot qmmi/boot FFBM 那个五选项菜单，
 `fastboot oem reboot-edl` 自然也不存在；音量键（VolDown / VolUp / 双键 / 冷上电长按 30 s）经实测都不是这台机的 EDL 触发。

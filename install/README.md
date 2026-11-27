@@ -145,3 +145,21 @@ ls /var/home/armada/.local/share/Steam/steam.sh   # factory Steam 在 commit 里
 
 * 手写笔：上游 7.2.6 的内核补丁在二代起不来，已放弃。
 * G9 手柄非充电口：route B（自编内核 + 移植 vendor `phy-msm-snps-eusb2` 的 EUD/APB 序列）还没做；现状是充电口可用、非充电口只供电不识别。
+## 8. 暂停点与换新平板的接手清单（2026-11-27）
+
+**当前状态**：这台 TB320FC（`HA1WZJJ5`）停在 XBL crashdump（USB 只有 `05c6:900e`），没有短接 EDL 测试点的条件，所以**长按 Power 关机放着**，项目暂停。软件侧的成果（真 OSTree/bootc 部署、触摸与横竖屏同步、音频功放、电池、G9 手柄、kShimC 双槽菜单）都已经在镜像与脚本里，等硬件到位再接。
+
+| 换机后必须重新提取 | 怎么取 | 为什么不能复用旧的 |
+|---|---|---|
+| EDL rom + programmer | 官方整包，`contents.xml` 里取 `xbl_s_devprg_ns.melf` | 版本要和机内 OTA 代次/ARB 索引对上（§6 第 5 条） |
+| 在机 GPT | `edl.py rs 0 6 primN.bin --lun=N` + `rs (alt-4) 5 backN.bin --lun=N`，`alt` 读 primary header 偏移 32 | 每台机几何不同；`install/rescue/gptbak/` 是**这台**机的，给别人 = 写坏表 |
+| `boot_*` / `vbmeta_*` / `xbl` / `abl` 备份 | `install/board-backup.sh`（机内 root 跑） | OTA 过之后与 rom 同名文件 sha 全不同（A203/A204），也是唯一回滚点 |
+| `oemowninfo` 版本 | 直接读分区（本机 LUN0 lba 8328） | 决定能不能降级、降级会不会被 ARB 拒 |
+| kShimC 的 pack base | **当天**从这台机 dump 的 `boot_<slot>` | 拿旧 base 或已经带 shim 的镜像 = 叠两层，第二层永不执行 |
+| registry / bundle / `factory-*.tar` | 当次 `just build` + `stage-adopt-bundle.sh` | 与镜像 tag、chunkah blob 绑定，换 tag 就重做 |
+
+**可以直接复用**：`install/**` 全部脚本（含 `install/rescue/`）、`devices/lenovo-tb320fc/**`（kShimC defconfig、rootfs 离线采纳与 `armada-growfs`、DTS 与补丁）、`packages/kernel/**`、`docs/edl-package.md` 的 rom 流程、以及全部 A 记录。
+
+**接手顺序**：§2 提取输入 → 需要时 §3 回安卓（先按 §3.0 判断崩在哪层）→ §4 装 ArmadaOS，**只用 `PIN=a`** → §5 核对回滚点 → 起不来按 §6 排。
+
+**A226 的三条硬教训**（已进 §0 事实表）：① 槽只能钉到**真有固件**的一侧，rom 只写 `_a`；② 写表前先读回验模式——crashdump 里 `--memory` 会静默转储 DDR 还显示 100%；③ `prim*.bin` 含 protective MBR，必须 `ws 0`，`ws 1` 直接把 GPT header 盖掉。
